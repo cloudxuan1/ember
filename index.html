@@ -158,9 +158,68 @@
   }
   #send:hover:not(:disabled) { opacity: .85; transform: translateY(-1px); }
   #send:disabled { opacity: .4; cursor: default; }
+
+  /* ===== 访问密码遮罩 ===== */
+  .gate {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--bg-primary);
+  }
+  .gate-card {
+    width: 100%;
+    max-width: 320px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 28px 24px;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+  .gate-brand { font-family: var(--font-display); font-size: 24px; color: var(--text-primary); }
+  .gate-hint { font-size: 14px; color: var(--text-muted); margin-top: -6px; }
+  .gate-input {
+    width: 100%;
+    padding: 11px 15px;
+    font-size: 16px;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: none;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+    outline: none;
+    text-align: center;
+  }
+  .gate-btn {
+    width: 100%;
+    padding: 11px;
+    font-size: 15px;
+    color: #fff;
+    background: var(--btn-primary-bg);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .gate-err { font-size: 13px; color: #9a3412; min-height: 16px; }
 </style>
 </head>
 <body>
+  <div class="gate" id="gate" style="display:none">
+    <div class="gate-card">
+      <div class="gate-brand">ember</div>
+      <div class="gate-hint">请输入访问密码</div>
+      <input class="gate-input" id="gate-input" type="password" placeholder="密码" autocomplete="current-password" />
+      <button class="gate-btn" id="gate-btn">进入</button>
+      <div class="gate-err" id="gate-err"></div>
+    </div>
+  </div>
+
   <header class="topbar">
     <span class="spark"></span>
     <span class="brand">ember</span>
@@ -181,15 +240,22 @@
   const WORKER_URL = "https://ember-proxy.claude-bflwhp.workers.dev";
   const MODEL = "anthropic/claude-opus-4.6";
 
+  const PW_KEY = "ember_pw";  // 访问密码在本设备浏览器的存储键
+
   // ===== 状态 =====
   const messages = [];        // 对话历史，只存在内存，刷新即清空
   let pending = false;        // 是否正在等回复，防止重复发送
+  let accessPw = localStorage.getItem(PW_KEY) || "";  // 访问密码，存在本设备浏览器
 
   const messagesEl = document.getElementById("messages");
   const hintEl = document.getElementById("hint");
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("send");
   const composer = document.getElementById("composer");
+  const gate = document.getElementById("gate");
+  const gateInput = document.getElementById("gate-input");
+  const gateBtn = document.getElementById("gate-btn");
+  const gateErr = document.getElementById("gate-err");
 
   // ===== 工具函数 =====
   function scrollToBottom() {
@@ -252,9 +318,15 @@
       const res = await fetch(WORKER_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages, model: MODEL }),
+        body: JSON.stringify({ messages, model: MODEL, password: accessPw }),
       });
 
+      // 密码错误：清掉本地密码，待会弹回密码界面
+      if (res.status === 401) {
+        const e = new Error("访问密码错误");
+        e.code = 401;
+        throw e;
+      }
       if (!res.ok) {
         const errText = await res.text();
         throw new Error(`服务返回 ${res.status}：${errText.slice(0, 300)}`);
@@ -283,6 +355,12 @@
       bubble.classList.remove("typing");
       bubble.classList.add("error");
       bubble.textContent = "⚠️ " + err.message;
+      if (err.code === 401) {
+        localStorage.removeItem(PW_KEY);
+        accessPw = "";
+        messages.pop();                 // 回滚这条没发成功的消息
+        showGate("密码错误，请重新输入");
+      }
     } finally {
       pending = false;
       sendBtn.disabled = false;
@@ -310,6 +388,32 @@
       send();
     }
   });
+
+  // ===== 访问密码界面 =====
+  function showGate(msg) {
+    gate.style.display = "flex";
+    gateErr.textContent = msg || "";
+    gateInput.focus();
+  }
+  function hideGate() {
+    gate.style.display = "none";
+    input.focus();
+  }
+  function submitGate() {
+    const v = gateInput.value.trim();
+    if (!v) return;
+    accessPw = v;
+    localStorage.setItem(PW_KEY, v);
+    gateInput.value = "";
+    hideGate();
+  }
+  gateBtn.addEventListener("click", submitGate);
+  gateInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); submitGate(); }
+  });
+
+  // 没存过密码就先弹密码界面（密码不写在代码里，由你打开时手输一次）
+  if (!accessPw) showGate();
 </script>
 </body>
 </html>

@@ -25,9 +25,15 @@ export default {
       return json({ error: "请求体不是合法 JSON" }, 400);
     }
 
-    const { messages, model } = payload;
+    const { messages, model, password } = payload;
     if (!Array.isArray(messages) || messages.length === 0) {
       return json({ error: "messages 必须是非空数组" }, 400);
+    }
+
+    // 访问密码校验：挡住公开网址被陌生人直接调用、白嫖你的 API key。
+    // 密码存在 Cloudflare Secret（ACCESS_PASSWORD）里；没设或不匹配一律拒绝，绝不调用 OpenRouter。
+    if (!env.ACCESS_PASSWORD || password !== env.ACCESS_PASSWORD) {
+      return json({ error: "访问密码错误" }, 401);
     }
 
     let upstream;
