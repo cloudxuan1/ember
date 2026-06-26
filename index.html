@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>ember</title>
+<style>
+  /* ===== 设计 token（怀旧版 / Claude Theme，取自 DESIGN 设计稿）===== */
+  :root {
+    --font-display: 'Anthropic Serif', Georgia, 'Times New Roman', serif;
+    --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+
+    --bg-primary: #faf9f5;
+    --bg-card: #ffffff;
+    --text-primary: #141413;
+    --text-secondary: #3d3d3a;
+    --text-muted: #9b9b97;
+    --accent: #d97757;
+    --btn-primary-bg: #3b3b3b;
+
+    --shadow:    0 3px 15px rgba(0,0,0,0.05), 0 0 0 0.5px rgba(31,30,29,0.12);
+    --shadow-sm: 0 3px 15px rgba(0,0,0,0.08), 0 0 0 0.5px rgba(31,30,29,0.2);
+
+    --radius: 20px;
+    --radius-sm: 8px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== 顶栏 ===== */
+  .topbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 18px;
+    border-bottom: 0.5px solid rgba(31,30,29,0.12);
+    background: var(--bg-primary);
+  }
+  .spark {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .brand {
+    font-family: var(--font-display);
+    font-size: 20px;
+    color: var(--text-primary);
+    letter-spacing: 0.2px;
+  }
+
+  /* ===== 消息区 ===== */
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .hint {
+    margin: auto;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+
+  .msg {
+    max-width: 85%;
+    padding: 11px 15px;
+    border-radius: var(--radius);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: var(--accent);
+    color: #fff;
+    border-bottom-right-radius: 6px;
+  }
+  .msg.assistant {
+    align-self: flex-start;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    box-shadow: var(--shadow);
+    border-bottom-left-radius: 6px;
+  }
+  .msg.error {
+    align-self: flex-start;
+    background: #fbeae5;
+    color: #9a3412;
+    box-shadow: none;
+  }
+  /* 等待首字时的呼吸光标 */
+  .msg.typing::after {
+    content: '';
+    display: inline-block;
+    width: 7px; height: 7px;
+    margin: 0 2px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    animation: blink 1.2s ease-in-out infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:.25} 50%{opacity:1} }
+
+  /* ===== 底部输入栏 ===== */
+  .composer {
+    flex: none;
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    border-top: 0.5px solid rgba(31,30,29,0.12);
+    background: var(--bg-primary);
+  }
+  #input {
+    flex: 1;
+    resize: none;
+    max-height: 120px;
+    padding: 11px 15px;
+    font-family: var(--font-ui);
+    font-size: 16px;            /* ≥16px：避免 iOS 聚焦时自动放大 */
+    line-height: 1.5;
+    color: var(--text-primary);
+    background: var(--bg-card);
+    border: none;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    outline: none;
+  }
+  #input::placeholder { color: var(--text-muted); }
+
+  #send {
+    flex: none;
+    width: 42px; height: 42px;
+    border: none;
+    border-radius: 50%;
+    background: var(--btn-primary-bg);
+    color: #fff;
+    font-size: 19px;
+    line-height: 1;
+    cursor: pointer;
+    transition: opacity .2s, transform .2s;
+  }
+  #send:hover:not(:disabled) { opacity: .85; transform: translateY(-1px); }
+  #send:disabled { opacity: .4; cursor: default; }
+
+  /* ===== 访问密码遮罩 ===== */
+  .gate {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--bg-primary);
+  }
+  .gate-card {
+    width: 100%;
+    max-width: 320px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 28px 24px;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+  .gate-brand { font-family: var(--font-display); font-size: 24px; color: var(--text-primary); }
+  .gate-hint { font-size: 14px; color: var(--text-muted); margin-top: -6px; }
+  .gate-input {
+    width: 100%;
+    padding: 11px 15px;
+    font-size: 16px;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: none;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+    outline: none;
+    text-align: center;
+  }
+  .gate-btn {
+    width: 100%;
+    padding: 11px;
+    font-size: 15px;
+    color: #fff;
+    background: var(--btn-primary-bg);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .gate-err { font-size: 13px; color: #9a3412; min-height: 16px; }
+</style>
+</head>
+<body>
+  <div class="gate" id="gate" style="display:none">
+    <div class="gate-card">
+      <div class="gate-brand">ember</div>
+      <div class="gate-hint">请输入访问密码</div>
+      <input class="gate-input" id="gate-input" type="password" placeholder="密码" autocomplete="current-password" />
+      <button class="gate-btn" id="gate-btn">进入</button>
+      <div class="gate-err" id="gate-err"></div>
+    </div>
+  </div>
+
+  <header class="topbar">
+    <span class="spark"></span>
+    <span class="brand">ember</span>
+  </header>
+
+  <main class="messages" id="messages">
+    <div class="hint" id="hint">和 Claude 开始对话</div>
+  </main>
+
+  <form class="composer" id="composer">
+    <textarea id="input" rows="1" placeholder="发消息…" autocomplete="off"></textarea>
+    <button type="submit" id="send" aria-label="发送">↑</button>
+  </form>
+
+<script>
+  // ===== 可配置常量 =====
+  // 部署 Worker 后，把下面这行换成你的 Worker 真实地址（见 worker/README.md）。
+  const WORKER_URL = "https://ember-proxy.claude-bflwhp.workers.dev";
+  const MODEL = "anthropic/claude-opus-4.6";
+
+  const PW_KEY = "ember_pw";  // 访问密码在本设备浏览器的存储键
+
+  // ===== 状态 =====
+  const messages = [];        // 对话历史，只存在内存，刷新即清空
+  let pending = false;        // 是否正在等回复，防止重复发送
+  let accessPw = localStorage.getItem(PW_KEY) || "";  // 访问密码，存在本设备浏览器
+
+  const messagesEl = document.getElementById("messages");
+  const hintEl = document.getElementById("hint");
+  const input = document.getElementById("input");
+  const sendBtn = document.getElementById("send");
+  const composer = document.getElementById("composer");
+  const gate = document.getElementById("gate");
+  const gateInput = document.getElementById("gate-input");
+  const gateBtn = document.getElementById("gate-btn");
+  const gateErr = document.getElementById("gate-err");
+
+  // ===== 工具函数 =====
+  function scrollToBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function addBubble(role, text) {
+    if (hintEl) hintEl.remove();
+    const el = document.createElement("div");
+    el.className = "msg " + role;
+    el.textContent = text;
+    messagesEl.appendChild(el);
+    scrollToBottom();
+    return el;
+  }
+
+  // 解析 SSE 流，每收到一段文字就回调 onDelta，返回完整文本
+  async function readStream(body, onDelta) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let full = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();                       // 最后一行可能不完整，留到下次
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t || t.startsWith(":")) continue;    // 跳过空行和注释（如 OpenRouter 的心跳）
+        if (!t.startsWith("data:")) continue;
+        const data = t.slice(5).trim();
+        if (data === "[DONE]") return full;
+        try {
+          const delta = JSON.parse(data).choices?.[0]?.delta?.content;
+          if (delta) { full += delta; onDelta(delta); }
+        } catch { /* 半截 JSON，忽略 */ }
+      }
+    }
+    return full;
+  }
+
+  // ===== 发送 =====
+  async function send() {
+    const text = input.value.trim();
+    if (!text || pending) return;
+
+    input.value = "";
+    input.style.height = "auto";
+    addBubble("user", text);
+    messages.push({ role: "user", content: text });
+
+    pending = true;
+    sendBtn.disabled = true;
+    const bubble = addBubble("assistant", "");
+    bubble.classList.add("typing");
+
+    try {
+      const res = await fetch(WORKER_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages, model: MODEL, password: accessPw }),
+      });
+
+      // 密码错误：清掉本地密码，待会弹回密码界面
+      if (res.status === 401) {
+        const e = new Error("访问密码错误");
+        e.code = 401;
+        throw e;
+      }
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`服务返回 ${res.status}：${errText.slice(0, 300)}`);
+      }
+      // 正常应是 SSE 流；若不是，多半是 JSON 错误体
+      if (!(res.headers.get("Content-Type") || "").includes("text/event-stream")) {
+        const data = await res.json().catch(() => null);
+        const msg = data?.error?.message || data?.error || "返回了非流式响应";
+        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      }
+
+      const full = await readStream(res.body, (delta) => {
+        bubble.classList.remove("typing");
+        bubble.textContent += delta;
+        scrollToBottom();
+      });
+
+      bubble.classList.remove("typing");
+      if (full) {
+        messages.push({ role: "assistant", content: full });
+      } else {
+        bubble.classList.add("error");
+        bubble.textContent = "⚠️ 没有收到回复内容";
+      }
+    } catch (err) {
+      bubble.classList.remove("typing");
+      bubble.classList.add("error");
+      bubble.textContent = "⚠️ " + err.message;
+      if (err.code === 401) {
+        localStorage.removeItem(PW_KEY);
+        accessPw = "";
+        messages.pop();                 // 回滚这条没发成功的消息
+        showGate("密码错误，请重新输入");
+      }
+    } finally {
+      pending = false;
+      sendBtn.disabled = false;
+      scrollToBottom();
+    }
+  }
+
+  // ===== 交互绑定 =====
+  composer.addEventListener("submit", (e) => {
+    e.preventDefault();
+    send();
+  });
+
+  // 输入框随内容自动长高
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 120) + "px";
+  });
+
+  // 桌面端：回车发送、Shift+回车换行；触屏设备保持回车换行，靠按钮发送
+  const isTouch = window.matchMedia("(pointer: coarse)").matches;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !isTouch) {
+      e.preventDefault();
+      send();
+    }
+  });
+
+  // ===== 访问密码界面 =====
+  function showGate(msg) {
+    gate.style.display = "flex";
+    gateErr.textContent = msg || "";
+    gateInput.focus();
+  }
+  function hideGate() {
+    gate.style.display = "none";
+    input.focus();
+  }
+  function submitGate() {
+    const v = gateInput.value.trim();
+    if (!v) return;
+    accessPw = v;
+    localStorage.setItem(PW_KEY, v);
+    gateInput.value = "";
+    hideGate();
+  }
+  gateBtn.addEventListener("click", submitGate);
+  gateInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); submitGate(); }
+  });
+
+  // 没存过密码就先弹密码界面（密码不写在代码里，由你打开时手输一次）
+  if (!accessPw) showGate();
+</script>
+</body>
+</html>
