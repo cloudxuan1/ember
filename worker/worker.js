@@ -6,7 +6,7 @@
 const ALLOWED_ORIGIN = "https://cloudxuan1.github.io";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL = "anthropic/claude-opus-4-6";
+const DEFAULT_MODEL = "anthropic/claude-opus-4.6";
 
 export default {
   async fetch(request, env) {

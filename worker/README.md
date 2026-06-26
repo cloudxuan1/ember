@@ -39,4 +39,4 @@ npx wrangler secret put OPENROUTER_API_KEY   # 按提示粘贴 key
 ## 注意
 
 - `ALLOWED_ORIGIN`（worker.js 顶部）写死成了 `https://cloudxuan1.github.io`。如果你的 GitHub Pages 域名不是这个，改成你的，否则浏览器会因 CORS 拦截请求。
-- 默认模型 `anthropic/claude-opus-4-6` 写在 worker.js 顶部；前端不传 model 时用它。
+- 默认模型 `anthropic/claude-opus-4.6` 写在 worker.js 顶部；前端不传 model 时用它。
