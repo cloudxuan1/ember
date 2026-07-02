@@ -1,0 +1,22 @@
+services:
+  ember:
+    build: ./backend
+    container_name: ember
+    restart: unless-stopped
+    # 只绑本机回环，公网访问一律走 Cloudflare Tunnel，端口不裸露
+    ports:
+      - "127.0.0.1:8300:8000"
+    volumes:
+      # V2 起 SQLite 数据库放这里（data/ 已 gitignore，永不入库）
+      - ./data:/app/data
+
+  # ember 自己的 Cloudflare Tunnel，与旧系统的 ombre-tunnel 完全独立，互不影响
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: ember-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - ember

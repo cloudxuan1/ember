@@ -1,0 +1,24 @@
+# 密钥与环境 —— 永不入库
+.env
+
+# 记忆数据 —— 本仓库公开，数据永不入库
+*.db
+*.db.bak
+*.sqlite
+*.sqlite3
+data/
+
+# 日志原文 —— 属于私有仓库，不进本仓库
+logs/
+
+# 本地归档与模版（含个人语境，勿公开）
+V0 ember调研/
+*_副本.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# macOS
+.DS_Store
