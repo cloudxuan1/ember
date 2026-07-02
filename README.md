@@ -16,11 +16,19 @@ uvicorn app.main:app --port 8300
 # 验证：curl http://127.0.0.1:8300/health
 ```
 
-## Docker 运行（VPS 同款）
+## Docker 运行
+
+本地测试只启 ember 服务（不带 tunnel，无需 TUNNEL_TOKEN）：
+
+```bash
+docker compose up -d --build ember
+curl http://127.0.0.1:8300/health
+```
+
+VPS 部署才全量启动（含 tunnel，需先在 `.env` 填 TUNNEL_TOKEN）：
 
 ```bash
 docker compose up -d --build
-curl http://127.0.0.1:8300/health
 ```
 
 ## 部署
