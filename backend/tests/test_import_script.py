@@ -36,6 +36,32 @@ def test_inventory_lists_conversations(tmp_path):
     assert "余烬测试对话" in out
 
 
+PLUGIN_EXPORT = [  # 浏览器插件导出格式：messages / contentBlocks / createdAt / 带 BOM
+    {
+        "uuid": "cccc3333-0000-0000-0000-000000000000",
+        "name": "插件格式对话",
+        "messages": [
+            {"uuid": "p1111111-0", "sender": "assistant", "createdAt": "2026-04-18T05:01:25Z",
+             "contentBlocks": [
+                 {"type": "thinking", "thinking": "内心独白不该被提取"},
+                 {"type": "text", "text": "说出口的话才算数"},
+             ],
+             "searchText": "内心独白不该被提取 说出口的话才算数"},
+        ],
+    }
+]
+
+
+def test_plugin_format_with_bom_skips_thinking(tmp_path):
+    export = tmp_path / "single.json"
+    export.write_bytes(b"\xef\xbb\xbf" + json.dumps(PLUGIN_EXPORT, ensure_ascii=False).encode("utf-8"))
+    workdir = tmp_path / "work"
+    run("slice", str(export), "--conversation", "插件格式", "--out", str(workdir))
+    group = (workdir / "group_001.txt").read_text(encoding="utf-8")
+    assert group == "[2026-04-18T05:01][id=p1111111] Claude: 说出口的话才算数"
+    assert "内心独白" not in group
+
+
 def test_slice_groups_with_source_ids_and_anchor(tmp_path):
     export = tmp_path / "conversations.json"
     export.write_text(json.dumps(FAKE_EXPORT, ensure_ascii=False), encoding="utf-8")

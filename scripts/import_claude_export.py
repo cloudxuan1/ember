@@ -23,22 +23,39 @@ from pathlib import Path
 
 
 def load_export(path: str) -> list[dict]:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    # utf-8-sig：兼容带 BOM 头的文件（部分导出工具会加）
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if isinstance(data, dict):
+        data = [data]  # 单对话文件顶层可能直接是对象
     if not isinstance(data, list):
-        raise SystemExit(f"预期顶层是对话列表，拿到 {type(data).__name__}——确认这是 conversations.json？")
+        raise SystemExit(f"预期顶层是对话列表或对话对象，拿到 {type(data).__name__}")
     return data
 
 
+def conv_messages(conv: dict) -> list[dict]:
+    """官方导出用 chat_messages，浏览器插件导出用 messages。"""
+    return conv.get("chat_messages") or conv.get("messages") or []
+
+
+def message_time(msg: dict) -> str:
+    return msg.get("created_at") or msg.get("createdAt") or ""
+
+
 def message_text(msg: dict) -> str:
-    """text 字段优先；新版导出可能只有 content 块列表。"""
+    """text 字段优先；content / contentBlocks 块列表只取 text 块。
+
+    thinking 块是模型内心独白，不算说出口的话，提取记忆时跳过。
+    searchText 混入了 thinking 内容，同理不用。
+    """
     if msg.get("text"):
         return msg["text"]
-    parts = [b.get("text", "") for b in msg.get("content", []) if b.get("type") == "text"]
+    blocks = msg.get("content") or msg.get("contentBlocks") or []
+    parts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
     return "\n".join(p for p in parts if p)
 
 
 def conv_time_range(conv: dict) -> tuple[str, str]:
-    times = [m.get("created_at", "") for m in conv.get("chat_messages", []) if m.get("created_at")]
+    times = [message_time(m) for m in conv_messages(conv) if message_time(m)]
     return (min(times)[:10], max(times)[:10]) if times else ("?", "?")
 
 
@@ -46,7 +63,7 @@ def cmd_inventory(args) -> None:
     convs = load_export(args.export)
     print(f"共 {len(convs)} 个对话：\n")
     for i, c in enumerate(convs):
-        n = len(c.get("chat_messages", []))
+        n = len(conv_messages(c))
         start, end = conv_time_range(c)
         print(f"[{i:3d}] {start} ~ {end}  {n:4d} 条  {c.get('name', '(无标题)')}  uuid={c.get('uuid', '?')[:8]}")
 
@@ -69,12 +86,12 @@ def cmd_slice(args) -> None:
 
     speaker = {"human": args.human, "assistant": args.assistant}
     lines, skipped = [], 0
-    for msg in conv.get("chat_messages", []):
+    for msg in conv_messages(conv):
         try:
             text = message_text(msg).strip()
             if not text:
                 continue
-            ts = (msg.get("created_at") or "")[:16]  # 2026-05-29T21:14
+            ts = message_time(msg)[:16]  # 2026-05-29T21:14
             mid = (msg.get("uuid") or "")[:8]
             who = speaker.get(msg.get("sender", ""), msg.get("sender", "?"))
             lines.append(f"[{ts}][id={mid}] {who}: {text}")
