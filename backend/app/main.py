@@ -95,4 +95,44 @@ class _BearerGuard:
         await self.inner(scope, receive, send)
 
 
-app = _MCPPathFix(_BearerGuard(app, MCP_PATH), MCP_PATH)
+class _WireLog:
+    """临时排查用：把 MCP / OAuth 相关请求的关键头和响应码打进日志。
+
+    只记录调试必需的头（Origin / UA / Accept / 会话 / 协议版本），不记请求体。
+    connector 联调稳定后可移除。
+    """
+
+    WATCH_HEADERS = (b"origin", b"user-agent", b"accept", b"content-type",
+                     b"mcp-session-id", b"mcp-protocol-version", b"authorization")
+
+    def __init__(self, inner, prefix: str) -> None:
+        self.inner = inner
+        self.prefix = f"/{prefix}"
+
+    async def __call__(self, scope, receive, send) -> None:
+        interesting = (
+            scope["type"] == "http"
+            and (scope["path"].startswith(self.prefix)
+                 or scope["path"].startswith("/.well-known")
+                 or scope["path"].startswith("/oauth"))
+        )
+        if not interesting:
+            await self.inner(scope, receive, send)
+            return
+        headers = []
+        for k, v in scope.get("headers", []):
+            if k in self.WATCH_HEADERS:
+                value = "<redacted>" if k == b"authorization" else v.decode("latin-1")
+                headers.append(f"{k.decode()}={value}")
+        status_box = {}
+
+        async def send_logged(message):
+            if message["type"] == "http.response.start":
+                status_box["status"] = message["status"]
+            await send(message)
+
+        await self.inner(scope, receive, send_logged)
+        print(f"[wire] {scope['method']} {scope['path']} → {status_box.get('status', '?')} | {' | '.join(headers)}", flush=True)
+
+
+app = _WireLog(_MCPPathFix(_BearerGuard(app, MCP_PATH), MCP_PATH), MCP_PATH)

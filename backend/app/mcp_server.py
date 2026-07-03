@@ -20,7 +20,13 @@ mcp = FastMCP(
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=[PUBLIC_HOST, "127.0.0.1:*", "localhost:*", "ember:*", "[::1]:*"],
-        allowed_origins=[f"https://{PUBLIC_HOST}"],
+        # 客户端服务器可能带自家 Origin 头（浏览器才不带），拦了就是 403
+        allowed_origins=[
+            f"https://{PUBLIC_HOST}",
+            "https://claude.ai",
+            "https://claude.com",
+            "https://chatgpt.com",
+        ],
     ),
 )
 
