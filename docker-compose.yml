@@ -9,6 +9,11 @@ services:
     environment:
       # MCP 挂载路径 = 访问密钥，公网必须在 .env 里设成随机长串（见 .env.example）
       - MCP_PATH=${MCP_PATH:-mcp}
+      # OAuth 门禁（claude.ai connector 必需，见 .env.example 和 app/oauth.py）
+      - EMBER_OAUTH_PASSWORD=${EMBER_OAUTH_PASSWORD:-}
+      - EMBER_OAUTH_ACCESS_TOKEN=${EMBER_OAUTH_ACCESS_TOKEN:-}
+      - EMBER_OAUTH_REFRESH_TOKEN=${EMBER_OAUTH_REFRESH_TOKEN:-}
+      - PUBLIC_HOST=${PUBLIC_HOST:-ember.cloudxuan1.com}
     volumes:
       # V2 起 SQLite 数据库放这里（data/ 已 gitignore，永不入库）
       - ./data:/app/data
