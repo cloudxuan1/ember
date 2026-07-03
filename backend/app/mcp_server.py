@@ -11,10 +11,11 @@ from app import memories
 # 经 Cloudflare Tunnel 进来的请求带公网域名，必须显式加进白名单，否则 421。
 PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "ember.cloudxuan1.com")
 
+# 有状态 SSE 模式（不设 stateless_http/json_response）：
+# claude.ai 网页 connector 实测只认这种——无状态 JSON 模式下 initialize 200
+# 它也报"连不上"；旧系统 memory 用的正是有状态 SSE，能连。
 mcp = FastMCP(
     "ember",
-    stateless_http=True,
-    json_response=True,
     streamable_http_path="/",
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,

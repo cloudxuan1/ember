@@ -44,11 +44,9 @@ def health():
 
 
 class _MCPPathFix:
-    """MCP 端点的两个协议修正。
+    """Rewrite /<MCP_PATH> → /<MCP_PATH>/ in-process so Claude doesn't get 307.
 
-    1. /<MCP_PATH> → /<MCP_PATH>/ 进程内改写（claude.ai 不跟 307）
-    2. GET 回 405 + Allow: POST——stateless 模式不提供服务器推送的 SSE 流，
-       MCP 规范允许 405；FastMCP 默认回的 406 会被部分客户端当成端点坏了
+    注意：有状态 SSE 模式下 GET 是合法的服务器推送流入口，不要拦 GET。
     """
 
     def __init__(self, inner, prefix: str) -> None:
@@ -58,18 +56,6 @@ class _MCPPathFix:
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] == "http" and scope.get("path") == self.prefix:
             scope = {**scope, "path": self.prefix + "/"}
-        if (
-            scope["type"] == "http"
-            and scope.get("method") == "GET"
-            and scope.get("path", "").startswith(self.prefix + "/")
-        ):
-            await send({
-                "type": "http.response.start",
-                "status": 405,
-                "headers": [(b"allow", b"POST"), (b"content-type", b"text/plain")],
-            })
-            await send({"type": "http.response.body", "body": b"Method Not Allowed"})
-            return
         await self.inner(scope, receive, send)
 
 
