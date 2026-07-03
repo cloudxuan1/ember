@@ -4,7 +4,7 @@
 
 长期方向：Claude.ai / ChatGPT / Claude Code / Codex / 自写客户端通过 MCP / REST 连接同一个记忆底座。
 
-当前版本：**V1 空壳上线**（FastAPI `/health` + Docker 部署骨架，尚无记忆功能）。完整路线见 [docs/施工计划.md](docs/施工计划.md)。
+当前版本：**V2 记忆链路上线**（SQLite 三表 + 5 个 MCP 工具，claude.ai 可通过自定义 connector 连接；`MCP_PATH` 随机路径即访问密钥）。完整路线见 [docs/施工计划.md](docs/施工计划.md)。
 
 ## 本地运行
 
