@@ -100,6 +100,7 @@ def test_full_flow_and_token_exchange(gated):
     ok = gated.post("/oauth/token", data={"grant_type": "authorization_code", "code": code2, "code_verifier": VERIFIER})
     assert ok.status_code == 200
     assert ok.json()["access_token"] == "token-abc"
+    assert ok.json()["token_type"] == "Bearer"  # SDK 客户端 Literal["Bearer"]，小写必炸
 
     refreshed = gated.post("/oauth/token", data={"grant_type": "refresh_token", "refresh_token": "refresh-xyz"})
     assert refreshed.json()["access_token"] == "token-abc"

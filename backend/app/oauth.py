@@ -270,7 +270,9 @@ async def authorize_submit(request: Request):
 def _token_payload() -> dict:
     return {
         "access_token": _access_token(),
-        "token_type": "bearer",
+        # 必须大写 Bearer：MCP Python SDK 客户端（claude.ai 后端在用，UA python-httpx）
+        # 的 OAuthToken 模型是 Literal["Bearer"]，小写会校验失败、客户端静默中止
+        "token_type": "Bearer",
         "expires_in": ACCESS_TOKEN_TTL_SECONDS,
         "refresh_token": _refresh_token() or _access_token(),
     }
