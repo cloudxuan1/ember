@@ -1,14 +1,26 @@
 """ember 的 MCP 工具层：五个工具，少而清楚。纪律写进工具本身。"""
 
+import os
+
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from app import memories
+
+# FastMCP 默认只放行本机 Host 头（DNS-rebinding 防护），
+# 经 Cloudflare Tunnel 进来的请求带公网域名，必须显式加进白名单，否则 421。
+PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "ember.cloudxuan1.com")
 
 mcp = FastMCP(
     "ember",
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[PUBLIC_HOST, "127.0.0.1:*", "localhost:*", "ember:*", "[::1]:*"],
+        allowed_origins=[f"https://{PUBLIC_HOST}"],
+    ),
 )
 
 
