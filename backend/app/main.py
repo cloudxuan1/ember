@@ -109,6 +109,18 @@ class _WireLog:
         self.inner = inner
         self.prefix = f"/{prefix}"
 
+    BODY_PATHS = ("/oauth/register", "/oauth/token")
+    SECRET_FIELDS = ("client_secret", "code", "code_verifier", "refresh_token", "access_token")
+
+    @classmethod
+    def _redact(cls, body: str) -> str:
+        import re
+
+        for f in cls.SECRET_FIELDS:
+            body = re.sub(rf'("{f}"\s*:\s*")[^"]{{6,}}(")', r"\1<redacted>\2", body)
+            body = re.sub(rf"({f}=)[^&]{{6,}}", r"\1<redacted>", body)
+        return body[:600]
+
     async def __call__(self, scope, receive, send) -> None:
         interesting = (
             scope["type"] == "http"
@@ -124,6 +136,22 @@ class _WireLog:
             if k in self.WATCH_HEADERS:
                 value = "<redacted>" if k == b"authorization" else v.decode("latin-1")
                 headers.append(f"{k.decode()}={value}")
+
+        # register/token 的请求体先吸进来拍照（脱敏），再回放给应用
+        if scope["path"] in self.BODY_PATHS and scope["method"] == "POST":
+            chunks = []
+            while True:
+                message = await receive()
+                chunks.append(message)
+                if not message.get("more_body"):
+                    break
+            body = b"".join(c.get("body", b"") for c in chunks).decode("utf-8", "replace")
+            print(f"[wire-body] {scope['path']} ← {self._redact(body)}", flush=True)
+            replay = iter(chunks)
+
+            async def receive():  # noqa: F811 —— 回放缓冲
+                return next(replay)
+
         status_box = {}
 
         async def send_logged(message):

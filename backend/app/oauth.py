@@ -123,6 +123,7 @@ def _authorization_server_metadata() -> dict:
             "client_secret_post",
             "client_secret_basic",
         ],
+        "scopes_supported": ["ember"],
     }
 
 
@@ -146,6 +147,7 @@ def oauth_protected_resource(_suffix: str = ""):
         "resource": f"{base}/{mcp_path}",
         "authorization_servers": [base],
         "bearer_methods_supported": ["header"],
+        "scopes_supported": ["ember"],
     }
 
 
@@ -173,6 +175,7 @@ async def register(request: Request):
         "response_types": ["code"],
         "token_endpoint_auth_method": body.get("token_endpoint_auth_method", "client_secret_post"),
         "client_name": body.get("client_name", "client"),
+        **({"scope": body["scope"]} if body.get("scope") else {}),
     }
 
 
@@ -256,6 +259,7 @@ async def authorize_submit(request: Request):
         "client_id": params["client_id"],
         "redirect_uri": params["redirect_uri"],
         "code_challenge": params["code_challenge"],
+        "scope": params["scope"],
         "expires_at": time.time() + CODE_TTL_SECONDS,
     }
     query = {"code": code}
@@ -267,7 +271,7 @@ async def authorize_submit(request: Request):
 # ---------- 换 token ----------
 
 
-def _token_payload() -> dict:
+def _token_payload(scope: str = "") -> dict:
     return {
         "access_token": _access_token(),
         # 必须大写 Bearer：MCP Python SDK 客户端（claude.ai 后端在用，UA python-httpx）
@@ -275,6 +279,8 @@ def _token_payload() -> dict:
         "token_type": "Bearer",
         "expires_in": ACCESS_TOKEN_TTL_SECONDS,
         "refresh_token": _refresh_token() or _access_token(),
+        # 能连上 claude.ai 的服务商（WorkOS/Entra 等）token 响应都带 scope，跟队形
+        "scope": scope or "ember",
     }
 
 
@@ -300,7 +306,7 @@ async def token(request: Request):
         digest = urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         if not hmac.compare_digest(digest.encode(), ctx["code_challenge"].encode()):
             return _token_error("invalid_grant", "PKCE 校验失败")
-        return _token_payload()
+        return _token_payload(scope=ctx.get("scope", ""))
 
     if grant_type == "refresh_token":
         supplied = str(form.get("refresh_token") or "")
