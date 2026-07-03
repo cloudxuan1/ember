@@ -1,15 +1,19 @@
-"""手机审核台：导入草稿在网页上过目——通过 / 改 / 删（V3 质检瓶颈的解药）。
+"""手机审核台：导入草稿在网页上过目——通过 / 改 / 删 / 撤回（V3 质检瓶颈的解药）。
 
-鉴权复用 OAuth 门禁的两个值，不新增密钥（生成方式见 app/oauth.py）：
+鉴权与 MCP 的 token **彻底分开**（PR #6 评审 P1）：持有 EMBER_OAUTH_ACCESS_TOKEN
+的一方（含正常 OAuth 后的 claude.ai 后端）只该有 MCP 的权限，不该开得了审核台
+——审核台是"轩本人质检"的门，尤其撤回动作能删正式记忆。
   - 浏览器：GET /review 登录页输 EMBER_OAUTH_PASSWORD → 下发签名 cookie（30 天，
-    HMAC 密钥 = EMBER_OAUTH_ACCESS_TOKEN，重启不失效；SameSite=Lax 挡跨站 POST）
-  - 脚本 / 提取会话：API 直接带 Bearer EMBER_OAUTH_ACCESS_TOKEN（与 MCP 相同）
+    HMAC 密钥 = EMBER_REVIEW_TOKEN（缺省退回口令），重启不失效；SameSite=Lax 挡跨站 POST）
+  - 脚本 / 提取会话：API 带 Bearer EMBER_REVIEW_TOKEN（openssl rand -hex 32，
+    与 MCP 的 token 不是同一个；未设置该变量则 API 只认 cookie）
   - 门禁关闭（本地开发）= 免登录，与 MCP 行为一致
 登录口令连错 5 次锁 60 秒（单用户，进程内计数即可）。
 """
 
 import hashlib
 import hmac
+import os
 import time
 
 from fastapi import APIRouter, Request
@@ -30,9 +34,18 @@ _login_guard = {"fails": 0, "locked_until": 0.0}
 # ---------- cookie 签发与校验 ----------
 
 
+def _review_token() -> str:
+    return os.environ.get("EMBER_REVIEW_TOKEN", "")
+
+
+def _secret() -> str:
+    # cookie 签名密钥不用 MCP 的 access token——否则持有它的一方能伪造登录态，
+    # P1 就从旁门绕回来了。口令兜底：它只有轩知道。
+    return _review_token() or oauth._password()
+
+
 def _sign(payload: str) -> str:
-    key = oauth._access_token().encode()
-    return hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.new(_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
 def _make_cookie() -> str:
@@ -47,10 +60,17 @@ def _valid_cookie(value: str) -> bool:
     return hmac.compare_digest(sig.encode(), _sign(expires).encode())
 
 
+def _valid_review_bearer(authorization: str | None) -> bool:
+    token = _review_token()
+    if not token or not authorization or not authorization.lower().startswith("bearer "):
+        return False
+    return hmac.compare_digest(authorization[7:].strip().encode(), token.encode())
+
+
 def _authed(request: Request) -> bool:
     if not oauth.oauth_enabled():
         return True  # 本地开发
-    if oauth.valid_bearer(request.headers.get("authorization")):
+    if _valid_review_bearer(request.headers.get("authorization")):
         return True
     return _valid_cookie(request.cookies.get(COOKIE_NAME, ""))
 
@@ -91,7 +111,8 @@ CONSOLE_PAGE = """<!doctype html>
   body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: #eee; padding-bottom: 4rem; }
   header { position: sticky; top: 0; background: var(--bg); padding: .8rem 1rem .5rem; border-bottom: 1px solid var(--line); z-index: 2; }
   h1 { font-size: 1.1rem; margin: 0; } h1::before { content: "🔥 "; }
-  #stats { color: var(--dim); font-size: .85rem; margin-top: .25rem; }
+  #statsRow { display: flex; justify-content: space-between; align-items: center; gap: .5rem; margin-top: .25rem; }
+  #stats { color: var(--dim); font-size: .85rem; }
   #batches { display: flex; gap: .4rem; overflow-x: auto; padding: .5rem 0 .2rem; }
   .chip { flex: none; border: 1px solid var(--line); border-radius: 999px; padding: .25rem .7rem; font-size: .8rem; color: var(--dim); background: none; }
   .chip.on { border-color: var(--accent); color: var(--accent); }
@@ -100,6 +121,8 @@ CONSOLE_PAGE = """<!doctype html>
   .meta { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .75rem; color: var(--dim); margin-bottom: .5rem; align-items: center; }
   .badge { border: 1px solid var(--line); border-radius: 6px; padding: .05rem .4rem; }
   .badge.anchor { border-color: var(--accent); color: var(--accent); }
+  .badge.approved { border-color: var(--ok); color: var(--ok); }
+  .badge.rejected { border-color: #8a4a42; color: #ff8a80; }
   .content { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; }
   .quote { margin-top: .6rem; padding: .5rem .7rem; border-left: 3px solid var(--line); color: var(--dim); font-size: .82rem; white-space: pre-wrap; }
   .quote .ref { display: block; margin-top: .3rem; opacity: .75; word-break: break-all; }
@@ -117,7 +140,10 @@ CONSOLE_PAGE = """<!doctype html>
 </style></head><body>
 <header>
   <h1>ember 审核台</h1>
-  <div id="stats">加载中…</div>
+  <div id="statsRow">
+    <div id="stats">加载中…</div>
+    <button id="modeBtn" class="chip">↩ 已审核</button>
+  </div>
   <div id="batches"></div>
 </header>
 <main id="list"></main>
@@ -126,6 +152,7 @@ CONSOLE_PAGE = """<!doctype html>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 let currentBatch = "";
+let mode = "pending";  // pending = 待审核 / reviewed = 反悔区
 
 function toast(msg) {
   const t = $("#toast");
@@ -143,6 +170,7 @@ async function api(path, options) {
 }
 
 async function load() {
+  if (mode === "reviewed") return loadReviewed();
   const q = currentBatch ? "&batch=" + encodeURIComponent(currentBatch) : "";
   const data = await api("/review/api/drafts?status=pending" + q);
   renderStats(data.stats);
@@ -150,6 +178,44 @@ async function load() {
   const list = $("#list");
   list.replaceChildren(...data.items.map(card));
   $("#empty").hidden = data.items.length > 0;
+}
+
+async function loadReviewed() {
+  const [ok, no] = await Promise.all([
+    api("/review/api/drafts?status=approved"),
+    api("/review/api/drafts?status=rejected"),
+  ]);
+  $("#stats").textContent = "反悔区：已通过 " + ok.stats.total + " · 已删 " + no.stats.total;
+  $("#batches").replaceChildren();
+  const items = [...ok.items, ...no.items].sort((a, b) => b.id - a.id);
+  $("#list").replaceChildren(...items.map(reviewedCard));
+  $("#empty").hidden = items.length > 0;
+}
+
+$("#modeBtn").onclick = () => {
+  mode = mode === "pending" ? "reviewed" : "pending";
+  $("#modeBtn").textContent = mode === "pending" ? "↩ 已审核" : "← 回待审核";
+  load();
+};
+
+function reviewedCard(d) {
+  const el = document.createElement("div");
+  el.className = "card";
+  const meta = metaEl(d);
+  const st = span(d.status === "approved" ? "✓ 已入库 → 记忆 #" + d.memory_id : "✕ 已删");
+  st.className = "badge " + d.status;
+  meta.prepend(st);
+  el.append(meta, contentEl(d));
+  const box = document.createElement("div");
+  box.className = "actions";
+  box.append(btn("↩ 撤回到待审核", "edit", async () => {
+    await api("/review/api/drafts/" + d.id + "/unreview", { method: "POST" });
+    el.remove();
+    toast(d.status === "approved" ? "已撤回，记忆已删" : "已捞回待审核");
+    load();
+  }));
+  el.append(box);
+  return el;
 }
 
 function renderStats(stats) {
@@ -282,7 +348,7 @@ function openEditor(d, el) {
   row1.append(add("date", input("date", d.date)), add("tier", tier));
   const row2 = document.createElement("div"); row2.className = "row2";
   row2.append(add("topic", input("topic", d.topic)), add("space", input("space", d.space)));
-  form.append(add("content", content), row1, row2, add("tags", input("tags", d.tags)));
+  form.append(add("content", content), row1, row2, add("tags（逗号分隔，中文逗号也行）", input("tags", d.tags)));
   const actions = document.createElement("div");
   actions.className = "actions";
   const values = () => Object.fromEntries(Object.entries(fields).map(([k, i]) => [k, i.value]));
@@ -365,19 +431,10 @@ async def api_save_drafts(request: Request):
     items = body.get("drafts") if isinstance(body, dict) and "drafts" in body else [body]
     if not isinstance(items, list) or not items:
         return JSONResponse({"error": "invalid_request", "error_description": "drafts 要是非空列表"}, status_code=400)
-    ids = []
     try:
-        for item in items:
-            if not isinstance(item, dict):
-                raise ValueError("每条草稿要是 JSON 对象")
-            allowed = {k: v for k, v in item.items() if k in drafts.EDITABLE_FIELDS}
-            ids.append(drafts.save_draft(**allowed)["id"])
-    except (ValueError, TypeError) as e:
-        # 整批原子性不重要（每条独立），但报错要指出坏在第几条
-        return JSONResponse(
-            {"error": "invalid_draft", "error_description": f"第 {len(ids) + 1} 条有问题：{e}", "saved_ids": ids},
-            status_code=400,
-        )
+        ids = drafts.save_drafts(items)  # 整批原子：坏一条整批不写，脚本可放心重试
+    except ValueError as e:
+        return JSONResponse({"error": "invalid_draft", "error_description": str(e)}, status_code=400)
     return {"saved": len(ids), "ids": ids}
 
 
@@ -415,4 +472,18 @@ def api_reject_draft(draft_id: int, request: Request):
     result = drafts.reject_draft(draft_id)
     if result is None:
         return JSONResponse({"error": "not_found", "error_description": "草稿不存在或已审核过"}, status_code=404)
+    return result
+
+
+@router.post("/review/api/drafts/{draft_id}/unreview")
+def api_unreview_draft(draft_id: int, request: Request):
+    """反悔：已通过/已拒绝的草稿撤回 pending；通过的连生成的记忆一起删。"""
+    if not _authed(request):
+        return _unauthorized()
+    try:
+        result = drafts.unreview_draft(draft_id)
+    except ValueError as e:
+        return JSONResponse({"error": "conflict", "error_description": str(e)}, status_code=409)
+    if result is None:
+        return JSONResponse({"error": "not_found", "error_description": "草稿不存在或还在待审核"}, status_code=404)
     return result
