@@ -30,3 +30,19 @@ def health():
         "status": "ok",
         "time": datetime.now(timezone.utc).isoformat(),
     }
+
+
+class _MCPPathFix:
+    """Rewrite /<MCP_PATH> → /<MCP_PATH>/ in-process so Claude doesn't get 307."""
+
+    def __init__(self, inner, prefix: str) -> None:
+        self.inner = inner
+        self.prefix = f"/{prefix}"
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http" and scope.get("path") == self.prefix:
+            scope = {**scope, "path": self.prefix + "/"}
+        await self.inner(scope, receive, send)
+
+
+app = _MCPPathFix(app, MCP_PATH)
