@@ -118,6 +118,40 @@ def test_unreview_approved_deletes_memory_and_restores_pending():
     assert restored["memory_id"] is None and restored["reviewed_at"] is None
 
 
+def test_concurrent_double_approve_creates_single_memory():
+    """服务端幂等回归：同一草稿被同时 approve 两次，只准生成 1 条记忆，
+    且 unreview 能把那 1 条删干净（无孤儿记忆/来源）。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    draft_id = drafts.save_draft(**_draft())["id"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: drafts.approve_draft(draft_id), range(2)))
+    wins = [r for r in results if r is not None]
+    assert len(wins) == 1  # 一个成功，一个拿不到 pending 行
+    assert memories.get_status()["memories"] == 1
+    assert drafts.get_draft(draft_id)["memory_id"] == wins[0]["memory_id"]
+
+    assert drafts.unreview_draft(draft_id)["status"] == "pending"
+    status = memories.get_status()
+    assert status["memories"] == 0 and status["sources"] == 0  # 删得干干净净
+
+
+def test_approve_vs_reject_race_only_one_wins():
+    """approve 和 reject 赛跑：赢家只有一个，不会出现'已拒绝却留下记忆'。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    draft_id = drafts.save_draft(**_draft())["id"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        approve_result, reject_result = pool.map(
+            lambda fn: fn(draft_id), [drafts.approve_draft, drafts.reject_draft]
+        )
+    assert (approve_result is None) != (reject_result is None)  # 恰好一个赢
+    final = drafts.get_draft(draft_id)["status"]
+    expected_memories = 1 if approve_result else 0
+    assert final == ("approved" if approve_result else "rejected")
+    assert memories.get_status()["memories"] == expected_memories
+
+
 def test_unreview_rejected_and_pending_guard():
     draft_id = drafts.save_draft(**_draft())["id"]
     assert drafts.unreview_draft(draft_id) is None  # pending 没什么可撤

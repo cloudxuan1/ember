@@ -139,48 +139,69 @@ def update_draft(draft_id: int, edits: dict) -> dict | None:
 
 
 def approve_draft(draft_id: int, edits: dict | None = None) -> dict | None:
-    """通过：（可带最后修改）写入 memories + memory_sources，草稿标记 approved。"""
+    """通过：（可带最后修改）写入 memories + memory_sources，草稿标记 approved。
+
+    服务端幂等（不靠前端禁按钮）："拿写锁 → 重读 pending → 写记忆 → 标记 approved"
+    全在同一个写事务里。并发/重复 approve 时后来者重读拿不到 pending 行，返回 None。
+    """
+    fields = {}
     if edits:
-        if update_draft(draft_id, edits) is None:
+        fields = {k: v for k, v in edits.items() if k in EDITABLE_FIELDS}
+        if "tags" in fields:
+            fields["tags"] = _normalize_tags(str(fields["tags"] or ""))
+    conn = get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")  # 先拿写锁，锁内重读才作数
+        row = conn.execute(
+            "SELECT * FROM memory_drafts WHERE id = ? AND status = 'pending'", (draft_id,)
+        ).fetchone()
+        if row is None:
+            conn.rollback()
             return None
-    draft = get_draft(draft_id)
-    if draft is None or draft["status"] != "pending":
-        return None
-    saved = memories.save_memory(
-        date=draft["date"],
-        content=draft["content"],
-        tags=draft["tags"],
-        tier=draft["tier"],
-        topic=draft["topic"],
-        space=draft["space"],
-        start_date=draft["start_date"],
-        end_date=draft["end_date"],
-        source_ref=draft["source_ref"],
-        quote=draft["quote"],
-    )
-    with get_conn() as conn:
-        conn.execute(
-            """UPDATE memory_drafts
-               SET status = 'approved', memory_id = ?, reviewed_at = datetime('now','+8 hours')
-               WHERE id = ?""",
-            (saved["id"], draft_id),
+        draft = {**dict(row), **fields}
+        _validate(draft["date"], draft["content"], draft["tier"])
+        saved = memories.save_memory(
+            date=draft["date"],
+            content=draft["content"],
+            tags=draft["tags"],
+            tier=draft["tier"],
+            topic=draft["topic"],
+            space=draft["space"],
+            start_date=draft["start_date"],
+            end_date=draft["end_date"],
+            source_ref=draft["source_ref"],
+            quote=draft["quote"],
+            conn=conn,  # 借本事务写，不另开连接
         )
+        sets = "".join(f"{k} = ?, " for k in fields)
+        conn.execute(
+            f"""UPDATE memory_drafts
+               SET {sets}status = 'approved', memory_id = ?, reviewed_at = datetime('now','+8 hours')
+               WHERE id = ?""",
+            [*fields.values(), saved["id"], draft_id],
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     return {"draft_id": draft_id, "memory_id": saved["id"], "status": "approved"}
 
 
 def reject_draft(draft_id: int) -> dict | None:
-    """删（拒绝）：不进 memories，草稿行保留 rejected 状态作审计。"""
-    draft = get_draft(draft_id)
-    if draft is None or draft["status"] != "pending":
-        return None
+    """删（拒绝）：不进 memories，草稿行保留 rejected 状态作审计。
+
+    单条带状态守卫的 UPDATE，天然原子：跟 approve 赛跑输了就改不到行，返回 None。
+    """
     with get_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             """UPDATE memory_drafts
                SET status = 'rejected', reviewed_at = datetime('now','+8 hours')
-               WHERE id = ?""",
+               WHERE id = ? AND status = 'pending'""",
             (draft_id,),
         )
-    return {"draft_id": draft_id, "status": "rejected"}
+    return {"draft_id": draft_id, "status": "rejected"} if cur.rowcount else None
 
 
 def unreview_draft(draft_id: int) -> dict | None:
@@ -189,23 +210,34 @@ def unreview_draft(draft_id: int) -> dict | None:
     approved 的同时删掉它生成的正式记忆（含来源和边）；
     若该记忆已被别的记忆 superseded_by 引用，拒绝撤回，先解引用。
     """
-    draft = get_draft(draft_id)
-    if draft is None or draft["status"] == "pending":
-        return None
+    conn = get_conn()
     try:
-        with get_conn() as conn:
-            # 先解绑草稿自己的 memory_id 外键，再删记忆（同一事务，失败一起回滚）
-            conn.execute(
-                """UPDATE memory_drafts
-                   SET status = 'pending', memory_id = NULL, reviewed_at = NULL
-                   WHERE id = ?""",
-                (draft_id,),
-            )
-            if draft["status"] == "approved" and draft["memory_id"]:
-                mid = draft["memory_id"]
-                conn.execute("DELETE FROM memory_sources WHERE memory_id = ?", (mid,))
-                conn.execute("DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?", (mid, mid))
-                conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
+        conn.execute("BEGIN IMMEDIATE")  # 与 approve 同款：锁内重读，防赛跑
+        row = conn.execute(
+            "SELECT * FROM memory_drafts WHERE id = ? AND status != 'pending'", (draft_id,)
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        # 先解绑草稿自己的 memory_id 外键，再删记忆（同一事务，失败一起回滚）
+        conn.execute(
+            """UPDATE memory_drafts
+               SET status = 'pending', memory_id = NULL, reviewed_at = NULL
+               WHERE id = ?""",
+            (draft_id,),
+        )
+        if row["status"] == "approved" and row["memory_id"]:
+            mid = row["memory_id"]
+            conn.execute("DELETE FROM memory_sources WHERE memory_id = ?", (mid,))
+            conn.execute("DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?", (mid, mid))
+            conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
+        conn.commit()
     except sqlite3.IntegrityError:
+        conn.rollback()
         raise ValueError("这条记忆已被其他记忆引用（superseded_by），先解开引用再撤回")
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     return {"draft_id": draft_id, "status": "pending"}
