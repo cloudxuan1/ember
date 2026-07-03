@@ -74,6 +74,18 @@ def valid_bearer(authorization: str | None) -> bool:
     return hmac.compare_digest(authorization[7:].strip().encode(), _access_token().encode())
 
 
+def _gone_when_disabled() -> JSONResponse | None:
+    """门禁关闭时整套 OAuth 端点 404——不挂招牌。
+
+    claude.ai 只要发现 /.well-known/oauth-* 返回 200 就会坚持走 OAuth 路径，
+    撞上 anthropics/claude-ai-mcp#519（token 后客户端中止）。旧系统 memory
+    未配置 OAuth 时这些路径 404，claude.ai 才肯走无鉴权直连。
+    """
+    if not oauth_enabled():
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return None
+
+
 def unauthorized_response_headers() -> dict[str, str]:
     return {
         "WWW-Authenticate": (
@@ -116,16 +128,18 @@ def _authorization_server_metadata() -> dict:
 
 @router.get("/.well-known/oauth-authorization-server{_suffix:path}")
 def oauth_authorization_server(_suffix: str = ""):
-    return _authorization_server_metadata()
+    return _gone_when_disabled() or _authorization_server_metadata()
 
 
 @router.get("/.well-known/openid-configuration{_suffix:path}")
 def openid_configuration(_suffix: str = ""):
-    return _authorization_server_metadata()
+    return _gone_when_disabled() or _authorization_server_metadata()
 
 
 @router.get("/.well-known/oauth-protected-resource{_suffix:path}")
 def oauth_protected_resource(_suffix: str = ""):
+    if (gone := _gone_when_disabled()) is not None:
+        return gone
     base = _base_url()
     mcp_path = os.environ.get("MCP_PATH", "mcp").strip("/")
     return {
@@ -140,6 +154,8 @@ def oauth_protected_resource(_suffix: str = ""):
 
 @router.post("/oauth/register", status_code=201)
 async def register(request: Request):
+    if (gone := _gone_when_disabled()) is not None:
+        return gone
     body = await request.json()
     redirect_uris = body.get("redirect_uris") or []
     if not isinstance(redirect_uris, list) or not all(isinstance(u, str) for u in redirect_uris):
@@ -213,6 +229,8 @@ def _validate_authorize(params: dict[str, str]) -> str | None:
 
 @router.get("/oauth/authorize")
 def authorize_form(request: Request):
+    if (gone := _gone_when_disabled()) is not None:
+        return gone
     params = _authorize_params(dict(request.query_params))
     problem = _validate_authorize(params)
     if problem:
@@ -222,6 +240,8 @@ def authorize_form(request: Request):
 
 @router.post("/oauth/authorize")
 async def authorize_submit(request: Request):
+    if (gone := _gone_when_disabled()) is not None:
+        return gone
     form = dict((await request.form()).items())
     params = _authorize_params(form)
     problem = _validate_authorize(params)
@@ -262,6 +282,8 @@ def _token_error(error: str, description: str, status: int = 400) -> JSONRespons
 
 @router.post("/oauth/token")
 async def token(request: Request):
+    if (gone := _gone_when_disabled()) is not None:
+        return gone
     form = dict((await request.form()).items())
     grant_type = form.get("grant_type")
 

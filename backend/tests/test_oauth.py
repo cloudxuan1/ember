@@ -57,13 +57,21 @@ def _full_flow_code(c: TestClient) -> tuple[str, str]:
     return client_id, code
 
 
-def test_discovery_endpoints(client):
-    meta = client.get("/.well-known/oauth-authorization-server").json()
+def test_discovery_endpoints(gated):
+    meta = gated.get("/.well-known/oauth-authorization-server").json()
     assert meta["registration_endpoint"].endswith("/oauth/register")
     assert "S256" in meta["code_challenge_methods_supported"]
     # claude.ai 会带路径后缀探测
-    assert client.get("/.well-known/oauth-protected-resource/mcp-xyz").status_code == 200
-    assert client.get("/.well-known/openid-configuration").status_code == 200
+    assert gated.get("/.well-known/oauth-protected-resource/mcp-xyz").status_code == 200
+    assert gated.get("/.well-known/openid-configuration").status_code == 200
+
+
+def test_discovery_404_when_gate_disabled(client):
+    # 门禁关闭 = 不挂 OAuth 招牌，否则 claude.ai 会坚持走 OAuth 撞 #519
+    assert client.get("/.well-known/oauth-authorization-server").status_code == 404
+    assert client.get("/.well-known/oauth-protected-resource").status_code == 404
+    assert client.post("/oauth/register", json={"redirect_uris": ["https://claude.ai/cb"]}).status_code == 404
+    assert client.post("/oauth/token", data={"grant_type": "refresh_token"}).status_code == 404
 
 
 def test_authorize_rejects_wrong_password_and_bad_client(gated):
