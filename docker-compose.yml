@@ -6,6 +6,9 @@ services:
     # 只绑本机回环，公网访问一律走 Cloudflare Tunnel，端口不裸露
     ports:
       - "127.0.0.1:8300:8000"
+    environment:
+      # MCP 挂载路径 = 访问密钥，公网必须在 .env 里设成随机长串（见 .env.example）
+      - MCP_PATH=${MCP_PATH:-mcp}
     volumes:
       # V2 起 SQLite 数据库放这里（data/ 已 gitignore，永不入库）
       - ./data:/app/data
