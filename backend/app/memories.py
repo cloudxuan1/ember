@@ -29,21 +29,32 @@ def save_memory(
     end_date: str | None = None,
     source_ref: str | None = None,
     quote: str | None = None,
+    conn=None,
 ) -> dict:
+    """conn 给定时借用调用方的连接和事务（不提交，commit 归调用方管）——
+    审核台 approve 用它把写记忆并进自己的写事务。"""
     if tier not in ("anchor", "normal", "process"):
         raise ValueError(f"tier 必须是 anchor/normal/process，收到: {tier}")
-    with get_conn() as conn:
-        cur = conn.execute(
+
+    def _write(c) -> int:
+        cur = c.execute(
             """INSERT INTO memories (date, content, tags, tier, topic, space, start_date, end_date)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (date, content, tags, tier, topic, space, start_date, end_date),
         )
         memory_id = cur.lastrowid
         if source_ref or quote:
-            conn.execute(
+            c.execute(
                 "INSERT INTO memory_sources (memory_id, source_ref, quote) VALUES (?, ?, ?)",
                 (memory_id, source_ref, quote),
             )
+        return memory_id
+
+    if conn is not None:
+        memory_id = _write(conn)
+    else:
+        with get_conn() as c:
+            memory_id = _write(c)
     return {"id": memory_id, "saved": True}
 
 
