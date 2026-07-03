@@ -35,6 +35,10 @@ docker compose up -d --build
 
 VPS 部署与 Cloudflare Tunnel 配置见 [docs/项目详情.md](docs/项目详情.md) 的「部署和运维」。
 
+## 客户端接入
+
+MCP 端点带 OAuth 门禁（随机路径 + 授权页口令 + Bearer token 三层）。Claude Code / claude.ai / ChatGPT 各自的接入方式见 [docs/项目详情.md](docs/项目详情.md) 的「MCP」一节。
+
 ## 文档
 
 | 文件 | 用途 |
