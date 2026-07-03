@@ -109,6 +109,13 @@ def test_mcp_open_when_gate_disabled(client):
     assert resp.status_code == 200
 
 
+def test_mcp_get_returns_405_not_406(client):
+    # stateless 模式不提供 SSE 推送流，规范允许 405；406 会被客户端当端点坏了
+    resp = client.get("/mcp/", headers={"Accept": "text/event-stream"})
+    assert resp.status_code == 405
+    assert resp.headers["allow"] == "POST"
+
+
 def test_mcp_requires_bearer_when_gated(gated):
     resp = gated.post("/mcp/", json=INIT, headers=MCP_HEADERS)
     assert resp.status_code == 401
