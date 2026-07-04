@@ -127,15 +127,20 @@ CONSOLE_PAGE = """<!doctype html>
   .content { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; }
   .quote { margin-top: .6rem; padding: .5rem .7rem; border-left: 3px solid var(--line); color: var(--dim); font-size: .82rem; white-space: pre-wrap; }
   .quote .ref { display: block; margin-top: .3rem; opacity: .75; word-break: break-all; }
-  .other { border: 1px solid var(--line); border-radius: 8px; padding: .5rem .7rem; font-size: .85rem; color: var(--dim); line-height: 1.5; }
-  .other.off { opacity: .45; }
-  .other .odate { color: var(--accent); font-size: .75rem; margin-right: .4rem; }
-  .other .warn { display: block; color: #ff8a80; font-size: .75rem; }
-  .connector { display: flex; justify-content: center; align-items: center; gap: .3rem; margin: .3rem 0; }
-  .connector .word { border: 1px solid var(--line); background: var(--bg); color: var(--accent); border-radius: 999px; padding: .2rem .8rem; font-size: .8rem; }
-  .connector .warn { color: #ff8a80; }
-  .connmenu { display: grid; margin: .2rem auto .4rem; background: #333; border-radius: 8px; padding: .3rem; width: max-content; }
-  .connmenu button { background: none; border: 0; color: #eee; padding: .5rem 1rem; text-align: left; font-size: .88rem; border-radius: 6px; }
+  .membox { border: 1px solid var(--line); border-radius: 10px; padding: .55rem .75rem; margin-top: .5rem; }
+  .membox .boxid { display: flex; align-items: baseline; gap: .5rem; font-size: 1.05rem; font-weight: 700; color: var(--accent); }
+  .membox .boxid .odate { font-size: .72rem; font-weight: 400; color: var(--dim); }
+  .membox .boxtext { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; margin-top: .3rem; }
+  .membox .warn { display: block; color: #ff8a80; font-size: .75rem; margin-top: .3rem; }
+  .linkframe { border: 1px solid var(--accent); border-radius: 12px; padding: .15rem .6rem .6rem; margin-top: .7rem; }
+  .linkframe.off { opacity: .5; border-style: dashed; }
+  .linkframe .membox { background: var(--bg); }
+  .linkframe .membox .boxtext { font-size: .85rem; color: var(--dim); }
+  .verb { position: relative; display: flex; align-items: center; gap: .4rem; margin-top: .5rem; padding-left: .2rem; }
+  .verb .word { background: none; border: 0; padding: .1rem .2rem; font-size: .95rem; font-weight: 600; color: var(--accent); text-decoration: underline dotted; }
+  .verb .warn { color: #ff8a80; }
+  .connmenu { position: absolute; left: .2rem; top: 100%; z-index: 10; display: grid; background: #333; border-radius: 8px; padding: .3rem; box-shadow: 0 4px 16px rgba(0,0,0,.55); }
+  .connmenu button { background: none; border: 0; color: #eee; padding: .55rem 1.1rem; text-align: left; font-size: .9rem; border-radius: 6px; }
   .connmenu button:active { background: #4a4a4a; }
   .actions { display: flex; gap: .5rem; margin-top: .8rem; }
   .actions button { flex: 1; padding: .55rem 0; border: 0; border-radius: 8px; font-size: .95rem; color: #fff; }
@@ -216,7 +221,8 @@ function reviewedCard(d) {
   const st = span(d.status === "approved" ? "✓ 已入库 → 记忆 #" + d.memory_id : "✕ 已删");
   st.className = "badge " + d.status;
   meta.prepend(st);
-  el.append(meta, graphEl(d, null));
+  el.append(meta, mainBox(d));
+  (d.links || []).forEach((l, i) => el.append(linkFrame(d, null, l, i)));
   const box = document.createElement("div");
   box.className = "actions";
   box.append(btn("↩ 撤回到待审核", "edit", async () => {
@@ -259,49 +265,49 @@ function chipEl(text, on) {
 function card(d) {
   const el = document.createElement("div");
   el.className = "card";
-  el.append(metaEl(d), graphEl(d, el), actionsEl(d, el));
+  el.append(metaEl(d), mainBox(d));
+  if (d.quote || d.source_ref) el.append(quoteEl(d));
+  (d.links || []).forEach((l, i) => el.append(linkFrame(d, el, l, i)));
+  el.append(actionsEl(d, el));
   return el;
 }
 
-// 三明治排版（轩的定稿）：位置即因果——早的在上、箭头恒向下，
-// 语言里永远只有"导致/覆盖"一个写法，标反了不改词、换座位（⇅ 交换 = 翻 dir）。
-// 相关/矛盾/同一件事不分方向；"不关联"是下拉的一员（躺平可随时换回）。
+// 句子框排版（轩的定稿）：连线单独框起来，框里主语-动词-宾语从上往下读，
+// 上面的是主语——"草稿#1 导致 草稿#2"、"草稿#3 覆盖 记忆#6"，纯文字无符号。
+// 序号是大门牌，跟本条的框对上号。导入菜单只留 导致/覆盖/不关联（其余关系年轮阶段再回来）。
 const REL_WORDS = {
-  led_to: "↓ 导致", supersedes: "↓ 覆盖，上面的作废",
-  related: "～ 相关", contradicts: "≠ 矛盾（都留）", same_as: "＝ 同一件事",
-  none: "✂ 不关联",
+  led_to: "导致", supersedes: "覆盖", none: "不关联",
+  related: "相关", contradicts: "矛盾", same_as: "同一件事",  // 旧数据展示兜底
 };
-const REL_MENU = [
-  ["led_to", "↓ 导致"], ["supersedes", "↓ 覆盖（旧的作废）"], ["related", "～ 相关"],
-  ["contradicts", "≠ 矛盾（两条都留）"], ["same_as", "＝ 同一件事"], ["none", "✂ 不关联（单独入库）"],
-];
-const isUpper = (l) => (l.relation === "led_to" && l.dir === "in") || (l.relation === "supersedes" && l.dir === "out");
+const REL_MENU = [["led_to", "导致"], ["supersedes", "覆盖"], ["none", "不关联（单独入库）"]];
 const isDirectional = (l) => l.relation === "led_to" || l.relation === "supersedes";
 
-function graphEl(d, el) {
-  // 上方：因/旧版；中间：本条；下方：果/新版/对称关系/不关联。el 给 null = 只读（反悔区）
-  const wrap = document.createElement("div");
-  const links = d.links || [];
-  links.forEach((l, i) => {
-    if (l.relation !== "none" && isUpper(l)) wrap.append(otherEl(d, l), connectorEl(d, el, l, i));
-  });
-  wrap.append(contentEl(d));
-  if (d.quote || d.source_ref) wrap.append(quoteEl(d));
-  links.forEach((l, i) => {
-    if (l.relation === "none" || !isUpper(l)) wrap.append(connectorEl(d, el, l, i), otherEl(d, l));
-  });
-  return wrap;
+function memBox(idLabel, date, text) {
+  const box = document.createElement("div");
+  box.className = "membox";
+  const head = document.createElement("div");
+  head.className = "boxid";
+  head.append(span(idLabel));
+  if (date) { const dt = span(date); dt.className = "odate"; head.append(dt); }
+  box.append(head);
+  if (text) {
+    const body = document.createElement("div");
+    body.className = "boxtext";
+    body.textContent = text;
+    box.append(body);
+  }
+  return box;
 }
 
-function otherEl(d, link) {
+function mainBox(d) {
+  return memBox("草稿#" + d.id, "", d.content);
+}
+
+function targetBox(link) {
   const t = link.target || {};
-  const box = document.createElement("div");
-  box.className = "other" + (link.relation === "none" ? " off" : "");
   const label = (t.kind === "draft" ? "草稿#" : "记忆#") + t.id;
-  if (t.missing) { box.textContent = label + "（已不存在）"; return box; }
-  const date = span(t.date || "");
-  date.className = "odate";
-  box.append(date, span(t.preview + "（" + label + "）"));
+  if (t.missing) return memBox(label, "", "（已不存在）");
+  const box = memBox(label, t.date || "", t.preview);
   if (t.kind === "draft" && t.status === "rejected") {
     const w = span("⚠ 对方已被拒，入库时这条线自动放弃");
     w.className = "warn";
@@ -311,25 +317,34 @@ function otherEl(d, link) {
 }
 
 function dateWarn(d, link) {
-  // 位置即因果，所以"打架"只有一种样子：上面的日期比下面晚
-  if (!isDirectional(link) || !link.target || !link.target.date || !d.date) return false;
-  const upper = isUpper(link) ? link.target.date : d.date;
-  const lower = isUpper(link) ? d.date : link.target.date;
-  return upper > lower;
+  // 主语-动词-宾语定死后，"打架"= 日期不支持这句话：导致的主语该更早，覆盖的主语该更新
+  const t = link.target || {};
+  if (!t.date || !d.date) return false;
+  const subjDate = link.dir === "in" ? t.date : d.date;
+  const objDate = link.dir === "in" ? d.date : t.date;
+  if (link.relation === "led_to") return subjDate > objDate;
+  if (link.relation === "supersedes") return subjDate < objDate;
+  return false;
 }
 
-function connectorEl(d, el, link, idx) {
-  const row = document.createElement("div");
-  row.className = "connector";
-  const word = btn(REL_WORDS[link.relation] + (el ? " ▾" : ""), "word", () => el && toggleMenu(d, el, link, idx, row));
-  row.append(word);
+function linkFrame(d, el, link, idx) {
+  const frame = document.createElement("div");
+  frame.className = "linkframe" + (link.relation === "none" ? " off" : "");
+  const selfBox = memBox("草稿#" + d.id + "（本条）", "", "");  // 全文就在上面，只亮门牌
+  const verb = document.createElement("div");
+  verb.className = "verb";
+  verb.append(btn(REL_WORDS[link.relation] + (el ? " ▾" : ""), "word", () => el && toggleMenu(d, el, link, idx, verb)));
   if (dateWarn(d, link)) {
     const w = span("⚠");
     w.className = "warn";
-    w.title = "上面的日期比下面晚，检查因果方向或日期";
-    row.append(w);
+    w.title = "日期跟这句话对不上（导致的主语该更早，覆盖的主语该更新），检查关系或日期";
+    verb.append(w);
   }
-  return row;
+  // dir=in 目标是主语（它导致/覆盖本条），dir=out 本条是主语；不分方向的目标放前面
+  const targetIsSubject = isDirectional(link) ? link.dir === "in" : true;
+  if (targetIsSubject) frame.append(targetBox(link), verb, selfBox);
+  else frame.append(selfBox, verb, targetBox(link));
+  return frame;
 }
 
 function toggleMenu(d, el, link, idx, anchor) {
@@ -343,10 +358,10 @@ function toggleMenu(d, el, link, idx, anchor) {
       value === "none" ? "已设为不关联（会单独入库，随时可换回）" : "已改为「" + label + "」")));
   }
   if (isDirectional(link)) {
-    menu.append(btn("⇅ 上下交换", "", () => patchLink(d, el, idx, { dir: link.dir === "out" ? "in" : "out" }, "换好座位了")));
+    menu.append(btn("⇅ 上下交换", "", () => patchLink(d, el, idx, { dir: link.dir === "out" ? "in" : "out" }, "换好位置了")));
   }
   menu.append(btn("收起", "", () => menu.remove()));
-  anchor.after(menu);
+  anchor.append(menu);  // 浮层：挂在动词行上，absolute 浮出不挤内容
 }
 
 async function patchLink(d, el, idx, change, msg) {
@@ -363,9 +378,10 @@ async function patchLink(d, el, idx, change, msg) {
 const STATUS_LABELS = { upcoming: "还没开始", ongoing: "进行中", ended: "已结束" };
 
 function metaEl(d) {
+  // 序号不在这——它是大门牌，挂在内容框上
   const meta = document.createElement("div");
   meta.className = "meta";
-  const parts = ["#" + d.id, d.date, d.space, d.topic, d.batch].filter(Boolean);
+  const parts = [d.date, d.space, d.topic, d.batch].filter(Boolean);
   for (const p of parts) meta.append(span(p));
   const tier = span(d.tier);
   tier.className = "badge" + (d.tier === "anchor" ? " anchor" : "");
@@ -381,13 +397,6 @@ function metaEl(d) {
 }
 
 function span(text) { const s = document.createElement("span"); s.textContent = text; return s; }
-
-function contentEl(d) {
-  const c = document.createElement("div");
-  c.className = "content";
-  c.textContent = d.content;
-  return c;
-}
 
 function quoteEl(d) {
   const q = document.createElement("div");
