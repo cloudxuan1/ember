@@ -45,7 +45,11 @@ def memory_search(query: str, space: str | None = None, limit: int = 8) -> dict:
 
 @mcp.tool()
 def memory_recall(id: int) -> dict:
-    """按 ID 取一条记忆的完整内容、来源证据（source_ref + 原话片段）和关系边。"""
+    """按 ID 取一条记忆的完整内容、来源证据（source_ref + 原话片段）和关系边。
+
+    边自带对方记忆的一行摘要（不用挨个再查）；区间型记忆带 interval_status
+    （upcoming / ongoing / ended，按今天现算）。
+    """
     memory = memories.get_memory(id)
     if memory is None:
         return {"error": f"记忆 {id} 不存在"}
@@ -60,6 +64,9 @@ def memory_save(
     tier: str = "normal",
     topic: str = "",
     space: str = "personal",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    links: list[dict] | None = None,
 ) -> dict:
     """保存一条新记忆。
 
@@ -67,9 +74,16 @@ def memory_save(
     content 写原话 + 一句上下文。tags 逗号分隔。
     tier：anchor（长期锚点，慎用）/ normal（默认）/ process（过程性，可清理）。
     topic 填主题或实体名，方便日后去重合并。
+    区间型的事（一段状态/计划，非点事件）填 start_date / end_date（可只填一头：
+    只有 start = 进行中的开放区间，只有 end = 截止型），状态读时按今天现算。
+    links 连关系边：存之前你刚 memory_search 过，看到相关旧记忆就顺手连上——
+    [{"id": 目标记忆id, "relation": "led_to/same_as/contradicts/supersedes/related",
+      "dir": "out"(本条→目标，默认) 或 "in"(目标→本条)}]。
+    led_to 方向 = 因 → 果；supersedes 会把被压过的旧记忆标记 superseded_by。
     """
     return memories.save_memory(
-        date=date, content=content, tags=tags, tier=tier, topic=topic, space=space
+        date=date, content=content, tags=tags, tier=tier, topic=topic, space=space,
+        start_date=start_date, end_date=end_date, links=links, links_by="mcp",
     )
 
 

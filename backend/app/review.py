@@ -126,6 +126,9 @@ CONSOLE_PAGE = """<!doctype html>
   .content { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; }
   .quote { margin-top: .6rem; padding: .5rem .7rem; border-left: 3px solid var(--line); color: var(--dim); font-size: .82rem; white-space: pre-wrap; }
   .quote .ref { display: block; margin-top: .3rem; opacity: .75; word-break: break-all; }
+  .links { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
+  .linkchip { display: inline-flex; align-items: center; gap: .35rem; border: 1px dashed var(--accent); border-radius: 999px; padding: .2rem .6rem; font-size: .78rem; color: var(--accent); }
+  .linkchip button { border: 0; background: none; color: var(--dim); font-size: .85rem; padding: 0; line-height: 1; }
   .actions { display: flex; gap: .5rem; margin-top: .8rem; }
   .actions button { flex: 1; padding: .55rem 0; border: 0; border-radius: 8px; font-size: .95rem; color: #fff; }
   .approve { background: #4a7a4a; } .edit { background: #55606e; } .reject { background: #8a4a42; }
@@ -206,6 +209,7 @@ function reviewedCard(d) {
   st.className = "badge " + d.status;
   meta.prepend(st);
   el.append(meta, contentEl(d));
+  if (d.links && d.links.length) el.append(linksEl(d, null));
   const box = document.createElement("div");
   box.className = "actions";
   box.append(btn("↩ 撤回到待审核", "edit", async () => {
@@ -250,8 +254,40 @@ function card(d) {
   el.className = "card";
   el.append(metaEl(d), contentEl(d));
   if (d.quote || d.source_ref) el.append(quoteEl(d));
+  if (d.links && d.links.length) el.append(linksEl(d, el));
   el.append(actionsEl(d, el));
   return el;
+}
+
+const REL_LABELS = { led_to: "导致", same_as: "同一事", contradicts: "矛盾", supersedes: "取代", related: "相关" };
+
+function linksEl(d, el) {
+  // 边建议（V4）：通过时随记忆写入。el 给 null = 只读展示（反悔区）
+  const box = document.createElement("div");
+  box.className = "links";
+  d.links.forEach((link, idx) => {
+    const chip = document.createElement("span");
+    chip.className = "linkchip";
+    const target = link.draft_id ? "草稿#" + link.draft_id : "记忆#" + link.memory_id;
+    const label = REL_LABELS[link.relation] || link.relation;
+    chip.append(span(link.dir === "in" ? target + " —" + label + "→ 此条" : "此条 —" + label + "→ " + target));
+    if (el) {
+      const x = document.createElement("button");
+      x.textContent = "✕";
+      x.onclick = async () => {
+        const updated = await api("/review/api/drafts/" + d.id, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ links: d.links.filter((_, i) => i !== idx) }),
+        });
+        el.replaceWith(card(updated));
+        toast("已移除这条连线");
+      };
+      chip.append(x);
+    }
+    box.append(chip);
+  });
+  return box;
 }
 
 function metaEl(d) {
