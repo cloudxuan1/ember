@@ -74,10 +74,48 @@ def _normalize_links(links) -> str:
     return json.dumps(normalized, ensure_ascii=False)
 
 
-def _present_draft(row_dict: dict) -> dict:
-    """给 API 返回用：links TEXT → 列表（存的时候已规整，读回直接 loads）；
+PREVIEW_LEN = 40  # 连线目标的内容摘要长度——轩审的是内容不是编号
+
+
+def _present_draft(row_dict: dict, conn) -> dict:
+    """给 API 返回用：links TEXT → 列表，并把目标编号翻译成人能审的内容摘要
+    （target 是展示字段，PATCH 回来时 _normalize_links 会剥掉）；
     区间状态服务端现算下发——审核台不在 JS 里重复实现"今天"的时区逻辑。"""
-    row_dict["links"] = json.loads(row_dict["links"]) if row_dict.get("links") else []
+    links = json.loads(row_dict["links"]) if row_dict.get("links") else []
+    for link in links:
+        if link.get("memory_id") is not None:
+            row = conn.execute(
+                "SELECT date, content FROM memories WHERE id = ?", (link["memory_id"],)
+            ).fetchone()
+            link["target"] = (
+                {
+                    "kind": "memory",
+                    "id": link["memory_id"],
+                    "date": row["date"],
+                    "preview": row["content"][:PREVIEW_LEN]
+                    + ("…" if len(row["content"]) > PREVIEW_LEN else ""),
+                }
+                if row
+                else {"kind": "memory", "id": link["memory_id"], "missing": True}
+            )
+        else:
+            row = conn.execute(
+                "SELECT date, content, status FROM memory_drafts WHERE id = ?",
+                (link["draft_id"],),
+            ).fetchone()
+            link["target"] = (
+                {
+                    "kind": "draft",
+                    "id": link["draft_id"],
+                    "date": row["date"],
+                    "preview": row["content"][:PREVIEW_LEN]
+                    + ("…" if len(row["content"]) > PREVIEW_LEN else ""),
+                    "status": row["status"],
+                }
+                if row
+                else {"kind": "draft", "id": link["draft_id"], "missing": True}
+            )
+    row_dict["links"] = links
     row_dict["interval_status"] = memories.interval_status(
         row_dict.get("start_date"), row_dict.get("end_date")
     )
@@ -166,16 +204,17 @@ def list_drafts(status: str = "pending", batch: str | None = None, limit: int = 
         rows = conn.execute(
             f"SELECT * FROM memory_drafts {where} ORDER BY id LIMIT ?", params + [limit]
         ).fetchall()
+        items = [_present_draft(dict(r), conn) for r in rows]
     return {
         "stats": {"total": total, "by_batch": by_batch},
-        "items": [_present_draft(dict(r)) for r in rows],
+        "items": items,
     }
 
 
 def get_draft(draft_id: int) -> dict | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM memory_drafts WHERE id = ?", (draft_id,)).fetchone()
-    return _present_draft(dict(row)) if row else None
+        return _present_draft(dict(row), conn) if row else None
 
 
 def update_draft(draft_id: int, edits: dict) -> dict | None:

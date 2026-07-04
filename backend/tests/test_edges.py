@@ -204,12 +204,50 @@ def test_unreview_unwinds_superseded_by():
 def test_draft_api_roundtrip_returns_parsed_links():
     old = _save()
     d = _draft(links=[{"memory_id": old, "relation": "related", "dir": "out"}])
-    assert drafts.get_draft(d)["links"] == [{"memory_id": old, "relation": "related", "dir": "out"}]
+    got = drafts.get_draft(d)["links"][0]
+    assert (got["memory_id"], got["relation"], got["dir"]) == (old, "related", "out")
     assert drafts.list_drafts()["items"][0]["links"][0]["memory_id"] == old
-    updated = drafts.update_draft(d, {"links": []})  # 审核台 ✕ 移除连线走这条路
+    updated = drafts.update_draft(d, {"links": []})  # 审核台「✂ 不关联」走这条路
     assert updated["links"] == []
     drafts.approve_draft(d)
     assert _edges() == []
+
+
+def test_links_carry_target_preview_for_human_review():
+    """轩审的是内容不是编号：目标的日期+摘要随 links 下发（P2 交互返工）。"""
+    m = _save("已入库的旧记忆，内容足够长" + "长" * 40, date="2026-04-19")
+    a = _draft("事件A：那晚聊到模型下架的恐惧")
+    b = _draft("事件B", links=[
+        {"draft_id": a, "relation": "led_to", "dir": "in"},
+        {"memory_id": m, "relation": "related"},
+    ])
+    links = drafts.get_draft(b)["links"]
+    t_draft = links[0]["target"]
+    assert t_draft["kind"] == "draft" and t_draft["status"] == "pending"
+    assert "事件A" in t_draft["preview"]
+    t_mem = links[1]["target"]
+    assert t_mem["kind"] == "memory" and t_mem["date"] == "2026-04-19"
+    assert len(t_mem["preview"]) <= drafts.PREVIEW_LEN + 1  # 截断 + 省略号
+    # 目标被拒/不存在要标出来，别让轩批准一条连不上的线
+    drafts.reject_draft(a)
+    assert drafts.get_draft(b)["links"][0]["target"]["status"] == "rejected"
+    d2 = _draft(links=[{"memory_id": 9999, "relation": "related"}])
+    assert drafts.get_draft(d2)["links"][0]["target"]["missing"] is True
+
+
+def test_patch_back_enriched_links_strips_display_fields():
+    """前端改关系/调方向时把带 target 的对象原样 PATCH 回来 → 规整时剥掉展示字段。"""
+    m = _save("旧记忆")
+    d = _draft(links=[{"memory_id": m, "relation": "led_to", "dir": "out"}])
+    got = drafts.get_draft(d)
+    got["links"][0]["relation"] = "supersedes"
+    got["links"][0]["dir"] = "in"
+    updated = drafts.update_draft(d, {"links": got["links"]})
+    assert (updated["links"][0]["relation"], updated["links"][0]["dir"]) == ("supersedes", "in")
+    assert "target" in updated["links"][0]  # 返回时重新翻译
+    with get_conn() as conn:  # 库里存的是干净结构，没有 target
+        raw = conn.execute("SELECT links FROM memory_drafts WHERE id = ?", (d,)).fetchone()[0]
+        assert "target" not in raw and "supersedes" in raw
 
 
 # ---------- 草稿的区间字段：审核台不许盲审（PR #7 评审 P1） ----------

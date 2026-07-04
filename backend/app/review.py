@@ -127,9 +127,14 @@ CONSOLE_PAGE = """<!doctype html>
   .content { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; }
   .quote { margin-top: .6rem; padding: .5rem .7rem; border-left: 3px solid var(--line); color: var(--dim); font-size: .82rem; white-space: pre-wrap; }
   .quote .ref { display: block; margin-top: .3rem; opacity: .75; word-break: break-all; }
-  .links { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
-  .linkchip { display: inline-flex; align-items: center; gap: .35rem; border: 1px dashed var(--accent); border-radius: 999px; padding: .2rem .6rem; font-size: .78rem; color: var(--accent); }
-  .linkchip button { border: 0; background: none; color: var(--dim); font-size: .85rem; padding: 0; line-height: 1; }
+  .links { margin-top: .6rem; border-left: 2px solid var(--accent); padding: .1rem 0 .1rem .65rem; display: grid; gap: .55rem; }
+  .linkshead { font-size: .75rem; color: var(--dim); }
+  .linkrow { display: grid; gap: .35rem; }
+  .linkrow .sentence { font-size: .88rem; line-height: 1.5; }
+  .linkrow .target { color: var(--accent); }
+  .linkrow .warn { display: block; color: #ff8a80; font-size: .75rem; }
+  .linkctrl { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .linkctrl select, .linkctrl button { flex: none; padding: .25rem .55rem; font-size: .78rem; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--dim); }
   .actions { display: flex; gap: .5rem; margin-top: .8rem; }
   .actions button { flex: 1; padding: .55rem 0; border: 0; border-radius: 8px; font-size: .95rem; color: #fff; }
   .approve { background: #4a7a4a; } .edit { background: #55606e; } .reject { background: #8a4a42; }
@@ -260,35 +265,82 @@ function card(d) {
   return el;
 }
 
-const REL_LABELS = { led_to: "导致", same_as: "同一事", contradicts: "矛盾", supersedes: "取代", related: "相关" };
+// 连线句子模板：只有"导致/覆盖"分方向，对称关系不给轩看箭头（人话优先）
+const REL_SENTENCES = {
+  led_to:      { out: ["这条导致了 ", ""], in: ["", " 导致了这条"] },
+  supersedes:  { out: ["这条覆盖 ", "（旧的作废）"], in: ["这条被 ", " 覆盖（本条作废）"] },
+  same_as:     { any: ["和 ", " 是同一件事"] },
+  contradicts: { any: ["和 ", " 矛盾"] },
+  related:     { any: ["和 ", " 相关"] },
+};
+const REL_OPTIONS = [["led_to", "导致"], ["supersedes", "覆盖/取代"], ["related", "相关"], ["contradicts", "矛盾"], ["same_as", "同一件事"]];
 
 function linksEl(d, el) {
   // 边建议（V4）：通过时随记忆写入。el 给 null = 只读展示（反悔区）
   const box = document.createElement("div");
   box.className = "links";
-  d.links.forEach((link, idx) => {
-    const chip = document.createElement("span");
-    chip.className = "linkchip";
-    const target = link.draft_id ? "草稿#" + link.draft_id : "记忆#" + link.memory_id;
-    const label = REL_LABELS[link.relation] || link.relation;
-    chip.append(span(link.dir === "in" ? target + " —" + label + "→ 此条" : "此条 —" + label + "→ " + target));
-    if (el) {
-      const x = document.createElement("button");
-      x.textContent = "✕";
-      x.onclick = async () => {
-        const updated = await api("/review/api/drafts/" + d.id, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ links: d.links.filter((_, i) => i !== idx) }),
-        });
-        el.replaceWith(card(updated));
-        toast("已移除这条连线");
-      };
-      chip.append(x);
-    }
-    box.append(chip);
-  });
+  const head = document.createElement("div");
+  head.className = "linkshead";
+  head.textContent = "💡 建议的连线（通过时一起入库）";
+  box.append(head);
+  d.links.forEach((link, idx) => box.append(linkRow(d, el, link, idx)));
   return box;
+}
+
+function targetEl(link) {
+  const t = link.target || {};
+  const s = span("");
+  s.className = "target";
+  const label = (t.kind === "draft" ? "草稿#" : "记忆#") + t.id;
+  s.textContent = t.missing ? label + "（已不存在）"
+    : "「" + t.preview + "」（" + label + (t.date ? " · " + t.date : "") + "）";
+  return s;
+}
+
+function linkRow(d, el, link, idx) {
+  const row = document.createElement("div");
+  row.className = "linkrow";
+  const tpl = REL_SENTENCES[link.relation] || REL_SENTENCES.related;
+  const ba = tpl.any || tpl[link.dir] || tpl.out;
+  const sentence = document.createElement("div");
+  sentence.className = "sentence";
+  sentence.append(span("└ " + ba[0]), targetEl(link), span(ba[1]));
+  if (link.target && link.target.kind === "draft" && link.target.status === "rejected") {
+    const warn = span("⚠ 对方草稿已被拒，这条连线入库时会自动放弃");
+    warn.className = "warn";
+    sentence.append(warn);
+  }
+  row.append(sentence);
+  if (!el) return row;  // 反悔区只读
+  const ctrl = document.createElement("div");
+  ctrl.className = "linkctrl";
+  const sel = document.createElement("select");
+  for (const [value, label] of REL_OPTIONS) {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label; o.selected = link.relation === value;
+    sel.append(o);
+  }
+  sel.onchange = () => patchLink(d, el, idx, { relation: sel.value }, "关系已改为「" + sel.selectedOptions[0].textContent + "」");
+  ctrl.append(sel);
+  if (link.relation === "led_to" || link.relation === "supersedes") {
+    ctrl.append(btn("⇄ 调个头", "edit", () => patchLink(d, el, idx, { dir: link.dir === "out" ? "in" : "out" }, "方向调过来了")));
+  }
+  ctrl.append(btn("✂ 不关联", "reject", () => patchLink(d, el, idx, null, "已取消关联（记忆本身保留，只是不连线）")));
+  row.append(ctrl);
+  return row;
+}
+
+async function patchLink(d, el, idx, change, msg) {
+  const links = change
+    ? d.links.map((l, i) => (i === idx ? { ...l, ...change } : l))
+    : d.links.filter((_, i) => i !== idx);
+  const updated = await api("/review/api/drafts/" + d.id, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ links }),
+  });
+  el.replaceWith(card(updated));
+  toast(msg);
 }
 
 const STATUS_LABELS = { upcoming: "还没开始", ongoing: "进行中", ended: "已结束" };
