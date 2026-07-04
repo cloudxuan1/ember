@@ -121,11 +121,28 @@ CONSOLE_PAGE = """<!doctype html>
   .meta { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .75rem; color: var(--dim); margin-bottom: .5rem; align-items: center; }
   .badge { border: 1px solid var(--line); border-radius: 6px; padding: .05rem .4rem; }
   .badge.anchor { border-color: var(--accent); color: var(--accent); }
+  .badge.interval { border-color: #6a8caf; color: #9dbbd8; }
   .badge.approved { border-color: var(--ok); color: var(--ok); }
   .badge.rejected { border-color: #8a4a42; color: #ff8a80; }
   .content { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; }
   .quote { margin-top: .6rem; padding: .5rem .7rem; border-left: 3px solid var(--line); color: var(--dim); font-size: .82rem; white-space: pre-wrap; }
   .quote .ref { display: block; margin-top: .3rem; opacity: .75; word-break: break-all; }
+  .membox { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: .55rem .75rem; margin-top: .5rem; }
+  .membox .boxid { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; font-size: 1.05rem; font-weight: 700; color: var(--accent); }
+  .membox .boxid .odate { font-size: .72rem; font-weight: 400; color: var(--dim); }
+  .membox .boxid .meta { margin: 0; font-weight: 400; }
+  .membox .boxtext { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; margin-top: .3rem; }
+  .membox.target .boxtext { font-size: .85rem; color: var(--dim); }
+  .membox .warn { display: block; color: #ff8a80; font-size: .75rem; margin-top: .3rem; }
+  .linkframe { border: 1px solid var(--accent); border-radius: 12px; padding: .15rem .6rem .6rem; margin-top: .7rem; }
+  .linkgroup.off { opacity: .5; }
+  .verb { position: relative; display: flex; align-items: center; gap: .5rem; margin-top: .5rem; padding-left: .2rem; }
+  .verb .word { background: none; border: 0; padding: .1rem .2rem; font-size: .95rem; font-weight: 600; color: var(--accent); text-decoration: underline dotted; }
+  .verb .swap { background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--dim); font-size: .75rem; padding: .15rem .5rem; }
+  .verb .warn { color: #ff8a80; }
+  .connmenu { position: absolute; left: .2rem; top: 100%; z-index: 10; display: grid; background: #333; border-radius: 8px; padding: .3rem; box-shadow: 0 4px 16px rgba(0,0,0,.55); }
+  .connmenu button { background: none; border: 0; color: #eee; padding: .55rem 1.1rem; text-align: left; font-size: .9rem; border-radius: 6px; }
+  .connmenu button:active { background: #4a4a4a; }
   .actions { display: flex; gap: .5rem; margin-top: .8rem; }
   .actions button { flex: 1; padding: .55rem 0; border: 0; border-radius: 8px; font-size: .95rem; color: #fff; }
   .approve { background: #4a7a4a; } .edit { background: #55606e; } .reject { background: #8a4a42; }
@@ -201,11 +218,9 @@ $("#modeBtn").onclick = () => {
 function reviewedCard(d) {
   const el = document.createElement("div");
   el.className = "card";
-  const meta = metaEl(d);
   const st = span(d.status === "approved" ? "✓ 已入库 → 记忆 #" + d.memory_id : "✕ 已删");
   st.className = "badge " + d.status;
-  meta.prepend(st);
-  el.append(meta, contentEl(d));
+  el.append(bodyEl(d, null, st));
   const box = document.createElement("div");
   box.className = "actions";
   box.append(btn("↩ 撤回到待审核", "edit", async () => {
@@ -248,32 +263,158 @@ function chipEl(text, on) {
 function card(d) {
   const el = document.createElement("div");
   el.className = "card";
-  el.append(metaEl(d), contentEl(d));
-  if (d.quote || d.source_ref) el.append(quoteEl(d));
-  el.append(actionsEl(d, el));
+  el.append(bodyEl(d, el), actionsEl(d, el));
   return el;
 }
 
+// 句子框排版（轩的定稿）：连线单独框起来，框里主语-动词-宾语从上往下读，
+// 上面的是主语——"草稿#1 导致 草稿#2"、"草稿#3 覆盖 记忆#6"，纯文字无符号。
+// 序号是大门牌，跟本条的框对上号。导入菜单只留 导致/覆盖/不关联（其余关系年轮阶段再回来）。
+const REL_WORDS = {
+  led_to: "导致", supersedes: "覆盖", none: "不关联",
+  related: "相关", contradicts: "矛盾", same_as: "同一件事",  // 旧数据展示兜底
+};
+const REL_MENU = [["led_to", "导致"], ["supersedes", "覆盖"], ["none", "不关联（单独入库）"]];
+const isDirectional = (l) => l.relation === "led_to" || l.relation === "supersedes";
+
+function bodyEl(d, el, badge) {
+  // 整张卡就是一句话：本条完整内容坐在句子里自己的位置上，不重复出现（轩的定稿）。
+  // 主语组（它导致/覆盖本条）在本条上方，其余（本条是主语 / 不关联）在下方。
+  const links = d.links || [];
+  const main = mainBox(d, badge);
+  const rest = d.quote || d.source_ref ? [quoteEl(d)] : [];
+  if (!links.length) {
+    const wrap = document.createElement("div");
+    wrap.append(main, ...rest);
+    return wrap;
+  }
+  const frame = document.createElement("div");
+  frame.className = "linkframe";
+  const subjSide = (l) => isDirectional(l) && l.dir === "in";
+  links.forEach((l, i) => { if (subjSide(l)) frame.append(linkGroup(d, el, l, i, true)); });
+  frame.append(main, ...rest);
+  links.forEach((l, i) => { if (!subjSide(l)) frame.append(linkGroup(d, el, l, i, false)); });
+  return frame;
+}
+
+function mainBox(d, badge) {
+  const box = document.createElement("div");
+  box.className = "membox";
+  const head = document.createElement("div");
+  head.className = "boxid";
+  head.append(span("草稿#" + d.id));
+  const meta = metaEl(d);  // meta 直接跟在门牌后面，不再单独占一行
+  if (badge) meta.prepend(badge);
+  head.append(meta);
+  const body = document.createElement("div");
+  body.className = "boxtext";
+  body.textContent = d.content;
+  box.append(head, body);
+  return box;
+}
+
+function targetBox(link) {
+  const t = link.target || {};
+  const box = document.createElement("div");
+  box.className = "membox target";
+  const head = document.createElement("div");
+  head.className = "boxid";
+  head.append(span((t.kind === "draft" ? "草稿#" : "记忆#") + t.id));
+  if (t.date) { const dt = span(t.date); dt.className = "odate"; head.append(dt); }
+  const body = document.createElement("div");
+  body.className = "boxtext";
+  body.textContent = t.missing ? "（已不存在）" : t.preview;
+  box.append(head, body);
+  if (t.kind === "draft" && t.status === "rejected") {
+    const w = span("⚠ 对方已被拒，入库时这条线自动放弃");
+    w.className = "warn";
+    box.append(w);
+  }
+  return box;
+}
+
+function dateWarn(d, link) {
+  // 主语-动词-宾语定死后，"打架"= 日期不支持这句话：导致的主语该更早，覆盖的主语该更新
+  const t = link.target || {};
+  if (!t.date || !d.date) return false;
+  const subjDate = link.dir === "in" ? t.date : d.date;
+  const objDate = link.dir === "in" ? d.date : t.date;
+  if (link.relation === "led_to") return subjDate > objDate;
+  if (link.relation === "supersedes") return subjDate < objDate;
+  return false;
+}
+
+function linkGroup(d, el, link, idx, subjectSide) {
+  const g = document.createElement("div");
+  g.className = "linkgroup" + (link.relation === "none" ? " off" : "");
+  if (subjectSide) g.append(targetBox(link), verbRow(d, el, link, idx));
+  else g.append(verbRow(d, el, link, idx), targetBox(link));
+  return g;
+}
+
+function verbRow(d, el, link, idx) {
+  const row = document.createElement("div");
+  row.className = "verb";
+  row.append(btn(REL_WORDS[link.relation] + (el ? " ▾" : ""), "word", () => el && toggleMenu(d, el, link, idx, row)));
+  if (el && isDirectional(link)) {  // 交换在外面直接点，不藏菜单里
+    row.append(btn("⇅ 交换", "swap", () => patchLink(d, el, idx, { dir: link.dir === "out" ? "in" : "out" }, "换好位置了")));
+  }
+  if (dateWarn(d, link)) {
+    const w = span("⚠");
+    w.className = "warn";
+    w.title = "日期跟这句话对不上（导致的主语该更早，覆盖的主语该更新），检查关系或日期";
+    row.append(w);
+  }
+  return row;
+}
+
+function toggleMenu(d, el, link, idx, anchor) {
+  const open = el.querySelector(".connmenu");
+  if (open) { open.remove(); return; }
+  const menu = document.createElement("div");
+  menu.className = "connmenu";
+  for (const [value, label] of REL_MENU) {
+    if (value === link.relation) continue;
+    menu.append(btn(label, "", () => patchLink(d, el, idx, { relation: value },
+      value === "none" ? "已设为不关联（会单独入库，随时可换回）" : "已改为「" + label + "」")));
+  }
+  menu.append(btn("收起", "", () => menu.remove()));
+  anchor.append(menu);  // 浮层：挂在动词行上，absolute 浮出不挤内容
+}
+
+async function patchLink(d, el, idx, change, msg) {
+  const links = d.links.map((l, i) => (i === idx ? { ...l, ...change } : l));
+  const updated = await api("/review/api/drafts/" + d.id, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ links }),
+  });
+  el.replaceWith(card(updated));
+  toast(msg);
+}
+
+const STATUS_LABELS = { upcoming: "还没开始", ongoing: "进行中", ended: "已结束" };
+
 function metaEl(d) {
+  // 序号不在这——它是大门牌，挂在内容框上
   const meta = document.createElement("div");
   meta.className = "meta";
-  const parts = ["#" + d.id, d.date, d.space, d.topic, d.batch].filter(Boolean);
+  const parts = [d.date, d.space, d.topic, d.batch].filter(Boolean);
   for (const p of parts) meta.append(span(p));
   const tier = span(d.tier);
   tier.className = "badge" + (d.tier === "anchor" ? " anchor" : "");
   meta.append(tier);
+  if (d.start_date || d.end_date) {  // 区间型：起止 + 服务端现算的状态（V4 主打，不能盲审）
+    const iv = span("⏳ " + (d.start_date || "…") + " → " + (d.end_date || "…")
+      + "・" + (STATUS_LABELS[d.interval_status] || d.interval_status));
+    iv.className = "badge interval";
+    meta.append(iv);
+  }
   if (d.tags) meta.append(span("🏷 " + d.tags));
   return meta;
 }
 
 function span(text) { const s = document.createElement("span"); s.textContent = text; return s; }
-
-function contentEl(d) {
-  const c = document.createElement("div");
-  c.className = "content";
-  c.textContent = d.content;
-  return c;
-}
 
 function quoteEl(d) {
   const q = document.createElement("div");
@@ -348,7 +489,12 @@ function openEditor(d, el) {
   row1.append(add("date", input("date", d.date)), add("tier", tier));
   const row2 = document.createElement("div"); row2.className = "row2";
   row2.append(add("topic", input("topic", d.topic)), add("space", input("space", d.space)));
-  form.append(add("content", content), row1, row2, add("tags（逗号分隔，中文逗号也行）", input("tags", d.tags)));
+  const row3 = document.createElement("div"); row3.className = "row2";
+  row3.append(
+    add("start_date（区间起点，可空）", input("start_date", d.start_date)),
+    add("end_date（区间终点，可空）", input("end_date", d.end_date)),
+  );
+  form.append(add("content", content), row1, row2, row3, add("tags（逗号分隔，中文逗号也行）", input("tags", d.tags)));
   const actions = document.createElement("div");
   actions.className = "actions";
   const values = () => Object.fromEntries(Object.entries(fields).map(([k, i]) => [k, i.value]));

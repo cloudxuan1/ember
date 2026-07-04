@@ -4,6 +4,20 @@ import os
 import sqlite3
 from pathlib import Path
 
+# 边表单独成块：V4 迁移重建老表时要原样复用这份 DDL
+EDGES_DDL = """
+CREATE TABLE IF NOT EXISTS memory_edges (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id    INTEGER NOT NULL REFERENCES memories(id),
+    to_id      INTEGER NOT NULL REFERENCES memories(id),
+    relation   TEXT DEFAULT 'related'
+               CHECK (relation IN ('led_to','same_as','contradicts','supersedes','related')),
+    created_by TEXT DEFAULT '',    -- 谁断言的这条边：extraction / mcp / ...
+    created_at TEXT DEFAULT (datetime('now','+8 hours')),
+    UNIQUE (from_id, to_id, relation)
+);
+"""
+
 # 表结构与 docs/施工计划.md 第 2 节保持一致
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -25,13 +39,6 @@ CREATE INDEX IF NOT EXISTS idx_mem_tier  ON memories(tier);
 CREATE INDEX IF NOT EXISTS idx_mem_topic ON memories(topic);
 CREATE INDEX IF NOT EXISTS idx_mem_space ON memories(space);
 
-CREATE TABLE IF NOT EXISTS memory_edges (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_id  INTEGER NOT NULL REFERENCES memories(id),
-    to_id    INTEGER NOT NULL REFERENCES memories(id),
-    relation TEXT DEFAULT 'related'  -- led_to / same_as / contradicts / supersedes / related
-);
-
 CREATE TABLE IF NOT EXISTS memory_sources (
     memory_id  INTEGER NOT NULL REFERENCES memories(id),
     source_ref TEXT,   -- 指向 ember-logs 私有仓库的哪份文件哪一段（轻引用，不存全文）
@@ -52,6 +59,8 @@ CREATE TABLE IF NOT EXISTS memory_drafts (
     end_date    TEXT,
     source_ref  TEXT,               -- 通过时随记忆一起写入 memory_sources
     quote       TEXT,
+    links       TEXT DEFAULT '',    -- 边建议 JSON（V4）：目标 memory_id 或同批 draft_id，通过时随记忆写入
+
     batch       TEXT DEFAULT '',    -- 提取批次，如 4.18起点/group_003（锚点推进的单位）
     status      TEXT DEFAULT 'pending',  -- pending / approved / rejected
     memory_id   INTEGER REFERENCES memories(id),  -- 通过后指向正式记忆
@@ -76,6 +85,26 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """V4 就地升级老库，全部幂等：
+    - memory_edges 补 created_by/created_at + UNIQUE + relation CHECK（重建搬行，行数 0 也走同一条路）
+    - memory_drafts 补 links 列
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(memory_edges)").fetchall()}
+    if cols and "created_at" not in cols:
+        conn.execute("ALTER TABLE memory_edges RENAME TO _edges_pre_v4")
+        conn.executescript(EDGES_DDL)
+        conn.execute(
+            """INSERT OR IGNORE INTO memory_edges (id, from_id, to_id, relation)
+               SELECT id, from_id, to_id, relation FROM _edges_pre_v4"""
+        )
+        conn.execute("DROP TABLE _edges_pre_v4")
+    draft_cols = {r["name"] for r in conn.execute("PRAGMA table_info(memory_drafts)").fetchall()}
+    if draft_cols and "links" not in draft_cols:
+        conn.execute("ALTER TABLE memory_drafts ADD COLUMN links TEXT DEFAULT ''")
+
+
 def init_db() -> None:
     with get_conn() as conn:
-        conn.executescript(SCHEMA)
+        _migrate(conn)
+        conn.executescript(SCHEMA + EDGES_DDL)
