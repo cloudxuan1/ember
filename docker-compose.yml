@@ -14,6 +14,8 @@ services:
       - EMBER_OAUTH_ACCESS_TOKEN=${EMBER_OAUTH_ACCESS_TOKEN:-}
       - EMBER_OAUTH_REFRESH_TOKEN=${EMBER_OAUTH_REFRESH_TOKEN:-}
       - PUBLIC_HOST=${PUBLIC_HOST:-ember.cloudxuan1.com}
+      # 审核台 Bearer 认证（提取脚本 POST 草稿用，与 MCP 的 token 分开）
+      - EMBER_REVIEW_TOKEN=${EMBER_REVIEW_TOKEN:-}
     volumes:
       # V2 起 SQLite 数据库放这里（data/ 已 gitignore，永不入库）
       - ./data:/app/data
