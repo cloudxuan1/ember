@@ -250,6 +250,37 @@ def test_patch_back_enriched_links_strips_display_fields():
         assert "target" not in raw and "supersedes" in raw
 
 
+# ---------- "不关联"：下拉的一员，躺平不删、随时换回（轩的定稿） ----------
+
+
+def test_none_relation_skips_edge_but_saves_memory():
+    old = _save("旧记忆")
+    d = _draft("独立的新记忆", links=[{"memory_id": old, "relation": "none"}])
+    result = drafts.approve_draft(d)
+    assert result["status"] == "approved"
+    assert _edges() == []  # 线没写，记忆单独入库
+    assert memories.get_memory(result["memory_id"]) is not None
+
+
+def test_none_relation_is_reversible_before_approve():
+    old = _save("旧记忆")
+    d = _draft(links=[{"memory_id": old, "relation": "none", "dir": "in"}])
+    got = drafts.get_draft(d)
+    assert got["links"][0]["target"]["kind"] == "memory"  # 躺平了也带摘要，换回时能看清对方
+    got["links"][0]["relation"] = "led_to"  # 后悔药：换回导致
+    drafts.update_draft(d, {"links": got["links"]})
+    result = drafts.approve_draft(d)
+    assert _edges() == [(old, result["memory_id"], "led_to", "extraction")]
+
+
+def test_backfill_skips_none_links():
+    a = _draft("事件A")
+    b = _draft("事件B", links=[{"draft_id": a, "relation": "none"}])
+    drafts.approve_draft(b)
+    drafts.approve_draft(a)  # 回填时 none 的线同样跳过
+    assert _edges() == []
+
+
 # ---------- 草稿的区间字段：审核台不许盲审（PR #7 评审 P1） ----------
 
 

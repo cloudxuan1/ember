@@ -127,16 +127,16 @@ CONSOLE_PAGE = """<!doctype html>
   .content { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; }
   .quote { margin-top: .6rem; padding: .5rem .7rem; border-left: 3px solid var(--line); color: var(--dim); font-size: .82rem; white-space: pre-wrap; }
   .quote .ref { display: block; margin-top: .3rem; opacity: .75; word-break: break-all; }
-  .links { margin-top: .6rem; border-left: 2px solid var(--accent); padding: .1rem 0 .1rem .65rem; display: grid; gap: .55rem; }
-  .linkshead { font-size: .75rem; color: var(--dim); }
-  .linkrow { display: grid; gap: .35rem; }
-  .linkrow .sentence { font-size: .88rem; line-height: 1.5; }
-  .linkrow .target { color: var(--accent); }
-  .linkrow .warn { display: block; color: #ff8a80; font-size: .75rem; }
-  .linkrow.ghost { opacity: .65; }
-  .linkrow.ghost .target { text-decoration: line-through; }
-  .linkctrl { display: flex; flex-wrap: wrap; gap: .4rem; }
-  .linkctrl select, .linkctrl button { flex: none; padding: .25rem .55rem; font-size: .78rem; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--dim); }
+  .other { border: 1px solid var(--line); border-radius: 8px; padding: .5rem .7rem; font-size: .85rem; color: var(--dim); line-height: 1.5; }
+  .other.off { opacity: .45; }
+  .other .odate { color: var(--accent); font-size: .75rem; margin-right: .4rem; }
+  .other .warn { display: block; color: #ff8a80; font-size: .75rem; }
+  .connector { display: flex; justify-content: center; align-items: center; gap: .3rem; margin: .3rem 0; }
+  .connector .word { border: 1px solid var(--line); background: var(--bg); color: var(--accent); border-radius: 999px; padding: .2rem .8rem; font-size: .8rem; }
+  .connector .warn { color: #ff8a80; }
+  .connmenu { display: grid; margin: .2rem auto .4rem; background: #333; border-radius: 8px; padding: .3rem; width: max-content; }
+  .connmenu button { background: none; border: 0; color: #eee; padding: .5rem 1rem; text-align: left; font-size: .88rem; border-radius: 6px; }
+  .connmenu button:active { background: #4a4a4a; }
   .actions { display: flex; gap: .5rem; margin-top: .8rem; }
   .actions button { flex: 1; padding: .55rem 0; border: 0; border-radius: 8px; font-size: .95rem; color: #fff; }
   .approve { background: #4a7a4a; } .edit { background: #55606e; } .reject { background: #8a4a42; }
@@ -216,8 +216,7 @@ function reviewedCard(d) {
   const st = span(d.status === "approved" ? "✓ 已入库 → 记忆 #" + d.memory_id : "✕ 已删");
   st.className = "badge " + d.status;
   meta.prepend(st);
-  el.append(meta, contentEl(d));
-  if (d.links && d.links.length) el.append(linksEl(d, null));
+  el.append(meta, graphEl(d, null));
   const box = document.createElement("div");
   box.className = "actions";
   box.append(btn("↩ 撤回到待审核", "edit", async () => {
@@ -260,123 +259,105 @@ function chipEl(text, on) {
 function card(d) {
   const el = document.createElement("div");
   el.className = "card";
-  el.append(metaEl(d), contentEl(d));
-  if (d.quote || d.source_ref) el.append(quoteEl(d));
-  if (d.links && d.links.length) el.append(linksEl(d, el));
-  el.append(actionsEl(d, el));
+  el.append(metaEl(d), graphEl(d, el), actionsEl(d, el));
   return el;
 }
 
-// 连线句子模板：只有"导致/覆盖"分方向，对称关系不给轩看箭头（人话优先）
-const REL_SENTENCES = {
-  led_to:      { out: ["这条导致了 ", ""], in: ["", " 导致了这条"] },
-  supersedes:  { out: ["这条覆盖 ", "（旧的作废）"], in: ["这条被 ", " 覆盖（本条作废）"] },
-  same_as:     { any: ["和 ", " 是同一件事"] },
-  contradicts: { any: ["和 ", " 矛盾"] },
-  related:     { any: ["和 ", " 相关"] },
+// 三明治排版（轩的定稿）：位置即因果——早的在上、箭头恒向下，
+// 语言里永远只有"导致/覆盖"一个写法，标反了不改词、换座位（⇅ 交换 = 翻 dir）。
+// 相关/矛盾/同一件事不分方向；"不关联"是下拉的一员（躺平可随时换回）。
+const REL_WORDS = {
+  led_to: "↓ 导致", supersedes: "↓ 覆盖，上面的作废",
+  related: "～ 相关", contradicts: "≠ 矛盾（都留）", same_as: "＝ 同一件事",
+  none: "✂ 不关联",
 };
-const REL_OPTIONS = [["led_to", "导致"], ["supersedes", "覆盖/取代"], ["related", "相关"], ["contradicts", "矛盾"], ["same_as", "同一件事"]];
+const REL_MENU = [
+  ["led_to", "↓ 导致"], ["supersedes", "↓ 覆盖（旧的作废）"], ["related", "～ 相关"],
+  ["contradicts", "≠ 矛盾（两条都留）"], ["same_as", "＝ 同一件事"], ["none", "✂ 不关联（单独入库）"],
+];
+const isUpper = (l) => (l.relation === "led_to" && l.dir === "in") || (l.relation === "supersedes" && l.dir === "out");
+const isDirectional = (l) => l.relation === "led_to" || l.relation === "supersedes";
 
-function linksEl(d, el) {
-  // 边建议（V4）：通过时随记忆写入。el 给 null = 只读展示（反悔区）
+function graphEl(d, el) {
+  // 上方：因/旧版；中间：本条；下方：果/新版/对称关系/不关联。el 给 null = 只读（反悔区）
+  const wrap = document.createElement("div");
+  const links = d.links || [];
+  links.forEach((l, i) => {
+    if (l.relation !== "none" && isUpper(l)) wrap.append(otherEl(d, l), connectorEl(d, el, l, i));
+  });
+  wrap.append(contentEl(d));
+  if (d.quote || d.source_ref) wrap.append(quoteEl(d));
+  links.forEach((l, i) => {
+    if (l.relation === "none" || !isUpper(l)) wrap.append(connectorEl(d, el, l, i), otherEl(d, l));
+  });
+  return wrap;
+}
+
+function otherEl(d, link) {
+  const t = link.target || {};
   const box = document.createElement("div");
-  box.className = "links";
-  const head = document.createElement("div");
-  head.className = "linkshead";
-  head.textContent = "💡 建议的连线（通过时一起入库）";
-  box.append(head);
-  d.links.forEach((link, idx) => box.append(linkRow(d, el, link, idx)));
+  box.className = "other" + (link.relation === "none" ? " off" : "");
+  const label = (t.kind === "draft" ? "草稿#" : "记忆#") + t.id;
+  if (t.missing) { box.textContent = label + "（已不存在）"; return box; }
+  const date = span(t.date || "");
+  date.className = "odate";
+  box.append(date, span(t.preview + "（" + label + "）"));
+  if (t.kind === "draft" && t.status === "rejected") {
+    const w = span("⚠ 对方已被拒，入库时这条线自动放弃");
+    w.className = "warn";
+    box.append(w);
+  }
   return box;
 }
 
-function targetEl(link) {
-  const t = link.target || {};
-  const s = span("");
-  s.className = "target";
-  const label = (t.kind === "draft" ? "草稿#" : "记忆#") + t.id;
-  s.textContent = t.missing ? label + "（已不存在）"
-    : "「" + t.preview + "」（" + label + (t.date ? " · " + t.date : "") + "）";
-  return s;
+function dateWarn(d, link) {
+  // 位置即因果，所以"打架"只有一种样子：上面的日期比下面晚
+  if (!isDirectional(link) || !link.target || !link.target.date || !d.date) return false;
+  const upper = isUpper(link) ? link.target.date : d.date;
+  const lower = isUpper(link) ? d.date : link.target.date;
+  return upper > lower;
 }
 
-function linkRow(d, el, link, idx) {
+function connectorEl(d, el, link, idx) {
   const row = document.createElement("div");
-  row.className = "linkrow";
-  const tpl = REL_SENTENCES[link.relation] || REL_SENTENCES.related;
-  const ba = tpl.any || tpl[link.dir] || tpl.out;
-  const sentence = document.createElement("div");
-  sentence.className = "sentence";
-  sentence.append(span("└ " + ba[0]), targetEl(link), span(ba[1]));
-  if (link.target && link.target.kind === "draft" && link.target.status === "rejected") {
-    const warn = span("⚠ 对方草稿已被拒，这条连线入库时会自动放弃");
-    warn.className = "warn";
-    sentence.append(warn);
+  row.className = "connector";
+  const word = btn(REL_WORDS[link.relation] + (el ? " ▾" : ""), "word", () => el && toggleMenu(d, el, link, idx, row));
+  row.append(word);
+  if (dateWarn(d, link)) {
+    const w = span("⚠");
+    w.className = "warn";
+    w.title = "上面的日期比下面晚，检查因果方向或日期";
+    row.append(w);
   }
-  row.append(sentence);
-  if (!el) return row;  // 反悔区只读
-  const ctrl = document.createElement("div");
-  ctrl.className = "linkctrl";
-  const sel = document.createElement("select");
-  for (const [value, label] of REL_OPTIONS) {
-    const o = document.createElement("option");
-    o.value = value; o.textContent = label; o.selected = link.relation === value;
-    sel.append(o);
-  }
-  sel.onchange = () => patchLink(d, el, idx, { relation: sel.value }, "关系已改为「" + sel.selectedOptions[0].textContent + "」");
-  ctrl.append(sel);
-  const flip = () => patchLink(d, el, idx, { dir: link.dir === "out" ? "in" : "out" }, "换过来了");
-  if (link.relation === "led_to") {
-    ctrl.append(btn("⇄ 调个头（谁导致谁）", "edit", flip));
-  } else if (link.relation === "supersedes") {
-    // 覆盖永远是新盖旧——不问"方向"，只问哪条作废，按钮直接写明点了会怎样
-    ctrl.append(btn(link.dir === "out" ? "⇄ 换成：本条作废" : "⇄ 换成：对方作废", "edit", flip));
-  }
-  ctrl.append(btn("✂ 不关联", "reject", () => patchLink(d, el, idx, null, "已取消关联（记忆本身保留，只是不连线）")));
-  row.append(ctrl);
   return row;
 }
 
+function toggleMenu(d, el, link, idx, anchor) {
+  const open = el.querySelector(".connmenu");
+  if (open) { open.remove(); return; }
+  const menu = document.createElement("div");
+  menu.className = "connmenu";
+  for (const [value, label] of REL_MENU) {
+    if (value === link.relation) continue;
+    menu.append(btn(label, "", () => patchLink(d, el, idx, { relation: value },
+      value === "none" ? "已设为不关联（会单独入库，随时可换回）" : "已改为「" + label + "」")));
+  }
+  if (isDirectional(link)) {
+    menu.append(btn("⇅ 上下交换", "", () => patchLink(d, el, idx, { dir: link.dir === "out" ? "in" : "out" }, "换好座位了")));
+  }
+  menu.append(btn("收起", "", () => menu.remove()));
+  anchor.after(menu);
+}
+
 async function patchLink(d, el, idx, change, msg) {
-  const removed = change ? null : d.links[idx];
-  const links = change
-    ? d.links.map((l, i) => (i === idx ? { ...l, ...change } : l))
-    : d.links.filter((_, i) => i !== idx);
+  const links = d.links.map((l, i) => (i === idx ? { ...l, ...change } : l));
   const updated = await api("/review/api/drafts/" + d.id, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ links }),
   });
-  const newEl = card(updated);
-  if (removed) ghostRow(newEl, updated, removed);  // 手抖保险：原地留恢复入口
-  el.replaceWith(newEl);
+  el.replaceWith(card(updated));
   toast(msg);
-}
-
-function ghostRow(cardEl, d, removed) {
-  let box = cardEl.querySelector(".links");
-  if (!box) {  // 唯一一条连线被取消时，links 区已不渲染，补一个装幽灵行
-    box = document.createElement("div");
-    box.className = "links";
-    cardEl.insertBefore(box, cardEl.querySelector(".actions"));
-  }
-  const row = document.createElement("div");
-  row.className = "linkrow ghost";
-  const sentence = document.createElement("div");
-  sentence.className = "sentence";
-  sentence.append(span("✂ 已取消关联："), targetEl(removed));
-  const ctrl = document.createElement("div");
-  ctrl.className = "linkctrl";
-  ctrl.append(btn("↩ 恢复这条连线", "edit", async () => {
-    const updated = await api("/review/api/drafts/" + d.id, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ links: [...d.links, removed] }),
-    });
-    cardEl.replaceWith(card(updated));
-    toast("连线已恢复");
-  }));
-  row.append(sentence, ctrl);
-  box.append(row);
 }
 
 const STATUS_LABELS = { upcoming: "还没开始", ongoing: "进行中", ended: "已结束" };

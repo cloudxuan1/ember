@@ -40,6 +40,8 @@ def _normalize_links(links) -> str:
 
     每条 = {"memory_id": 已入库记忆} 或 {"draft_id": 同批草稿}（二选一），
     加 "relation"（led_to/… 默认 related）和 "dir"（out=本条→目标 默认 / in）。
+    relation 另收 "none"（不关联）——审核台下拉的一员：连线躺平但不删，
+    随时可换回（轩的后悔药），approve 时跳过不写边。草稿专属，正式边没有这个值。
     这里只校验结构；目标是否存在等 approve 时再查——那时才知道对方审没审过。
     """
     if links in (None, "", []):
@@ -56,9 +58,9 @@ def _normalize_links(links) -> str:
         if not isinstance(link, dict):
             raise ValueError(f"links 第 {i} 条要是对象")
         relation = link.get("relation", "related")
-        if relation not in memories.RELATIONS:
+        if relation not in (*memories.RELATIONS, "none"):
             raise ValueError(
-                f"links 第 {i} 条 relation 必须是 {'/'.join(memories.RELATIONS)}，收到: {relation}"
+                f"links 第 {i} 条 relation 必须是 {'/'.join(memories.RELATIONS)}/none，收到: {relation}"
             )
         direction = link.get("dir", "out")
         if direction not in ("out", "in"):
@@ -251,6 +253,8 @@ def _write_draft_edges(conn, memory_id: int, links_text: str) -> None:
         return
     resolved = []
     for link in json.loads(links_text):
+        if link["relation"] == "none":
+            continue  # 轩设了"不关联"：草稿单独入库，这条线不写
         if link.get("memory_id") is not None:
             target = link["memory_id"]
         else:
@@ -279,7 +283,7 @@ def _backfill_edges(conn, draft_id: int, memory_id: int) -> None:
         wanted = [
             {"id": memory_id, "relation": link["relation"], "dir": link["dir"]}
             for link in json.loads(row["links"])
-            if link.get("draft_id") == draft_id
+            if link.get("draft_id") == draft_id and link["relation"] != "none"
         ]
         if wanted:
             memories.add_edges(conn, row["memory_id"], wanted, created_by="extraction")
