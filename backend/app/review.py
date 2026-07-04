@@ -121,6 +121,7 @@ CONSOLE_PAGE = """<!doctype html>
   .meta { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .75rem; color: var(--dim); margin-bottom: .5rem; align-items: center; }
   .badge { border: 1px solid var(--line); border-radius: 6px; padding: .05rem .4rem; }
   .badge.anchor { border-color: var(--accent); color: var(--accent); }
+  .badge.interval { border-color: #6a8caf; color: #9dbbd8; }
   .badge.approved { border-color: var(--ok); color: var(--ok); }
   .badge.rejected { border-color: #8a4a42; color: #ff8a80; }
   .content { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; }
@@ -290,6 +291,8 @@ function linksEl(d, el) {
   return box;
 }
 
+const STATUS_LABELS = { upcoming: "还没开始", ongoing: "进行中", ended: "已结束" };
+
 function metaEl(d) {
   const meta = document.createElement("div");
   meta.className = "meta";
@@ -298,6 +301,12 @@ function metaEl(d) {
   const tier = span(d.tier);
   tier.className = "badge" + (d.tier === "anchor" ? " anchor" : "");
   meta.append(tier);
+  if (d.start_date || d.end_date) {  // 区间型：起止 + 服务端现算的状态（V4 主打，不能盲审）
+    const iv = span("⏳ " + (d.start_date || "…") + " → " + (d.end_date || "…")
+      + "・" + (STATUS_LABELS[d.interval_status] || d.interval_status));
+    iv.className = "badge interval";
+    meta.append(iv);
+  }
   if (d.tags) meta.append(span("🏷 " + d.tags));
   return meta;
 }
@@ -384,7 +393,12 @@ function openEditor(d, el) {
   row1.append(add("date", input("date", d.date)), add("tier", tier));
   const row2 = document.createElement("div"); row2.className = "row2";
   row2.append(add("topic", input("topic", d.topic)), add("space", input("space", d.space)));
-  form.append(add("content", content), row1, row2, add("tags（逗号分隔，中文逗号也行）", input("tags", d.tags)));
+  const row3 = document.createElement("div"); row3.className = "row2";
+  row3.append(
+    add("start_date（区间起点，可空）", input("start_date", d.start_date)),
+    add("end_date（区间终点，可空）", input("end_date", d.end_date)),
+  );
+  form.append(add("content", content), row1, row2, row3, add("tags（逗号分隔，中文逗号也行）", input("tags", d.tags)));
   const actions = document.createElement("div");
   actions.className = "actions";
   const values = () => Object.fromEntries(Object.entries(fields).map(([k, i]) => [k, i.value]));

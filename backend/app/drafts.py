@@ -74,10 +74,22 @@ def _normalize_links(links) -> str:
     return json.dumps(normalized, ensure_ascii=False)
 
 
-def _parse_links(row_dict: dict) -> dict:
-    """给 API 返回用：links TEXT → 列表（存的时候已规整，读回直接 loads）。"""
+def _present_draft(row_dict: dict) -> dict:
+    """给 API 返回用：links TEXT → 列表（存的时候已规整，读回直接 loads）；
+    区间状态服务端现算下发——审核台不在 JS 里重复实现"今天"的时区逻辑。"""
     row_dict["links"] = json.loads(row_dict["links"]) if row_dict.get("links") else []
+    row_dict["interval_status"] = memories.interval_status(
+        row_dict.get("start_date"), row_dict.get("end_date")
+    )
     return row_dict
+
+
+def _blank_interval_to_null(fields: dict) -> dict:
+    """编辑器清空日期发来空字符串 → 规整成 NULL，不让 '' 脏值进库。"""
+    for key in ("start_date", "end_date"):
+        if key in fields and fields[key] == "":
+            fields[key] = None
+    return fields
 
 
 def _validate(date: str, content: str, tier: str) -> None:
@@ -91,6 +103,7 @@ def _prepare(item: dict) -> dict:
     row = {**_DEFAULTS, **{k: v for k, v in item.items() if k in EDITABLE_FIELDS}}
     row["tags"] = _normalize_tags(str(row["tags"] or ""))
     row["links"] = _normalize_links(row["links"])
+    _blank_interval_to_null(row)
     _validate(str(row["date"] or ""), str(row["content"] or ""), row["tier"])
     return row
 
@@ -155,14 +168,14 @@ def list_drafts(status: str = "pending", batch: str | None = None, limit: int = 
         ).fetchall()
     return {
         "stats": {"total": total, "by_batch": by_batch},
-        "items": [_parse_links(dict(r)) for r in rows],
+        "items": [_present_draft(dict(r)) for r in rows],
     }
 
 
 def get_draft(draft_id: int) -> dict | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM memory_drafts WHERE id = ?", (draft_id,)).fetchone()
-    return _parse_links(dict(row)) if row else None
+    return _present_draft(dict(row)) if row else None
 
 
 def update_draft(draft_id: int, edits: dict) -> dict | None:
@@ -174,6 +187,7 @@ def update_draft(draft_id: int, edits: dict) -> dict | None:
         fields["tags"] = _normalize_tags(str(fields["tags"] or ""))
     if "links" in fields:
         fields["links"] = _normalize_links(fields["links"])
+    _blank_interval_to_null(fields)
     draft = get_draft(draft_id)
     if draft is None or draft["status"] != "pending":
         return None
@@ -245,6 +259,7 @@ def approve_draft(draft_id: int, edits: dict | None = None) -> dict | None:
             fields["tags"] = _normalize_tags(str(fields["tags"] or ""))
         if "links" in fields:
             fields["links"] = _normalize_links(fields["links"])
+        _blank_interval_to_null(fields)
     conn = get_conn()
     try:
         conn.execute("BEGIN IMMEDIATE")  # 先拿写锁，锁内重读才作数

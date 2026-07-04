@@ -212,6 +212,39 @@ def test_draft_api_roundtrip_returns_parsed_links():
     assert _edges() == []
 
 
+# ---------- 草稿的区间字段：审核台不许盲审（PR #7 评审 P1） ----------
+
+
+def test_draft_interval_roundtrip_with_computed_status():
+    d = _draft("在做的事", start_date="2026-04-01")
+    got = drafts.get_draft(d)
+    assert (got["start_date"], got["end_date"]) == ("2026-04-01", None)
+    assert got["interval_status"] == "ongoing"  # 服务端现算下发，审核台直接显示
+    assert drafts.list_drafts()["items"][0]["interval_status"] == "ongoing"
+    point = drafts.get_draft(_draft("点事件"))
+    assert point["interval_status"] is None
+
+
+def test_draft_interval_patch_and_blank_clears_to_null():
+    d = _draft("计划", start_date="2099-01-01", end_date="2099-02-01")
+    assert drafts.get_draft(d)["interval_status"] == "upcoming"
+    updated = drafts.update_draft(d, {"start_date": "2020-01-01", "end_date": "2020-02-01"})
+    assert updated["interval_status"] == "ended"
+    cleared = drafts.update_draft(d, {"start_date": "", "end_date": ""})  # 编辑器清空发来空串
+    assert (cleared["start_date"], cleared["end_date"]) == (None, None)
+    assert cleared["interval_status"] is None
+
+
+def test_approved_interval_draft_lands_with_status():
+    d = _draft("在做的事", start_date="2026-04-01", topic="区间验收")
+    result = drafts.approve_draft(d, edits={"end_date": ""})  # approve 带编辑也走空串规整
+    memory = memories.get_memory(result["memory_id"])
+    assert (memory["start_date"], memory["end_date"]) == ("2026-04-01", None)
+    assert memory["interval_status"] == "ongoing"
+    catalog = memories.search_memories("区间验收")
+    assert catalog[0]["interval_status"] == "ongoing"
+
+
 # ---------- 老库就地迁移 ----------
 
 
