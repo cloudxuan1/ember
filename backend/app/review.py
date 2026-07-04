@@ -133,6 +133,8 @@ CONSOLE_PAGE = """<!doctype html>
   .linkrow .sentence { font-size: .88rem; line-height: 1.5; }
   .linkrow .target { color: var(--accent); }
   .linkrow .warn { display: block; color: #ff8a80; font-size: .75rem; }
+  .linkrow.ghost { opacity: .65; }
+  .linkrow.ghost .target { text-decoration: line-through; }
   .linkctrl { display: flex; flex-wrap: wrap; gap: .4rem; }
   .linkctrl select, .linkctrl button { flex: none; padding: .25rem .55rem; font-size: .78rem; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--dim); }
   .actions { display: flex; gap: .5rem; margin-top: .8rem; }
@@ -322,8 +324,12 @@ function linkRow(d, el, link, idx) {
   }
   sel.onchange = () => patchLink(d, el, idx, { relation: sel.value }, "关系已改为「" + sel.selectedOptions[0].textContent + "」");
   ctrl.append(sel);
-  if (link.relation === "led_to" || link.relation === "supersedes") {
-    ctrl.append(btn("⇄ 调个头", "edit", () => patchLink(d, el, idx, { dir: link.dir === "out" ? "in" : "out" }, "方向调过来了")));
+  const flip = () => patchLink(d, el, idx, { dir: link.dir === "out" ? "in" : "out" }, "换过来了");
+  if (link.relation === "led_to") {
+    ctrl.append(btn("⇄ 调个头（谁导致谁）", "edit", flip));
+  } else if (link.relation === "supersedes") {
+    // 覆盖永远是新盖旧——不问"方向"，只问哪条作废，按钮直接写明点了会怎样
+    ctrl.append(btn(link.dir === "out" ? "⇄ 换成：本条作废" : "⇄ 换成：对方作废", "edit", flip));
   }
   ctrl.append(btn("✂ 不关联", "reject", () => patchLink(d, el, idx, null, "已取消关联（记忆本身保留，只是不连线）")));
   row.append(ctrl);
@@ -331,6 +337,7 @@ function linkRow(d, el, link, idx) {
 }
 
 async function patchLink(d, el, idx, change, msg) {
+  const removed = change ? null : d.links[idx];
   const links = change
     ? d.links.map((l, i) => (i === idx ? { ...l, ...change } : l))
     : d.links.filter((_, i) => i !== idx);
@@ -339,8 +346,37 @@ async function patchLink(d, el, idx, change, msg) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ links }),
   });
-  el.replaceWith(card(updated));
+  const newEl = card(updated);
+  if (removed) ghostRow(newEl, updated, removed);  // 手抖保险：原地留恢复入口
+  el.replaceWith(newEl);
   toast(msg);
+}
+
+function ghostRow(cardEl, d, removed) {
+  let box = cardEl.querySelector(".links");
+  if (!box) {  // 唯一一条连线被取消时，links 区已不渲染，补一个装幽灵行
+    box = document.createElement("div");
+    box.className = "links";
+    cardEl.insertBefore(box, cardEl.querySelector(".actions"));
+  }
+  const row = document.createElement("div");
+  row.className = "linkrow ghost";
+  const sentence = document.createElement("div");
+  sentence.className = "sentence";
+  sentence.append(span("✂ 已取消关联："), targetEl(removed));
+  const ctrl = document.createElement("div");
+  ctrl.className = "linkctrl";
+  ctrl.append(btn("↩ 恢复这条连线", "edit", async () => {
+    const updated = await api("/review/api/drafts/" + d.id, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ links: [...d.links, removed] }),
+    });
+    cardEl.replaceWith(card(updated));
+    toast("连线已恢复");
+  }));
+  row.append(sentence, ctrl);
+  box.append(row);
 }
 
 const STATUS_LABELS = { upcoming: "还没开始", ongoing: "进行中", ended: "已结束" };
