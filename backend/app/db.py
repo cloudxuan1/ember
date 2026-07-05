@@ -4,6 +4,17 @@ import os
 import sqlite3
 from pathlib import Path
 
+try:
+    import sqlite_vec
+except ImportError:  # 没装扩展也能跑：语义腿关闭，纯关键词一切照常
+    sqlite_vec = None
+
+_vec_status: bool | None = None  # None=没试过 / True=可用 / False=加载失败（不再重试）
+
+
+def vec_available() -> bool:
+    return bool(_vec_status)
+
 # 边表单独成块：V4 迁移重建老表时要原样复用这份 DDL
 EDGES_DDL = """
 CREATE TABLE IF NOT EXISTS memory_edges (
@@ -69,6 +80,18 @@ CREATE TABLE IF NOT EXISTS memory_drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_draft_status ON memory_drafts(status);
 CREATE INDEX IF NOT EXISTS idx_draft_batch  ON memory_drafts(batch);
+
+-- 语义指纹（V5）：普通表不用 vec0 虚拟表——维度是数据不是表结构，换模型不用改 DDL。
+-- model 列记录"谁算的这枚指纹"：搜索只用与当前配置同模型的行，换模型后旧行自动失效。
+-- 记忆删除（审核台撤回）时指纹级联跟着删，派生数据不留孤儿。
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    memory_id  INTEGER PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+    model      TEXT NOT NULL,
+    dim        INTEGER NOT NULL,
+    embedding  BLOB NOT NULL,     -- float32 序列化（struct pack）
+    created_at TEXT DEFAULT (datetime('now','+8 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_emb_model ON memory_embeddings(model);
 """
 
 
@@ -77,11 +100,22 @@ def db_path() -> Path:
 
 
 def get_conn() -> sqlite3.Connection:
+    global _vec_status
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # sqlite-vec 扩展按连接加载（只提供 vec_distance_cosine 等函数）；
+    # 失败一次就不再重试，语义腿关闭，其余功能不受影响。
+    if sqlite_vec is not None and _vec_status is not False:
+        try:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            _vec_status = True
+        except Exception:
+            _vec_status = False
     return conn
 
 
