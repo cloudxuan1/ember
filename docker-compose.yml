@@ -16,6 +16,10 @@ services:
       - PUBLIC_HOST=${PUBLIC_HOST:-ember.cloudxuan1.com}
       # 审核台 Bearer 认证（提取脚本 POST 草稿用，与 MCP 的 token 分开）
       - EMBER_REVIEW_TOKEN=${EMBER_REVIEW_TOKEN:-}
+      # 语义检索（V5）：KEY 留空 = 语义腿关闭，纯关键词模式（见 .env.example）
+      - EMBEDDING_API_BASE=${EMBEDDING_API_BASE:-https://openrouter.ai/api/v1}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen/qwen3-embedding-8b}
     volumes:
       # V2 起 SQLite 数据库放这里（data/ 已 gitignore，永不入库）
       - ./data:/app/data
