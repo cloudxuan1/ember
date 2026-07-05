@@ -54,6 +54,19 @@ def _short(row) -> dict:
     return item
 
 
+def resolve_space(space: str | None) -> str | None:
+    """检索空间语义（V6 空间隔离）：personal 是核心底色，不该被项目记忆稀释。
+
+    不传 / 空串 = 只搜 personal 核心层；"all" = 明确要求跨全库；
+    其他值 = 指定空间。返回 None 表示不加空间过滤。
+    """
+    if not space:
+        return "personal"
+    if space == "all":
+        return None
+    return space
+
+
 def _validate_links(links) -> list[dict]:
     """links = [{"id": 目标记忆, "relation": led_to/…, "dir": "out"(本条→目标, 默认)/"in"}]。"""
     if not links:
@@ -232,7 +245,9 @@ def search_memories(query: str, space: str | None = None, limit: int = 8) -> lis
 
     语义腿不可用（没配 key / API 挂了 / 库里还没有当前模型的指纹）时
     自动退回纯关键词，结果形状不变。
+    space 不传 = 只搜 personal（V6 隔离）；"all" = 跨全库。
     """
+    space = resolve_space(space)
     kw_rows = _keyword_rows(query, space)
     vec_ids = embeddings.vector_search(query, space=space, k=VEC_TOP_K)
     if not vec_ids:
@@ -263,6 +278,7 @@ def list_memories(
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
+    space = resolve_space(space)
     conds, params = [], []
     if space:
         conds.append("space = ?")

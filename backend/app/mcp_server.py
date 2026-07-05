@@ -39,7 +39,9 @@ def memory_search(query: str, space: str | None = None, limit: int = 8) -> dict:
     V5 起带语义检索：查询词和记忆字面不同也能召回（搜"难过"能找到
     "眼泪在眼眶里打转"），所以用自然的词直接搜就好，不用猜原文用词。
     需要某条的完整内容和来源时，再用 memory_recall(id) 取详情。
-    space 可选：personal（默认核心层，关系与个人）/ ember / vps 等项目空间。
+    space 语义（V6 空间隔离）：**不传 = 只搜 personal 核心层**（关系与个人）。
+    聊项目/技术话题务必显式传对应空间（ember / vps / ...）；
+    确实要跨全库找传 "all"。
     """
     results = memories.search_memories(query, space=space, limit=min(limit, 20))
     return {"count": len(results), "results": results}
@@ -99,6 +101,8 @@ def memory_list(
     """分页浏览记忆目录，先返回统计概览（总数、按空间、按层级），再给当页短条目。
 
     永远分页（每页 20 条），不会一次吐出全库。日期格式 YYYY-MM-DD。
+    space 语义与 memory_search 一致：不传 = 只看 personal 核心层；
+    项目空间显式传（ember / vps / ...）；跨全库传 "all"。
     """
     return memories.list_memories(
         space=space, date_from=date_from, date_to=date_to, page=page
