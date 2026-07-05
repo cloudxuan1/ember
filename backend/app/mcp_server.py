@@ -33,9 +33,11 @@ mcp = FastMCP(
 
 @mcp.tool()
 def memory_search(query: str, space: str | None = None, limit: int = 8) -> dict:
-    """搜索记忆，返回目录（短结果 + ID），不含全文。
+    """搜索记忆（语义 + 关键词 hybrid），返回目录（短结果 + ID），不含全文。
 
     用户提到过去的事、人物、约定、偏好时先调用这个。
+    V5 起带语义检索：查询词和记忆字面不同也能召回（搜"难过"能找到
+    "眼泪在眼眶里打转"），所以用自然的词直接搜就好，不用猜原文用词。
     需要某条的完整内容和来源时，再用 memory_recall(id) 取详情。
     space 可选：personal（默认核心层，关系与个人）/ ember / vps 等项目空间。
     """

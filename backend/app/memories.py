@@ -2,9 +2,13 @@
 
 from datetime import datetime, timedelta, timezone
 
+from app import embeddings
 from app.db import get_conn
 
 SUMMARY_LEN = 120  # search/list 返回的目录条目里 content 的截断长度
+
+RRF_K = 60      # RRF 融合常数（业界惯用值）：越大头部排名的权重差越平缓
+VEC_TOP_K = 40  # 语义腿取多少候选进融合
 
 RELATIONS = ("led_to", "same_as", "contradicts", "supersedes", "related")
 
@@ -120,7 +124,7 @@ def save_memory(
         raise ValueError(f"tier 必须是 anchor/normal/process，收到: {tier}")
     links = _validate_links(links)  # 先校验后落库，坏 links 不留半条记忆
 
-    def _write(c) -> tuple[int, int]:
+    def _write(c) -> tuple[int, int, bool]:
         cur = c.execute(
             """INSERT INTO memories (date, content, tags, tier, topic, space, start_date, end_date)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -132,14 +136,18 @@ def save_memory(
                 "INSERT INTO memory_sources (memory_id, source_ref, quote) VALUES (?, ?, ?)",
                 (memory_id, source_ref, quote),
             )
-        return memory_id, add_edges(c, memory_id, links, created_by=links_by)
+        # 语义指纹软失败：算不出来照常入库，缺席的等 rebuild_embeddings() 补
+        embedded = embeddings.embed_memory(c, memory_id, content, topic=topic, tags=tags)
+        return memory_id, add_edges(c, memory_id, links, created_by=links_by), embedded
 
     if conn is not None:
-        memory_id, edges_written = _write(conn)
+        memory_id, edges_written, embedded = _write(conn)
     else:
         with get_conn() as c:
-            memory_id, edges_written = _write(c)
+            memory_id, edges_written, embedded = _write(c)
     result = {"id": memory_id, "saved": True}
+    if embeddings.enabled():
+        result["embedded"] = embedded
     if links:
         result["edges_written"] = edges_written
     return result
@@ -189,7 +197,8 @@ def get_memory(memory_id: int) -> dict | None:
     return memory
 
 
-def search_memories(query: str, space: str | None = None, limit: int = 8) -> list[dict]:
+def _keyword_rows(query: str, space: str | None) -> list:
+    """关键词腿：LIKE 子串匹配 + 简单加权，中文子串直接好使（不上 FTS5，分词坑不值得踩）。"""
     tokens = query.split() or [query]
     where = " OR ".join(["(content LIKE ? OR tags LIKE ? OR topic LIKE ?)"] * len(tokens))
     params: list = []
@@ -215,8 +224,36 @@ def search_memories(query: str, space: str | None = None, limit: int = 8) -> lis
             s += 1
         return s
 
-    rows = sorted(rows, key=lambda r: (score(r), r["date"]), reverse=True)
-    return [_short(r) for r in rows[:limit]]
+    return sorted(rows, key=lambda r: (score(r), r["date"]), reverse=True)
+
+
+def search_memories(query: str, space: str | None = None, limit: int = 8) -> list[dict]:
+    """hybrid 检索（V5）：关键词腿 + 语义腿，RRF 融合。
+
+    语义腿不可用（没配 key / API 挂了 / 库里还没有当前模型的指纹）时
+    自动退回纯关键词，结果形状不变。
+    """
+    kw_rows = _keyword_rows(query, space)
+    vec_ids = embeddings.vector_search(query, space=space, k=VEC_TOP_K)
+    if not vec_ids:
+        return [_short(r) for r in kw_rows[:limit]]
+
+    # RRF：score = Σ 1/(K + 该腿排名)，两边都排前面的浮到最上面
+    scores: dict[int, float] = {}
+    for rank, row in enumerate(kw_rows):
+        scores[row["id"]] = scores.get(row["id"], 0.0) + 1.0 / (RRF_K + rank)
+    for rank, mid in enumerate(vec_ids):
+        scores[mid] = scores.get(mid, 0.0) + 1.0 / (RRF_K + rank)
+
+    by_id = {row["id"]: row for row in kw_rows}
+    missing = [mid for mid in vec_ids if mid not in by_id]
+    if missing:
+        marks = ",".join("?" * len(missing))
+        with get_conn() as conn:
+            for row in conn.execute(f"SELECT * FROM memories WHERE id IN ({marks})", missing):
+                by_id[row["id"]] = row
+    top = sorted(scores, key=lambda mid: (scores[mid], by_id[mid]["date"]), reverse=True)
+    return [_short(by_id[mid]) for mid in top[:limit]]
 
 
 def list_memories(
