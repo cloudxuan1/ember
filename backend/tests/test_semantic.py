@@ -93,6 +93,15 @@ def test_vector_space_filter():
     assert ids == [p["id"]]
 
 
+def test_space_isolation_covers_vector_leg():
+    """V6 隔离对语义腿同样生效：默认只回 personal，all 两条腿都跨全库。"""
+    a = memories.save_memory(date="2026-07-01", content="眼泪打转", space="personal")
+    b = memories.save_memory(date="2026-07-02", content="哭了一场", space="ember")
+    assert [r["id"] for r in memories.search_memories("难过")] == [a["id"]]
+    ids_all = {r["id"] for r in memories.search_memories("难过", space="all")}
+    assert ids_all == {a["id"], b["id"]}
+
+
 def test_model_switch_invalidates_then_rebuild(monkeypatch):
     """换模型 = 改 .env + 跑 rebuild：中间态安全降级，重建后语义腿复活。"""
     a = memories.save_memory(date="2026-05-29", content="那晚眼泪在眼眶里打转")

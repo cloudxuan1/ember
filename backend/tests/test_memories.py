@@ -37,7 +37,7 @@ def test_save_rejects_bad_tier():
 def test_search_returns_short_catalog_not_fulltext():
     long_content = "关于 ember 部署的决定：" + "长内容" * 100
     memories.save_memory(date="2026-07-03", content=long_content, tags="部署", space="ember")
-    results = memories.search_memories("部署")
+    results = memories.search_memories("部署", space="ember")
     assert len(results) == 1
     assert len(results[0]["content"]) <= memories.SUMMARY_LEN + 1  # 截断 + 省略号
     assert "id" in results[0]
@@ -48,6 +48,23 @@ def test_search_space_filter_and_tag_weight():
     memories.save_memory(date="2026-07-02", content="VPS 上跑着旧系统", tags="部署", space="vps")
     assert len(memories.search_memories("热情", space="personal")) == 1
     assert memories.search_memories("热情", space="vps") == []
+
+
+def test_search_default_isolates_personal_core():
+    """V6 空间隔离：不传 space = 只搜 personal，项目记忆不稀释核心层；all 才跨全库。"""
+    p = memories.save_memory(date="2026-07-01", content="喜欢热情一点的语气")
+    memories.save_memory(date="2026-07-02", content="容器日志里语气冷冰冰的报错", space="vps")
+    assert [r["id"] for r in memories.search_memories("语气")] == [p["id"]]
+    assert len(memories.search_memories("语气", space="all")) == 2
+
+
+def test_list_default_isolates_personal_core():
+    memories.save_memory(date="2026-07-01", content="核心记忆")
+    memories.save_memory(date="2026-07-02", content="项目记忆", space="ember")
+    default = memories.list_memories()
+    assert default["stats"]["total"] == 1
+    assert default["stats"]["by_space"] == {"personal": 1}
+    assert memories.list_memories(space="all")["stats"]["total"] == 2
 
 
 def test_list_pagination_and_stats():
