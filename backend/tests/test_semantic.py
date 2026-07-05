@@ -124,6 +124,20 @@ def test_delete_cascades_fingerprint():
     assert _emb_rows() == []
 
 
+def test_rebuild_works_as_first_entry_in_fresh_process(monkeypatch):
+    """P1 回归（codex 审出）：python -m app.embeddings 独立跑时 rebuild 是
+    进程里第一个入口，没人开过连接、vec 状态未探测——不得误报扩展不可用。"""
+    import app.db as db
+
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    saved = memories.save_memory(date="2026-07-05", content="眼泪在眼眶里打转")
+    monkeypatch.setattr(embeddings, "embed_texts", fake_embed)
+    monkeypatch.setattr(db, "_vec_status", None)  # 模拟全新进程
+    stats = embeddings.rebuild_embeddings()
+    assert stats["embedded_now"] == 1
+    assert [r["id"] for r in memories.search_memories("难过")] == [saved["id"]]
+
+
 def test_disabled_without_key_keeps_old_behavior(monkeypatch):
     """没配 key = 语义腿关闭：save 结果不带 embedded 字段，搜索纯关键词。"""
     monkeypatch.delenv("EMBEDDING_API_KEY")
