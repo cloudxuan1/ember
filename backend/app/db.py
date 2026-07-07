@@ -102,6 +102,14 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
     created_at TEXT DEFAULT (datetime('now','+8 hours'))
 );
 CREATE INDEX IF NOT EXISTS idx_emb_model ON memory_embeddings(model);
+
+-- 浮现日志（V6b）：①③ 层的冷却依据——同一条记忆 3 天内不重复递。
+-- ② 话题共振层不记也不查这张表（相关记忆永远该到场）。
+CREATE TABLE IF NOT EXISTS briefing_log (
+    memory_id   INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    surfaced_at TEXT DEFAULT (datetime('now','+8 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_briefing_mem ON briefing_log(memory_id, surfaced_at);
 """
 
 

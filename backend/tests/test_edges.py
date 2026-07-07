@@ -82,6 +82,18 @@ def test_bad_links_reject_whole_save():
         assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1
 
 
+def test_superseded_shows_in_search_catalog():
+    """搜索目录要让模型看见"事实已翻页"——否则旧事实会被当成现状说出去。"""
+    old = _save("朋友要生孩子了")
+    new = memories.save_memory(
+        date="2026-07-02", content="朋友生孩子了，是女宝",
+        links=[{"id": old, "relation": "supersedes"}],
+    )
+    results = {r["id"]: r for r in memories.search_memories("生孩子")}
+    assert results[old]["superseded_by"] == new["id"]
+    assert "superseded_by" not in results[new["id"]]  # 现行事实不带多余字段
+
+
 def test_supersedes_edge_syncs_superseded_by_column():
     old = _save("旧说法")
     new = memories.save_memory(

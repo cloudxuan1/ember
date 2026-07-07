@@ -1,11 +1,11 @@
-"""ember 的 MCP 工具层：五个工具，少而清楚。纪律写进工具本身。"""
+"""ember 的 MCP 工具层：五个记忆操作工具 + briefing（V6b），少而清楚。纪律写进工具本身。"""
 
 import os
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from app import memories
+from app import briefing, memories
 
 # FastMCP 默认只放行本机 Host 头（DNS-rebinding 防护），
 # 经 Cloudflare Tunnel 进来的请求带公网域名，必须显式加进白名单，否则 421。
@@ -107,6 +107,23 @@ def memory_list(
     return memories.list_memories(
         space=space, date_from=date_from, date_to=date_to, page=page
     )
+
+
+@mcp.tool()
+def memory_briefing(topic: str | None = None) -> dict:
+    """开场小抄（V6b 主动浮现）：会话开始时调一次，接住"进行中的事"。
+
+    返回至多 8 条分层标注的记忆，每条带 reason（进行中的事 / 和眼下话题
+    相关 / 最近的事）+ 短内容 + id，细节用 memory_recall(id) 取。
+    topic 传用户开场聊的内容（原话或主题词都行），不传则只出
+    "进行中 + 近期"两层。
+
+    分寸：这是背景记忆，不是任务清单。自然地主动提起其中一两件
+    最相关或最有温度的事，其余记在心里、话题碰到再用；
+    不念清单、不逐条汇报。同一条记忆 3 天内不会重复递给你，
+    没提的不算错过。
+    """
+    return briefing.build_briefing(topic=topic)
 
 
 @mcp.tool()
