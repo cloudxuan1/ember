@@ -165,6 +165,35 @@ def test_reflow_respects_min_messages(client, fake_llm):
     assert result["skipped"] is True and result["pending"] == 2
 
 
+def test_reflow_feeds_known_memories_and_saves_link_suggestions(client, fake_llm, monkeypatch):
+    """kiwi-mem 学的两招：提取前给模型看已知记忆防重；矛盾/进展建议 supersedes 边。"""
+    old = memories.save_memory(date="2026-04-19", content="朋友要生孩子了")["id"]
+    cid = _send(client, "要生孩子").json()["conversation_id"]  # 话题跟已知记忆搭上（测试环境纯关键词）
+    _send(client, "要生孩子", conversation_id=cid)
+    prompts = []
+
+    def fake_extract(model, messages, timeout, max_tokens=2048):
+        prompts.append(messages[0]["content"])
+        return json.dumps([{
+            "date": "2026-07-08", "content": "朋友的宝宝三个月了", "topic": "朋友",
+            "links": [
+                {"memory_id": old, "relation": "supersedes"},
+                {"memory_id": -1, "relation": "supersedes"},     # 瞎编的 id，丢弃
+                {"memory_id": old, "relation": "contradicts"},   # 纪律外关系，丢弃
+            ],
+        }], ensure_ascii=False)
+
+    monkeypatch.setattr(gateway, "_completion", fake_extract)
+    result = reflow.run_reflow(cid)
+    assert result["drafts"] == 1
+    assert "要生孩子" in prompts[0] and "已知记忆" in prompts[0]  # 已知信息进了提取 prompt
+    with get_conn() as conn:
+        d = conn.execute("SELECT links FROM memory_drafts ORDER BY id DESC").fetchone()
+    links = json.loads(d["links"])
+    assert len(links) == 1
+    assert links[0]["memory_id"] == old and links[0]["relation"] == "supersedes"
+
+
 # ---------- 门禁 ----------
 
 

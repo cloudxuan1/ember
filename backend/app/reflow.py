@@ -13,7 +13,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
-from app import drafts, gateway
+from app import drafts, gateway, memories
 from app.db import get_conn
 
 REFLOW_MIN_MESSAGES = int(os.environ.get("REFLOW_MIN_MESSAGES", "12"))  # 攒够 ~6 轮才提取
@@ -36,10 +36,34 @@ EXTRACT_PROMPT = """你是记忆提取器。从下面这段对话里提取值得
 - space: "personal"（默认）；纯聊 ember/技术项目的用对应空间名
 - start_date / end_date: 只有"一段时间的事"（进行中的计划/状态/期限）才填，可只填一头；一天的事别填
 - quote: 对话里的关键原话片段（一两句）
+- links: 可选。跟下方"已知记忆"有关系才填：
+  [{"memory_id": 已知记忆的id, "relation": "supersedes"}] = 本条是新进展，**覆盖**那条旧事实（如"生了"覆盖"要生了"）
+  [{"memory_id": 已知记忆的id, "relation": "led_to"}] = 那条旧事**导致**了本条。只用这两种关系。
+
+已知记忆（**已经在库里，别重复提取**；对话里有它们的新进展/矛盾时，提取新条并用 links 建议覆盖）：
+{known}
 
 只输出 JSON 数组，不要解释。对话如下：
 
 """
+
+
+def _known_memories(rows) -> tuple[str, str]:
+    """拿最近几条用户消息当查询，搜相关已有记忆——给提取模型当"已知信息"（kiwi-mem 的防重招）。"""
+    user_text = " ".join(r["content"] for r in rows if r["role"] == "user")[-300:]
+    if not user_text.strip():
+        return "（无）", ""
+    try:
+        related = memories.search_memories(user_text, space="all", limit=8)
+    except Exception:
+        return "（无）", ""
+    if not related:
+        return "（无）", ""
+    lines = [
+        f"#{m['id']} [{m['date']}] {m['content'][:80]}" + ("（已被覆盖）" if m.get("superseded_by") else "")
+        for m in related
+    ]
+    return "\n".join(lines), user_text
 
 
 def _parse_drafts(raw: str) -> list[dict]:
@@ -57,6 +81,15 @@ def _parse_drafts(raw: str) -> list[dict]:
         row = {k: item[k] for k in allowed if k in item}
         if row.get("tier") not in ("anchor", "normal", "process"):
             row["tier"] = "normal"  # 模型瞎填的 tier 兜底成 normal，别让整批卡死重试
+        links = [
+            {"memory_id": l["memory_id"], "relation": l["relation"]}
+            for l in (item.get("links") or [])
+            if isinstance(l, dict)
+            and isinstance(l.get("memory_id"), int) and l["memory_id"] > 0
+            and l.get("relation") in ("supersedes", "led_to")  # 导入纪律：只这两种边
+        ]
+        if links:
+            row["links"] = links
         out.append(row)
     return out
 
@@ -80,9 +113,11 @@ def run_reflow(conversation_id: int, min_messages: int = 0) -> dict:
     transcript = "\n".join(
         f"[{r['created_at']}] {'轩' if r['role'] == 'user' else 'AI'}: {r['content']}" for r in rows
     )
+    known, _ = _known_memories(rows)
+    prompt = EXTRACT_PROMPT.replace("{known}", known)  # 不用 .format——提示词里的 JSON 花括号会炸
     raw = gateway._completion(
         reflow_model(),
-        [{"role": "user", "content": f"{EXTRACT_PROMPT}（对话发生在 {today}）\n{transcript}"}],
+        [{"role": "user", "content": f"{prompt}（对话发生在 {today}）\n{transcript}"}],
         REFLOW_TIMEOUT, max_tokens=4000,
     )
     items = _parse_drafts(raw)
