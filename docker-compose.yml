@@ -20,6 +20,11 @@ services:
       - EMBEDDING_API_BASE=${EMBEDDING_API_BASE:-https://openrouter.ai/api/v1}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen/qwen3-embedding-8b}
+      # 聊天网关（终局试验田）：CHAT_MODEL 留空 = /chat 关闭；key 默认复用 EMBEDDING_API_KEY
+      - CHAT_MODEL=${CHAT_MODEL:-}
+      - SENTINEL_MODEL=${SENTINEL_MODEL:-}
+      - REFLOW_MODEL=${REFLOW_MODEL:-}
+      - REFLOW_MIN_MESSAGES=${REFLOW_MIN_MESSAGES:-12}
     volumes:
       # V2 起 SQLite 数据库放这里（data/ 已 gitignore，永不入库）
       - ./data:/app/data

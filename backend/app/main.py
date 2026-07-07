@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import oauth, review
+from app import gateway, oauth, review
 from app.db import init_db
 from app.mcp_server import mcp
 
@@ -25,6 +25,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="ember", version="0.3.0", lifespan=lifespan)
 app.include_router(oauth.router)
 app.include_router(review.router)
+app.include_router(gateway.router)
 app.mount(f"/{MCP_PATH}", mcp.streamable_http_app())
 app.add_middleware(
     CORSMiddleware,

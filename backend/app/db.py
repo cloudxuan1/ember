@@ -110,6 +110,25 @@ CREATE TABLE IF NOT EXISTS briefing_log (
     surfaced_at TEXT DEFAULT (datetime('now','+8 hours'))
 );
 CREATE INDEX IF NOT EXISTS idx_briefing_mem ON briefing_log(memory_id, surfaced_at);
+
+-- 聊天网关（终局试验田）：对话原文永存，回流提取只从这里读。
+-- reflow_anchor_id = 回流锚点：该会话已提取到哪条消息（锚点逐组推进，失败不漏不重）。
+CREATE TABLE IF NOT EXISTS conversations (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    title            TEXT DEFAULT '',
+    reflow_anchor_id INTEGER DEFAULT 0,
+    created_at       TEXT DEFAULT (datetime('now','+8 hours')),
+    updated_at       TEXT DEFAULT (datetime('now','+8 hours'))
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+    role            TEXT NOT NULL CHECK (role IN ('user','assistant')),
+    content         TEXT NOT NULL,
+    memory_meta     TEXT DEFAULT '',   -- 本轮注入了哪些记忆（JSON）——prompt 透明不黑箱
+    created_at      TEXT DEFAULT (datetime('now','+8 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_chatmsg_conv ON chat_messages(conversation_id, id);
 """
 
 
