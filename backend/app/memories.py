@@ -51,6 +51,8 @@ def _short(row) -> dict:
         item["start_date"] = row["start_date"]
         item["end_date"] = row["end_date"]
         item["interval_status"] = status
+    if row["superseded_by"]:  # 事实已翻页：目录里就要让模型看见，别把旧事实当现状说
+        item["superseded_by"] = row["superseded_by"]
     return item
 
 
