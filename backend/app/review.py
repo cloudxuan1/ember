@@ -19,7 +19,7 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from app import drafts, oauth
+from app import drafts, memories, oauth
 
 router = APIRouter()
 
@@ -113,7 +113,8 @@ CONSOLE_PAGE = """<!doctype html>
   h1 { font-size: 1.1rem; margin: 0; } h1::before { content: "🔥 "; }
   #statsRow { display: flex; justify-content: space-between; align-items: center; gap: .5rem; margin-top: .25rem; }
   #stats { color: var(--dim); font-size: .85rem; }
-  #batches { display: flex; gap: .4rem; overflow-x: auto; padding: .5rem 0 .2rem; }
+  #batches { display: flex; gap: .4rem; overflow-x: auto; padding: .5rem 0 .2rem; align-items: center; }
+  .memsearch { flex: 1; min-width: 9rem; padding: .3rem .7rem; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: #eee; font-size: .85rem; }
   .chip { flex: none; border: 1px solid var(--line); border-radius: 999px; padding: .25rem .7rem; font-size: .8rem; color: var(--dim); background: none; }
   .chip.on { border-color: var(--accent); color: var(--accent); }
   main { padding: .8rem; display: grid; gap: .8rem; max-width: 640px; margin: 0 auto; }
@@ -159,6 +160,7 @@ CONSOLE_PAGE = """<!doctype html>
   <h1>ember 审核台</h1>
   <div id="statsRow">
     <div id="stats">加载中…</div>
+    <button id="memBtn" class="chip">🗂 记忆库</button>
     <button id="modeBtn" class="chip">↩ 已审核</button>
   </div>
   <div id="batches"></div>
@@ -187,6 +189,7 @@ async function api(path, options) {
 }
 
 async function load() {
+  if (mode === "memories") return loadMemories();
   if (mode === "reviewed") return loadReviewed();
   const q = currentBatch ? "&batch=" + encodeURIComponent(currentBatch) : "";
   const data = await api("/review/api/drafts?status=pending" + q);
@@ -209,11 +212,84 @@ async function loadReviewed() {
   $("#empty").hidden = items.length > 0;
 }
 
-$("#modeBtn").onclick = () => {
-  mode = mode === "pending" ? "reviewed" : "pending";
-  $("#modeBtn").textContent = mode === "pending" ? "↩ 已审核" : "← 回待审核";
+function setMode(next) {
+  mode = mode === next ? "pending" : next;
+  $("#modeBtn").textContent = mode === "reviewed" ? "← 回待审核" : "↩ 已审核";
+  $("#memBtn").textContent = mode === "memories" ? "← 回待审核" : "🗂 记忆库";
   load();
-};
+}
+$("#modeBtn").onclick = () => setMode("reviewed");
+$("#memBtn").onclick = () => setMode("memories");
+
+// ---------- 记忆库视图：已入库记忆的浏览与修改（打 sensitive 标签的家） ----------
+
+let memPage = 1, memQuery = "";
+
+async function loadMemories() {
+  const params = "?page=" + memPage + (memQuery ? "&q=" + encodeURIComponent(memQuery) : "");
+  const data = await api("/review/api/memories" + params);
+  $("#stats").textContent = "记忆库 " + data.stats.total + " 条 · 第 " + data.page + "/" + data.total_pages + " 页";
+  const box = $("#batches");
+  box.replaceChildren();
+  const search = document.createElement("input");
+  search.className = "memsearch";
+  search.placeholder = "🔍 搜内容 / 标签 / 主题";
+  search.value = memQuery;
+  search.onchange = () => { memQuery = search.value.trim(); memPage = 1; loadMemories(); };
+  box.append(search);
+  if (data.page > 1) {
+    const p = chipEl("‹ 上一页", false);
+    p.onclick = () => { memPage--; loadMemories(); };
+    box.append(p);
+  }
+  if (data.page < data.total_pages) {
+    const n = chipEl("下一页 ›", false);
+    n.onclick = () => { memPage++; loadMemories(); };
+    box.append(n);
+  }
+  $("#list").replaceChildren(...data.items.map(memCard));
+  $("#empty").hidden = data.items.length > 0;
+}
+
+function memCard(m) {
+  const el = document.createElement("div");
+  el.className = "card";
+  const box = document.createElement("div");
+  box.className = "membox";
+  const head = document.createElement("div");
+  head.className = "boxid";
+  head.append(span("记忆#" + m.id), metaEl(m));
+  const body = document.createElement("div");
+  body.className = "boxtext";
+  body.textContent = m.content;
+  box.append(head, body);
+  el.append(box);
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(btn("✎ 改", "edit", () => openMemEditor(m, el)));
+  el.append(actions);
+  return el;
+}
+
+function openMemEditor(m, el) {
+  const { form, values } = editorForm(m);
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(
+    btn("✓ 保存", "approve", async () => {
+      const updated = await api("/review/api/memories/" + m.id, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values()),
+      });
+      el.replaceWith(memCard(updated));
+      toast("已保存，指纹已跟着更新");
+    }),
+    btn("取消", "reject", () => el.replaceWith(memCard(m))),
+  );
+  form.append(actions);
+  el.replaceChildren(span("记忆#" + m.id), form);
+}
 
 function reviewedCard(d) {
   const el = document.createElement("div");
@@ -459,7 +535,8 @@ async function act(id, action, el, edits) {
   load();
 }
 
-function openEditor(d, el) {
+function editorForm(d) {
+  // 草稿编辑器和记忆库编辑器共用的表单体：同一批字段、同一副长相
   const form = document.createElement("div");
   form.className = "editor";
   const fields = {};
@@ -495,9 +572,14 @@ function openEditor(d, el) {
     add("end_date（区间终点，可空）", input("end_date", d.end_date)),
   );
   form.append(add("content", content), row1, row2, row3, add("tags（逗号分隔，中文逗号也行）", input("tags", d.tags)));
+  const values = () => Object.fromEntries(Object.entries(fields).map(([k, i]) => [k, i.value]));
+  return { form, values };
+}
+
+function openEditor(d, el) {
+  const { form, values } = editorForm(d);
   const actions = document.createElement("div");
   actions.className = "actions";
-  const values = () => Object.fromEntries(Object.entries(fields).map(([k, i]) => [k, i.value]));
   actions.append(
     btn("✓ 保存并通过", "approve", () => act(d.id, "approve", el, values())),
     btn("仅保存", "edit", async () => {
@@ -619,6 +701,28 @@ def api_reject_draft(draft_id: int, request: Request):
     if result is None:
         return JSONResponse({"error": "not_found", "error_description": "草稿不存在或已审核过"}, status_code=404)
     return result
+
+
+@router.get("/review/api/memories")
+def api_browse_memories(request: Request, page: int = 1, q: str | None = None, space: str | None = None):
+    """记忆库视图：已入库记忆分页浏览（默认跨全库），供打标/修正。"""
+    if not _authed(request):
+        return _unauthorized()
+    return memories.browse_memories(q=q, space=space, page=page)
+
+
+@router.patch("/review/api/memories/{memory_id}")
+async def api_update_memory(memory_id: int, request: Request):
+    """改一条已入库记忆（tags 打 sensitive、修正内容等）。指纹跟着内容自动重算。"""
+    if not _authed(request):
+        return _unauthorized()
+    try:
+        updated = memories.update_memory(memory_id, await request.json())
+    except ValueError as e:
+        return JSONResponse({"error": "invalid_memory", "error_description": str(e)}, status_code=400)
+    if updated is None:
+        return JSONResponse({"error": "not_found", "error_description": "记忆不存在"}, status_code=404)
+    return updated
 
 
 @router.post("/review/api/drafts/{draft_id}/unreview")
