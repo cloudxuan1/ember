@@ -12,11 +12,21 @@ VEC_TOP_K = 40  # 语义腿取多少候选进融合
 
 RELATIONS = ("led_to", "same_as", "contradicts", "supersedes", "related")
 
+# 审核台"记忆库"视图可改的字段白名单——is_resolved/superseded_by 等状态列不开放手改
+MEMORY_EDITABLE = ("date", "content", "tags", "tier", "topic", "space", "start_date", "end_date")
+
 _TZ_BEIJING = timezone(timedelta(hours=8))  # 与库里 created_at 的 +8 保持一致
 
 
 def _today() -> str:
     return datetime.now(_TZ_BEIJING).date().isoformat()
+
+
+def normalize_tags(tags: str) -> str:
+    """中文逗号/顿号一律当分隔符——轩打中文标点不该被卡住。"""
+    for sep in ("，", "、"):
+        tags = tags.replace(sep, ",")
+    return ",".join(t.strip() for t in tags.split(",") if t.strip())
 
 
 def interval_status(start_date: str | None, end_date: str | None, today: str | None = None) -> str | None:
@@ -316,6 +326,71 @@ def list_memories(
         "total_pages": max((total + page_size - 1) // page_size, 1),
         "items": [_short(r) for r in rows],
     }
+
+
+def browse_memories(q: str | None = None, space: str | None = None, page: int = 1, page_size: int = 20) -> dict:
+    """审核台"记忆库"视图：默认跨全库（管理视角，与检索的 personal 默认不同），
+    content 不截断——要能整条校对着改。q 是关键词筛选（content/tags/topic 子串）。"""
+    conds, params = [], []
+    if space and space != "all":
+        conds.append("space = ?")
+        params.append(space)
+    if q:
+        conds.append("(content LIKE ? OR tags LIKE ? OR topic LIKE ?)")
+        params += [f"%{q}%"] * 3
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    page = max(page, 1)
+    with get_conn() as conn:
+        total = conn.execute(f"SELECT COUNT(*) FROM memories {where}", params).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT * FROM memories {where} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?",
+            params + [page_size, (page - 1) * page_size],
+        ).fetchall()
+    items = []
+    for r in rows:
+        item = dict(r)
+        item["interval_status"] = interval_status(r["start_date"], r["end_date"])
+        items.append(item)
+    return {
+        "stats": {"total": total},
+        "page": page,
+        "total_pages": max((total + page_size - 1) // page_size, 1),
+        "items": items,
+    }
+
+
+def update_memory(memory_id: int, edits: dict) -> dict | None:
+    """改一条已入库记忆（审核台"记忆库"视图的后端）。
+
+    只收白名单字段；content/topic/tags 任一变了就重算语义指纹（软失败，
+    rebuild 可补）。返回更新后的完整记忆，不存在返回 None。
+    """
+    fields = {k: edits[k] for k in MEMORY_EDITABLE if k in edits}
+    if not fields:
+        raise ValueError(f"没有可改的字段（可改：{'/'.join(MEMORY_EDITABLE)}）")
+    if "tier" in fields and fields["tier"] not in ("anchor", "normal", "process"):
+        raise ValueError(f"tier 必须是 anchor/normal/process，收到: {fields['tier']}")
+    if "date" in fields and not str(fields["date"] or "").strip():
+        raise ValueError("date 不能改成空")
+    if "content" in fields and not str(fields["content"] or "").strip():
+        raise ValueError("content 不能改成空")
+    if "tags" in fields:
+        fields["tags"] = normalize_tags(str(fields["tags"] or ""))
+    for k in ("start_date", "end_date"):  # 表单送来的空串 = 清掉区间端点
+        if k in fields and not fields[k]:
+            fields[k] = None
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        if row is None:
+            return None
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        conn.execute(f"UPDATE memories SET {sets} WHERE id = ?", [*fields.values(), memory_id])
+        if any(k in fields and fields[k] != row[k] for k in ("content", "topic", "tags")):
+            merged = {**dict(row), **fields}
+            embeddings.embed_memory(
+                conn, memory_id, merged["content"], topic=merged["topic"], tags=merged["tags"]
+            )
+    return get_memory(memory_id)
 
 
 def get_status() -> dict:

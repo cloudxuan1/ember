@@ -28,13 +28,6 @@ _INSERT_SQL = """INSERT INTO memory_drafts
     VALUES (:date, :content, :tags, :tier, :topic, :space, :start_date, :end_date, :source_ref, :quote, :batch, :links)"""
 
 
-def _normalize_tags(tags: str) -> str:
-    """中文逗号/顿号一律当分隔符——轩打中文标点不该被卡住。"""
-    for sep in ("，", "、"):
-        tags = tags.replace(sep, ",")
-    return ",".join(t.strip() for t in tags.split(",") if t.strip())
-
-
 def _normalize_links(links) -> str:
     """边建议（V4）：列表或 JSON 字符串，规整后存 TEXT。
 
@@ -141,7 +134,7 @@ def _validate(date: str, content: str, tier: str) -> None:
 
 def _prepare(item: dict) -> dict:
     row = {**_DEFAULTS, **{k: v for k, v in item.items() if k in EDITABLE_FIELDS}}
-    row["tags"] = _normalize_tags(str(row["tags"] or ""))
+    row["tags"] = memories.normalize_tags(str(row["tags"] or ""))
     row["links"] = _normalize_links(row["links"])
     _blank_interval_to_null(row)
     _validate(str(row["date"] or ""), str(row["content"] or ""), row["tier"])
@@ -225,7 +218,7 @@ def update_draft(draft_id: int, edits: dict) -> dict | None:
     if not fields:
         return get_draft(draft_id)
     if "tags" in fields:
-        fields["tags"] = _normalize_tags(str(fields["tags"] or ""))
+        fields["tags"] = memories.normalize_tags(str(fields["tags"] or ""))
     if "links" in fields:
         fields["links"] = _normalize_links(fields["links"])
     _blank_interval_to_null(fields)
@@ -299,7 +292,7 @@ def approve_draft(draft_id: int, edits: dict | None = None) -> dict | None:
     if edits:
         fields = {k: v for k, v in edits.items() if k in EDITABLE_FIELDS}
         if "tags" in fields:
-            fields["tags"] = _normalize_tags(str(fields["tags"] or ""))
+            fields["tags"] = memories.normalize_tags(str(fields["tags"] or ""))
         if "links" in fields:
             fields["links"] = _normalize_links(fields["links"])
         _blank_interval_to_null(fields)
