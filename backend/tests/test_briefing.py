@@ -74,6 +74,18 @@ def test_recent_layer_surfaces_new_memories():
     assert items[mid]["reason"] == briefing.REASON_RECENT
 
 
+def test_recent_layer_sorts_by_event_date_not_created_at():
+    """刚审完入库的四月旧事不算"最近"——按事件时间排，不按入库时间排。"""
+    april = _save("四月的旧事", date="2026-04-19")  # 后审先发生
+    july = _save("七月的新事", date="2026-07-08")
+    fillers = [_save(f"六月的事{i}", date=f"2026-06-0{i + 1}") for i in range(3)]
+    result = briefing.build_briefing()
+    ids = _ids(result)
+    assert july in ids and ids.index(july) < min(ids.index(f) for f in fillers if f in ids)
+    # 超出 RECENT_CAP 时，四月的不该挤掉事件时间更近的
+    assert april not in ids
+
+
 # ---------- 剔除规则 ----------
 
 

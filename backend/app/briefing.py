@@ -1,7 +1,8 @@
 """主动浮现（V6b）：开场小抄的三级漏斗。
 
 ① 没完的事——区间状态现算为 ongoing/upcoming；② 话题共振——topic 走
-V5 hybrid 检索（语义腿挂了自动退关键词）；③ 近期——最近入库。
+V5 hybrid 检索（语义腿挂了自动退关键词）；③ 近期——事件时间最近
+（按 date 排不按 created_at 排：刚审完入库的四月旧事不算"最近"）。
 合并去重、sensitive 剔除、superseded 剔除，总上限 8 条。
 冷却：①③ 层同一条记忆 3 天内不重复递（briefing_log）；② 层不冷却——
 主动聊到相关的事，相关记忆永远该到场。
@@ -69,7 +70,7 @@ def _recent(conn) -> list:
     return conn.execute(
         """SELECT * FROM memories
            WHERE space = 'personal' AND superseded_by IS NULL
-           ORDER BY created_at DESC, id DESC LIMIT ?""",
+           ORDER BY date DESC, id DESC LIMIT ?""",
         (RECENT_CAP * 3,),  # 多取一些，冷却/sensitive/去重筛完还够用
     ).fetchall()
 
