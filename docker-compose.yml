@@ -23,6 +23,12 @@ services:
     volumes:
       # V2 起 SQLite 数据库放这里（data/ 已 gitignore，永不入库）
       - ./data:/app/data
+    # 日志自动轮转：单文件 10MB、最多 3 份，写满自动滚动删旧（wire 透视日志永久保留的配套）
+    logging: &log-rotate
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ember 自己的 Cloudflare Tunnel，与旧系统的 ombre-tunnel 完全独立，互不影响
   tunnel:
@@ -34,3 +40,4 @@ services:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
     depends_on:
       - ember
+    logging: *log-rotate
