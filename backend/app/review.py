@@ -85,10 +85,11 @@ def _unauthorized() -> JSONResponse:
 LOGIN_PAGE = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ember 审核台</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
 <style>
-  body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #FFF6DE; color: #4A3D2E; }
+  body { font-family: "Noto Sans SC", system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #FFF6DE; color: #4A3D2E; }
   form { background: #FFFEF8; padding: 2rem; border-radius: 12px; width: min(320px, 85vw); }
-  h1 { font-size: 1.2rem; margin: 0 0 1rem; } h1::before { content: "🔥 "; }
+  h1 { font-family: "Noto Serif SC", serif; font-weight: 900; font-size: 1.2rem; margin: 0 0 1rem; } h1::before { content: "🔥 "; }
   input[type=password] { width: 100%; box-sizing: border-box; padding: .6rem; border-radius: 8px; border: 1px solid #DFCFA8; background: #FFF6DE; color: #4A3D2E; }
   button { margin-top: 1rem; width: 100%; padding: .6rem; border: 0; border-radius: 8px; background: #F48F68; color: #5C2410; font-size: 1rem; }
   .err { color: #C24A28; }
@@ -105,31 +106,33 @@ LOGIN_PAGE = """<!doctype html>
 CONSOLE_PAGE = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ember 审核台</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
 <style>
   :root { --bg: #FFF6DE; --card: #FFFEF8; --line: #EBDDBE; --accent: #E0602F; --ok: #2E7B78; --dim: #9C8A6E; }
   * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: #4A3D2E; padding-bottom: 4rem; }
+  body { font-family: "Noto Sans SC", system-ui, sans-serif; margin: 0; background: var(--bg); color: #4A3D2E; padding-bottom: 4rem; }
   header { position: sticky; top: 0; background: var(--bg); padding: .8rem 1rem .5rem; border-bottom: 1px solid var(--line); z-index: 2; }
-  h1 { font-size: 1.1rem; margin: 0; } h1::before { content: "🔥 "; }
+  h1 { font-family: "Noto Serif SC", serif; font-weight: 900; font-size: 1.1rem; margin: 0; } h1::before { content: "🔥 "; }
   #statsRow { display: flex; justify-content: space-between; align-items: center; gap: .5rem; margin-top: .25rem; flex-wrap: wrap; }
-  #stats { color: var(--dim); font-size: .85rem; }
+  #stats { font-family: "Fira Code", ui-monospace, monospace; color: var(--dim); font-size: .85rem; }
   #batches { display: flex; gap: .4rem; overflow-x: auto; padding: .5rem 0 .2rem; align-items: center; }
   .memsearch { flex: 1; min-width: 9rem; padding: .3rem .7rem; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: #4A3D2E; font-size: .85rem; }
-  .chip { flex: none; border: 1px solid var(--line); border-radius: 999px; padding: .25rem .7rem; font-size: .8rem; color: var(--dim); background: none; }
+  .chip { flex: none; font-family: "Fira Code", ui-monospace, monospace; border: 1px solid var(--line); border-radius: 999px; padding: .25rem .7rem; font-size: .8rem; color: var(--dim); background: none; }
   .chip.on { border-color: var(--accent); color: var(--accent); }
   main { padding: .8rem; display: grid; gap: .8rem; max-width: 640px; margin: 0 auto; }
   .card { background: var(--card); border-radius: 12px; padding: .9rem; }
-  .meta { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .75rem; color: var(--dim); margin-bottom: .5rem; align-items: center; }
-  .badge { border: 1px solid var(--line); border-radius: 6px; padding: .05rem .4rem; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4rem; font-family: "Fira Code", ui-monospace, monospace; font-size: .75rem; color: var(--dim); margin-bottom: .5rem; align-items: center; }
+  .badge { font-family: "Fira Code", ui-monospace, monospace; border: 1px solid var(--line); border-radius: 6px; padding: .05rem .4rem; }
   .badge.anchor { border-color: var(--accent); color: var(--accent); }
   .badge.interval { border-color: #8BDFDD; color: #2E7B78; }
   .badge.approved { border-color: var(--ok); color: var(--ok); }
   .badge.rejected { border-color: #F48F68; color: #C24A28; }
   .content { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; }
   .quote { margin-top: .6rem; padding: .5rem .7rem; border-left: 3px solid var(--line); color: var(--dim); font-size: .82rem; white-space: pre-wrap; }
-  .quote .ref { display: block; margin-top: .3rem; opacity: .75; word-break: break-all; }
+  .quote .ref { display: block; font-family: "Fira Code", ui-monospace, monospace; margin-top: .3rem; opacity: .75; word-break: break-all; }
   .membox { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: .55rem .75rem; margin-top: .5rem; }
-  .membox .boxid, .addtitle { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; font-size: 1.05rem; font-weight: 700; color: var(--accent); }
+  .membox .boxid, .addtitle { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; font-family: "Noto Serif SC", serif; font-size: 1.05rem; font-weight: 900; color: var(--accent); }
+  .odate { font-family: "Fira Code", ui-monospace, monospace; }
   .membox .boxid .odate { font-size: .72rem; font-weight: 400; color: var(--dim); }
   .membox .boxid .meta { margin: 0; font-weight: 400; }
   .membox .boxtext { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; margin-top: .3rem; }
