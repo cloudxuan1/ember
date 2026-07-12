@@ -1,6 +1,6 @@
 """导入草稿的暂存与审核。
 
-管线纪律（docs/施工计划.md 第 4 节第 3 条）：提取结果先进 memory_drafts，
+管线纪律（docs/项目计划.md 第 4 节第 3 条）：提取结果先进 memory_drafts，
 人工接受/编辑/拒绝后才进 memories；拒绝的不落库（但草稿行保留作审计）。
 只有 pending 状态可改可审；approved/rejected 可撤回（unreview）到 pending 重审。
 """

@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS memory_edges (
 );
 """
 
-# 表结构与 docs/施工计划.md 第 2 节保持一致
+# 表结构与 docs/项目计划.md 第 2 节保持一致
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

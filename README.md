@@ -4,7 +4,7 @@
 
 长期方向：Claude.ai / ChatGPT / Claude Code / Codex / 自写客户端通过 MCP / REST 连接同一个记忆底座。
 
-当前版本：**V2 记忆链路上线**（SQLite 三表 + 5 个 MCP 工具，claude.ai 可通过自定义 connector 连接；`MCP_PATH` 随机路径即访问密钥）。完整路线见 [docs/施工计划.md](docs/施工计划.md)。
+当前状态见 [交接.md](交接.md)（现状+待办，每次开工先读）。完整版本路线见 [docs/项目计划.md](docs/项目计划.md)。
 
 ## 本地运行
 
@@ -33,16 +33,17 @@ docker compose up -d --build
 
 ## 部署
 
-VPS 部署与 Cloudflare Tunnel 配置见 [docs/项目详情.md](docs/项目详情.md) 的「部署和运维」。
+VPS 部署与 Cloudflare Tunnel 配置见 [交接.md](交接.md) 的「技术参考 → 部署和运维」。
 
 ## 客户端接入
 
-MCP 端点带 OAuth 门禁（随机路径 + 授权页口令 + Bearer token 三层）。Claude Code / claude.ai / ChatGPT 各自的接入方式见 [docs/项目详情.md](docs/项目详情.md) 的「MCP」一节。
+MCP 端点带 OAuth 门禁（随机路径 + 授权页口令 + Bearer token 三层）。Claude Code / claude.ai / ChatGPT 各自的接入方式见 [交接.md](交接.md) 的「技术参考 → MCP」一节。
 
 ## 文档
 
 | 文件 | 用途 |
 |---|---|
-| `CLAUDE.md` | AI 协作规则 + 项目快照（每次会话必读） |
-| `docs/项目详情.md` | 完整技术参考，按需查阅 |
-| `docs/施工计划.md` | 版本路线 V0 → V7 与架构决定 |
+| `CLAUDE.md` | AI 协作规则（基本不变，每次会话必读） |
+| `交接.md` | 唯一状态源：仪表盘（现状+待办）+ 历史日志 + 技术参考，每次开工先读 |
+| `docs/项目计划.md` | 设计决定为什么这么定 + 版本路线 V0 → V7，不常翻 |
+| `docs/产出/` | 零散产出物（使用说明书、调研笔记等） |
