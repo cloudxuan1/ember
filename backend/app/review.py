@@ -111,7 +111,7 @@ CONSOLE_PAGE = """<!doctype html>
   body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: #eee; padding-bottom: 4rem; }
   header { position: sticky; top: 0; background: var(--bg); padding: .8rem 1rem .5rem; border-bottom: 1px solid var(--line); z-index: 2; }
   h1 { font-size: 1.1rem; margin: 0; } h1::before { content: "🔥 "; }
-  #statsRow { display: flex; justify-content: space-between; align-items: center; gap: .5rem; margin-top: .25rem; }
+  #statsRow { display: flex; justify-content: space-between; align-items: center; gap: .5rem; margin-top: .25rem; flex-wrap: wrap; }
   #stats { color: var(--dim); font-size: .85rem; }
   #batches { display: flex; gap: .4rem; overflow-x: auto; padding: .5rem 0 .2rem; align-items: center; }
   .memsearch { flex: 1; min-width: 9rem; padding: .3rem .7rem; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: #eee; font-size: .85rem; }
@@ -129,7 +129,7 @@ CONSOLE_PAGE = """<!doctype html>
   .quote { margin-top: .6rem; padding: .5rem .7rem; border-left: 3px solid var(--line); color: var(--dim); font-size: .82rem; white-space: pre-wrap; }
   .quote .ref { display: block; margin-top: .3rem; opacity: .75; word-break: break-all; }
   .membox { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: .55rem .75rem; margin-top: .5rem; }
-  .membox .boxid { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; font-size: 1.05rem; font-weight: 700; color: var(--accent); }
+  .membox .boxid, .addtitle { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; font-size: 1.05rem; font-weight: 700; color: var(--accent); }
   .membox .boxid .odate { font-size: .72rem; font-weight: 400; color: var(--dim); }
   .membox .boxid .meta { margin: 0; font-weight: 400; }
   .membox .boxtext { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; margin-top: .3rem; }
@@ -160,6 +160,7 @@ CONSOLE_PAGE = """<!doctype html>
   <h1>ember 审核台</h1>
   <div id="statsRow">
     <div id="stats">加载中…</div>
+    <button id="addBtn" class="chip">＋ 添加</button>
     <button id="memBtn" class="chip">🗂 记忆库</button>
     <button id="modeBtn" class="chip">↩ 已审核</button>
   </div>
@@ -220,6 +221,65 @@ function setMode(next) {
 }
 $("#modeBtn").onclick = () => setMode("reviewed");
 $("#memBtn").onclick = () => setMode("memories");
+
+// ---------- 手动添加：提取切粗了轩顺手补一条，走同一条草稿→入库管线（反悔区照样能撤回） ----------
+
+const MANUAL_BATCH = "手动添加";
+
+$("#addBtn").onclick = () => {
+  const open = $("#addCard");
+  if (open) { open.remove(); load(); return; }  // 再点一下收起
+  const blank = {
+    date: new Date().toLocaleDateString("sv"),  // 今天，YYYY-MM-DD
+    content: "", tags: "", tier: "normal", topic: "", space: "personal",
+    start_date: "", end_date: "",
+  };
+  const el = document.createElement("div");
+  el.className = "card";
+  el.id = "addCard";
+  const { form, values } = editorForm(blank);
+  let draftId = null;  // 入库分两步（存草稿→通过），记住第一步结果，失败重试不写重
+  const post = async () => {
+    if (draftId === null) {
+      const saved = await api("/review/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...values(), batch: MANUAL_BATCH }),
+      });
+      draftId = saved.ids[0];
+    }
+    return draftId;
+  };
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(
+    btn("✓ 直接入库", "approve", async () => {
+      const id = await post();
+      await api("/review/api/drafts/" + id + "/approve", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values()),  // 带上表单现值：第一步成功第二步失败后她再改再点，以最新内容为准
+      });
+      el.remove();
+      toast("已入库 ✓（反悔区可撤回）");
+      load();
+    }),
+    btn("存草稿", "edit", async () => {
+      await post();
+      el.remove();
+      toast("已存草稿，在「手动添加」批次里");
+      load();
+    }),
+    btn("取消", "reject", () => { el.remove(); load(); }),
+  );
+  form.append(actions);
+  const head = document.createElement("div");
+  head.className = "addtitle";
+  head.append(span("＋ 手动添加"));
+  el.append(head, form);
+  $("#empty").hidden = true;
+  $("#list").prepend(el);
+  form.querySelector("textarea").focus();
+};
 
 // ---------- 记忆库视图：已入库记忆的浏览与修改（打 sensitive 标签的家） ----------
 
