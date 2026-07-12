@@ -86,12 +86,12 @@ LOGIN_PAGE = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ember 审核台</title>
 <style>
-  body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #1a1614; color: #eee; }
-  form { background: #262019; padding: 2rem; border-radius: 12px; width: min(320px, 85vw); }
+  body { font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #FFF6DE; color: #4A3D2E; }
+  form { background: #FFFEF8; padding: 2rem; border-radius: 12px; width: min(320px, 85vw); }
   h1 { font-size: 1.2rem; margin: 0 0 1rem; } h1::before { content: "🔥 "; }
-  input[type=password] { width: 100%; box-sizing: border-box; padding: .6rem; border-radius: 8px; border: 1px solid #555; background: #1a1614; color: #eee; }
-  button { margin-top: 1rem; width: 100%; padding: .6rem; border: 0; border-radius: 8px; background: #d97742; color: #fff; font-size: 1rem; }
-  .err { color: #ff8a80; }
+  input[type=password] { width: 100%; box-sizing: border-box; padding: .6rem; border-radius: 8px; border: 1px solid #DFCFA8; background: #FFF6DE; color: #4A3D2E; }
+  button { margin-top: 1rem; width: 100%; padding: .6rem; border: 0; border-radius: 8px; background: #F48F68; color: #5C2410; font-size: 1rem; }
+  .err { color: #C24A28; }
 </style></head><body>
 <form method="post" action="/review/login">
   <h1>ember 审核台</h1>
@@ -106,15 +106,15 @@ CONSOLE_PAGE = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ember 审核台</title>
 <style>
-  :root { --bg: #1a1614; --card: #262019; --line: #3a3128; --accent: #d97742; --ok: #7cb87c; --dim: #a89a8c; }
+  :root { --bg: #FFF6DE; --card: #FFFEF8; --line: #EBDDBE; --accent: #E0602F; --ok: #2E7B78; --dim: #9C8A6E; }
   * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: #eee; padding-bottom: 4rem; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: #4A3D2E; padding-bottom: 4rem; }
   header { position: sticky; top: 0; background: var(--bg); padding: .8rem 1rem .5rem; border-bottom: 1px solid var(--line); z-index: 2; }
   h1 { font-size: 1.1rem; margin: 0; } h1::before { content: "🔥 "; }
   #statsRow { display: flex; justify-content: space-between; align-items: center; gap: .5rem; margin-top: .25rem; flex-wrap: wrap; }
   #stats { color: var(--dim); font-size: .85rem; }
   #batches { display: flex; gap: .4rem; overflow-x: auto; padding: .5rem 0 .2rem; align-items: center; }
-  .memsearch { flex: 1; min-width: 9rem; padding: .3rem .7rem; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: #eee; font-size: .85rem; }
+  .memsearch { flex: 1; min-width: 9rem; padding: .3rem .7rem; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: #4A3D2E; font-size: .85rem; }
   .chip { flex: none; border: 1px solid var(--line); border-radius: 999px; padding: .25rem .7rem; font-size: .8rem; color: var(--dim); background: none; }
   .chip.on { border-color: var(--accent); color: var(--accent); }
   main { padding: .8rem; display: grid; gap: .8rem; max-width: 640px; margin: 0 auto; }
@@ -122,9 +122,9 @@ CONSOLE_PAGE = """<!doctype html>
   .meta { display: flex; flex-wrap: wrap; gap: .4rem; font-size: .75rem; color: var(--dim); margin-bottom: .5rem; align-items: center; }
   .badge { border: 1px solid var(--line); border-radius: 6px; padding: .05rem .4rem; }
   .badge.anchor { border-color: var(--accent); color: var(--accent); }
-  .badge.interval { border-color: #6a8caf; color: #9dbbd8; }
+  .badge.interval { border-color: #8BDFDD; color: #2E7B78; }
   .badge.approved { border-color: var(--ok); color: var(--ok); }
-  .badge.rejected { border-color: #8a4a42; color: #ff8a80; }
+  .badge.rejected { border-color: #F48F68; color: #C24A28; }
   .content { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; }
   .quote { margin-top: .6rem; padding: .5rem .7rem; border-left: 3px solid var(--line); color: var(--dim); font-size: .82rem; white-space: pre-wrap; }
   .quote .ref { display: block; margin-top: .3rem; opacity: .75; word-break: break-all; }
@@ -134,26 +134,26 @@ CONSOLE_PAGE = """<!doctype html>
   .membox .boxid .meta { margin: 0; font-weight: 400; }
   .membox .boxtext { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; margin-top: .3rem; }
   .membox.target .boxtext { font-size: .85rem; color: var(--dim); }
-  .membox .warn { display: block; color: #ff8a80; font-size: .75rem; margin-top: .3rem; }
+  .membox .warn { display: block; color: #C24A28; font-size: .75rem; margin-top: .3rem; }
   .linkframe { border: 1px solid var(--accent); border-radius: 12px; padding: .15rem .6rem .6rem; margin-top: .7rem; }
   .linkgroup.off { opacity: .5; }
   .verb { position: relative; display: flex; align-items: center; gap: .5rem; margin-top: .5rem; padding-left: .2rem; }
   .verb .word { background: none; border: 0; padding: .1rem .2rem; font-size: .95rem; font-weight: 600; color: var(--accent); text-decoration: underline dotted; }
   .verb .swap { background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--dim); font-size: .75rem; padding: .15rem .5rem; }
-  .verb .warn { color: #ff8a80; }
-  .connmenu { position: absolute; left: .2rem; top: 100%; z-index: 10; display: grid; background: #333; border-radius: 8px; padding: .3rem; box-shadow: 0 4px 16px rgba(0,0,0,.55); }
-  .connmenu button { background: none; border: 0; color: #eee; padding: .55rem 1.1rem; text-align: left; font-size: .9rem; border-radius: 6px; }
-  .connmenu button:active { background: #4a4a4a; }
+  .verb .warn { color: #C24A28; }
+  .connmenu { position: absolute; left: .2rem; top: 100%; z-index: 10; display: grid; background: #FFFEF8; border-radius: 8px; padding: .3rem; box-shadow: 0 4px 16px rgba(90,70,40,.25); }
+  .connmenu button { background: none; border: 0; color: #4A3D2E; padding: .55rem 1.1rem; text-align: left; font-size: .9rem; border-radius: 6px; }
+  .connmenu button:active { background: #FFE394; }
   .actions { display: flex; gap: .5rem; margin-top: .8rem; }
-  .actions button { flex: 1; padding: .55rem 0; border: 0; border-radius: 8px; font-size: .95rem; color: #fff; }
-  .approve { background: #4a7a4a; } .edit { background: #55606e; } .reject { background: #8a4a42; }
+  .actions button { flex: 1; padding: .55rem 0; border: 0; border-radius: 8px; font-size: .95rem; }
+  .approve { background: #8BDFDD; color: #1C4E4B; } .edit { background: #FFE394; color: #6B5310; } .reject { background: #F48F68; color: #5C2410; }
   .editor { display: grid; gap: .5rem; margin-top: .6rem; }
   .editor label { font-size: .75rem; color: var(--dim); display: grid; gap: .2rem; }
-  .editor input, .editor textarea, .editor select { width: 100%; padding: .45rem; border-radius: 8px; border: 1px solid #555; background: var(--bg); color: #eee; font: inherit; font-size: .9rem; }
+  .editor input, .editor textarea, .editor select { width: 100%; padding: .45rem; border-radius: 8px; border: 1px solid #DFCFA8; background: var(--bg); color: #4A3D2E; font: inherit; font-size: .9rem; }
   .editor textarea { min-height: 7rem; }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
   #empty { text-align: center; color: var(--dim); padding: 3rem 1rem; }
-  #toast { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: .5rem 1rem; border-radius: 8px; font-size: .85rem; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  #toast { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); background: #4A3D2E; color: #fff; padding: .5rem 1rem; border-radius: 8px; font-size: .85rem; opacity: 0; transition: opacity .3s; pointer-events: none; }
   #toast.show { opacity: 1; }
 </style></head><body>
 <header>
