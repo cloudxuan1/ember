@@ -5,7 +5,7 @@ import os
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from app import briefing, memories
+from app import briefing, drafts, memories
 
 # FastMCP 默认只放行本机 Host 头（DNS-rebinding 防护），
 # 经 Cloudflare Tunnel 进来的请求带公网域名，必须显式加进白名单，否则 421。
@@ -72,7 +72,7 @@ def memory_save(
     end_date: str | None = None,
     links: list[dict] | None = None,
 ) -> dict:
-    """保存一条新记忆。
+    """保存一条待审记忆草稿，不会直接写入正式记忆库。
 
     date 填事件发生的真实日期（YYYY-MM-DD），不是今天（除非事情就发生在今天）。
     content 写原话 + 一句上下文。tags 逗号分隔。
@@ -84,11 +84,26 @@ def memory_save(
     [{"id": 目标记忆id, "relation": "led_to/same_as/contradicts/supersedes/related",
       "dir": "out"(本条→目标，默认) 或 "in"(目标→本条)}]。
     led_to 方向 = 因 → 果；supersedes 会把被压过的旧记忆标记 superseded_by。
+    调用后返回 draft_id；草稿状态为 pending，等轩在审核台通过后才会正式入库。
     """
-    return memories.save_memory(
+    draft_links = None
+    if links is not None:
+        # MCP 对外一直用 id；草稿管线用 memory_id 表示已入库目标。
+        # 这里只改字段名，默认值和合法性仍全部交给 drafts._normalize_links。
+        draft_links = [
+            {("memory_id" if key == "id" else key): value for key, value in link.items()}
+            for link in links
+        ]
+    saved = drafts.save_draft(
         date=date, content=content, tags=tags, tier=tier, topic=topic, space=space,
-        start_date=start_date, end_date=end_date, links=links, links_by="mcp",
+        start_date=start_date, end_date=end_date, links=draft_links,
+        batch=f"mcp-{memories._today()}",
     )
+    return {
+        "draft_id": saved["id"],
+        "status": "pending",
+        "message": "已存为待审草稿，等轩审核后入库。",
+    }
 
 
 @mcp.tool()
