@@ -20,3 +20,6 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
+      - name: Check deployment scripts
+        working-directory: .
+        run: bash -n scripts/autodeploy.sh scripts/install-autodeploy.sh
