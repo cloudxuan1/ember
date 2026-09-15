@@ -1,0 +1,25 @@
+# 后端测试：PR 和 main 每次推送都跑，手机上看 PR 页的 ✅/❌ 再决定合不合。
+name: backend tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - name: Check deployment scripts
+        working-directory: .
+        run: bash -n scripts/autodeploy.sh scripts/install-autodeploy.sh
