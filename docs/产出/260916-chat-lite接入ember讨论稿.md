@@ -1,6 +1,6 @@
 # chat-lite 接入 Ember 记忆：讨论稿
 
-> 状态：**只讨论，不施工。** 轩与小克确认方案后，再拆成两个仓库各自的 PR。
+> 状态：**已定稿（2026-09-16 轩拍板，见 §12）**，两仓库各自开 PR 施工。§5「每轮预取」被 §12 的「工具模式」取代，其余安全边界不变。
 > 本文不含域名密钥、Token、账号信息或真实记忆内容。
 
 ## 1. 我们要得到什么
@@ -196,3 +196,33 @@ Content-Type: application/json
 
 - [OpenRouter Prompt Caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching)：`session_id` 用于供应商粘性；Anthropic 缓存断点仍依赖可复用前缀。
 - [Anthropic Prompt Caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)：缓存覆盖断点之前的完整前缀；断点前任何旧 block 变化都会形成新的前缀哈希。
+
+## 12. 小克审查意见 + 轩拍板（2026-09-16）
+
+**五个问题的审查结论**
+
+1. 记忆块藏进当轮用户消息、下一轮原样回放：同意，是保住缓存前缀的最小方案；两段请求（A）优于单次流式（B）。
+2. briefing 三天冷却：接受，不做两段式确认。快照在调 OpenRouter 之前就已存进消息，重发/reroll 复用同一份，不算白耗。
+3. 120 字目录：第一版够用；工具模式下模型不够看可自己调 `memory_recall` 取全文，问题自然消解。
+4. 共用生产 Worker：够安全，新 action 只在前端显式开启时才触发；独立预览 Worker 不值得。
+5. 草稿去重：用 `source_ref = "chat-lite:<会话ID>:<请求ID>"` 写前查重，不改表结构（第二阶段再做）。
+
+**轩的改动：搜索不该每轮都做，做成工具让模型自己决定**
+
+- 采用**混合模式**：新会话第一句自动带一次开场小抄（`memory_briefing(topic=用户原话)`），之后 `memory_search` / `memory_recall` 作为 function tool 挂给模型，需要才调、可多次调、可取全文。§5 的「每轮 search 预取」作废。
+- 工具调用的往返（模型说要搜 → Worker 调 ember → 结果回模型 → 再答）由**浏览器**驱动，Worker 只负责挂工具定义和代执行工具（`action: "memory-tool"`），保持 Worker 是薄代理。中间的 tool_calls / tool 结果 / reasoning_details 作为隐藏 `steps` 存在该条助手消息里，下一轮原样回放（缓存同理）。
+- 界面：助手回复上方显示可折叠的「查了记忆 · N 次」（同引用来源样式），点开看搜了什么、命中哪几条；开场小抄在用户消息下方显示「记忆小抄 · N 条」。
+
+**拍板清单**
+
+| 项 | 决定 |
+|---|---|
+| 总开关 | 设置 → 记忆库，**默认关**；不需要记忆的会话先关掉再聊 |
+| 开场小抄 | 开关开着时新会话第一句自动带；reroll/重发复用已存快照 |
+| 搜索/取全文 | function tool，模型自己决定；每次最多 8 条（写死，模型可传更小的 limit） |
+| ember 超时 | 写死 2 秒；超时/报错/未配置一律软失败（小抄为空 / 工具返回错误说明），照常聊 |
+| 本地存记忆摘要 | 接受（与聊天记录同处；Markdown 导出不带，整库备份 JSON 带） |
+| Ember 接口 | `POST /internal/memory/briefing|search|recall`，Bearer `EMBER_READ_TOKEN`（第三把钥匙），未配置 503 |
+| Worker Secrets | `EMBER_URL`（ember 根地址，不含路径）、`EMBER_TOKEN`（= EMBER_READ_TOKEN） |
+
+**待实测（分支预览页上跑真请求才知道）**：OpenRouter 上 function tool 与 `openrouter:web_search` server tool 同一请求混用是否正常；开推理时 reasoning_details 流式合并后回放是否被 Anthropic 接受。任一不行，回退方案是工具轮次临时关推理或关联网。
