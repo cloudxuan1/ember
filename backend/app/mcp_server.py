@@ -1,11 +1,11 @@
-"""ember 的 MCP 工具层：五个记忆操作工具 + briefing（V6b），少而清楚。纪律写进工具本身。"""
+"""ember 的 MCP 工具层：五个记忆操作工具 + briefing（V6b）+ chat-lite 思考彩蛋词库两个工具，少而清楚。纪律写进工具本身。"""
 
 import os
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from app import briefing, drafts, memories
+from app import briefing, drafts, memories, thinking_words
 
 # FastMCP 默认只放行本机 Host 头（DNS-rebinding 防护），
 # 经 Cloudflare Tunnel 进来的请求带公网域名，必须显式加进白名单，否则 421。
@@ -145,3 +145,54 @@ def memory_briefing(topic: str | None = None) -> dict:
 def memory_status() -> dict:
     """ember 服务状态：活着吗、库里多少条记忆/边/来源、最近一次写入时间。连接调试用。"""
     return memories.get_status()
+
+
+@mcp.tool()
+def thinking_words_view() -> dict:
+    """查看 chat-lite 的思考彩蛋词库（和记忆无关）：思考时标题轮流显示的英文词 + 中文翻译。
+
+    返回版本号、三个开关（egg 彩蛋总开关 / translate 翻出中文 / marauder 活点地图开场收尾）
+    和全部系列：id、名字、是否内置、是否打开、词条 [{en, zh}]。
+    改词前先看一眼，拿到准确的 series_id 和英文原词。
+    """
+    library = thinking_words.get_library()
+    if library["data"] is None:
+        return {"error": "云端还没有词库：请轩先在 chat-lite 网页打开一次（开着云同步），把现有词库搬上来"}
+    return library
+
+
+@mcp.tool()
+def thinking_words_edit(
+    action: str,
+    series_id: str | None = None,
+    name: str | None = None,
+    words: list[dict] | None = None,
+    en: str | None = None,
+    new_en: str | None = None,
+    zh: str | None = None,
+    enabled: bool | None = None,
+    setting: str | None = None,
+    value: bool | None = None,
+) -> dict:
+    """修改 chat-lite 的思考彩蛋词库，改完网页刷新就能看到。一次做一件事：
+
+    - add_series：新建系列，给 name，可带 words=[{"en": "Purring…", "zh": "呼噜呼噜中"}]
+    - rename_series：series_id + name
+    - delete_series：series_id（只能删自定义系列；内置的用 set_series_enabled 关掉）
+    - set_series_enabled：series_id + enabled
+    - add_words：series_id + words（英文相同的会跳过）
+    - update_word：series_id + en（原来的英文），改英文给 new_en，改中文给 zh
+    - delete_word：series_id + en
+    - set_setting：setting（egg / translate / marauder）+ value
+
+    英文习惯写成 -ing 动名词加省略号（Marinating…），中文写成「……中」；中文可以不写。
+    """
+    try:
+        return thinking_words.edit_library(
+            action, series_id=series_id, name=name, words=words, en=en, new_en=new_en,
+            zh=zh, enabled=enabled, setting=setting, value=value, by="mcp",
+        )
+    except thinking_words.VersionConflict:
+        return {"error": "刚好有人同时改了词库，请重新查看后再改一次"}
+    except ValueError as err:
+        return {"error": str(err)}
