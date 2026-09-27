@@ -63,6 +63,31 @@ def test_first_save_then_versioned_updates():
     assert again["data"]["settings"] == {"egg": False, "translate": True, "marauder": True}
 
 
+def test_save_response_belongs_to_its_own_commit(monkeypatch):
+    """另一位写者在提交后立刻插队，响应仍须是本次版本，不能认领别人的版本。"""
+    real_get_conn = thinking_words.get_conn
+
+    class InterleavedCommit:
+        def __init__(self):
+            self.conn = real_get_conn()
+
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+
+        def commit(self):
+            self.conn.commit()
+            with monkeypatch.context() as patch:
+                patch.setattr(thinking_words, "get_conn", real_get_conn)
+                thinking_words.save_library(library(settings={"egg": False}), 1, by="mcp")
+
+    monkeypatch.setattr(thinking_words, "get_conn", InterleavedCommit)
+    saved = thinking_words.save_library(library(), 0, by="web")
+    assert saved["version"] == 1
+    assert saved["data"]["settings"]["egg"] is True
+    monkeypatch.setattr(thinking_words, "get_conn", real_get_conn)
+    assert thinking_words.get_library()["version"] == 2
+
+
 def test_stale_base_version_conflicts_without_writing():
     thinking_words.save_library(library(), 0, by="web")
     thinking_words.save_library(library(settings={"egg": False}), 1, by="web")
@@ -157,7 +182,7 @@ def test_mcp_edit_actions_round_trip():
     magic = added["series"]["id"]
     assert magic.startswith("custom-")
 
-    r = mcp_server.thinking_words_edit("add_words", series_id=magic, words=[{"en": "lumos-ing…"}, {"en": "Accio-ing…", "zh": "答案飞来中"}])
+    r = mcp_server.thinking_words_edit("add_words", series_id=magic, words=[{"en": "lumos-ing…"}, {"en": "Accio-ing…", "zh": "答案飞来中"}, {"en": "accio-ing…"}])
     assert [w["en"] for w in r["series"]["words"]] == ["Lumos-ing…", "Accio-ing…"]
     assert "跳过" in r["summary"]
 

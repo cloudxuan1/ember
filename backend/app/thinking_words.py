@@ -162,8 +162,9 @@ def save_library(data, base_version: int, by: str) -> dict:
                 "UPDATE thinking_library SET data = ?, version = ?, updated_by = ?, updated_at = datetime('now','+8 hours') WHERE id = 1",
                 (payload, new_version, by),
             )
-        conn.commit()
         row = conn.execute("SELECT * FROM thinking_library WHERE id = 1").fetchone()
+        # 在释放写锁前取响应：否则下一位写者的版本会被误当成本次保存结果。
+        conn.commit()
         return _row_to_library(row)
     except Exception:
         if conn.in_transaction:
@@ -244,7 +245,12 @@ def edit_library(
         if not added:
             raise ValueError("words 至少给一个词")
         existing = {w["en"].lower() for w in target["words"]}
-        fresh = [w for w in added if w["en"].lower() not in existing]
+        fresh = []
+        for word in added:
+            key = word["en"].lower()
+            if key not in existing:
+                fresh.append(word)
+                existing.add(key)
         target["words"].extend(fresh)
         summary = f"「{target['name']}」加了 {len(fresh)} 个词" + (f"（{len(added) - len(fresh)} 个已存在，跳过）" if len(fresh) < len(added) else "")
     elif action == "update_word":
