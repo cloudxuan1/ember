@@ -110,6 +110,22 @@ CREATE TABLE IF NOT EXISTS briefing_log (
     surfaced_at TEXT DEFAULT (datetime('now','+8 hours'))
 );
 CREATE INDEX IF NOT EXISTS idx_briefing_mem ON briefing_log(memory_id, surfaced_at);
+
+-- chat-lite 思考彩蛋词库（app/thinking_words.py）：和记忆完全无关，只是借住同一个库。
+-- 整份词库一行 JSON + 版本号（写入必须带 base_version，对不上即冲突）；覆盖前旧版进 history，留最近 20 份。
+CREATE TABLE IF NOT EXISTS thinking_library (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    data       TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    updated_by TEXT DEFAULT '',    -- web / mcp
+    updated_at TEXT DEFAULT (datetime('now','+8 hours'))
+);
+CREATE TABLE IF NOT EXISTS thinking_library_history (
+    version    INTEGER PRIMARY KEY,
+    data       TEXT NOT NULL,
+    updated_by TEXT DEFAULT '',
+    updated_at TEXT
+);
 """
 
 
