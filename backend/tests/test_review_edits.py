@@ -159,3 +159,12 @@ def test_unreview_reports_dropped_edit(client):
     resp = client.post(f"/review/api/drafts/{did}/unreview").json()
     assert resp == {"draft_id": did, "status": "pending", "dropped_edit": True}
     assert memory_edits.list_edits()["stats"]["total"] == 0
+
+
+def test_console_has_edits_view_and_valid_escapes(client):
+    """CONSOLE_PAGE 是普通 Python 字符串：JS 正则里的 \\n 必须写成双反斜杠，
+    否则变成真换行，整段脚本语法错误、审核台白屏。"""
+    page = client.get("/review").text
+    assert 'id="editBtn"' in page and "/review/api/edits/" in page
+    assert "replace(/\\n/g" in page and "/^\\s+$/" in page
+    assert "\n/g" not in page  # 正则里没有被吃成真换行的 \n
