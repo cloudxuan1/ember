@@ -33,12 +33,17 @@ def _values(row, prefix: str = "") -> dict:
     return {f: row[prefix + f] or "" for f in FIELDS}
 
 
+def _tag_list(tags: str | None) -> list[str]:
+    """规整后的标签列表：老数据里有"日常, sensitive"这种带空格的，不规整就认不出 sensitive。"""
+    return [t for t in memories.normalize_tags(tags or "").split(",") if t]
+
+
 def _same(field: str, new: str, current: str) -> bool:
-    """新值和现值算不算一样：按入口同一套规整比，免得只差首尾空白 / 中文逗号也生成一张假改动。"""
-    current = current or ""
+    """新值和现值算不算一样：按入口同一套规整比，免得只差首尾空白 / 中文逗号 / 标签顺序
+    也生成一张卡上什么都看不出来的假改动。"""
     if field == "tags":
-        return new == memories.normalize_tags(current)
-    return new == current.strip()
+        return set(_tag_list(new)) == set(_tag_list(current))
+    return new == (current or "").strip()
 
 
 def target_preview(mem) -> dict:
@@ -97,6 +102,14 @@ def propose_edit(
             f: before[f] for f in FIELDS if before[f] is not None and before[f] != pending[f]
         }
         values = tuple(pending[f] for f in FIELDS)
+        # 每个待改字段记一份"提议时现值"的哈希：这次 AI 交了的字段按现在算（它是看着现在改的），
+        # 没交的沿用上次——轩在中间改过哪个字段，卡上就只对那个字段亮"已改过"
+        current = _values(mem)
+        old_base = json.loads(old["base"]) if old else {}
+        base = json.dumps({
+            f: _hash(current[f]) if (f in new or f not in old_base) else old_base[f]
+            for f in FIELDS if pending[f] is not None
+        })
         if all(v is None for v in values):
             if old:
                 conn.execute("DELETE FROM memory_edits WHERE id = ?", (old["id"],))
@@ -107,9 +120,9 @@ def propose_edit(
         if old is None:
             edit_id = conn.execute(
                 """INSERT INTO memory_edits
-                   (memory_id, content, tags, topic, reason, base_hash, created_by)
+                   (memory_id, content, tags, topic, reason, base, created_by)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (memory_id, *values, reason or "", _hash(*_values(mem).values()), by),
+                (memory_id, *values, reason or "", base, by),
             ).lastrowid
         else:
             edit_id = old["id"]
@@ -117,10 +130,10 @@ def propose_edit(
             if values != tuple(before.values()) or (reason is not None and reason != old["reason"]):
                 conn.execute(
                     """UPDATE memory_edits
-                       SET content = ?, tags = ?, topic = ?, reason = ?, created_by = ?,
+                       SET content = ?, tags = ?, topic = ?, reason = ?, base = ?, created_by = ?,
                            version = version + 1, updated_at = datetime('now','+8 hours')
                        WHERE id = ?""",
-                    (*values, reason if reason is not None else old["reason"], by, edit_id),
+                    (*values, reason if reason is not None else old["reason"], base, by, edit_id),
                 )
         conn.commit()
     except BaseException:
@@ -178,8 +191,7 @@ def diff_segments(before: str, after: str) -> list[dict]:
 
 def tags_diff(before: str, after: str) -> dict:
     """标签按集合比：哪个留着、哪个新加、哪个去掉——逐字对比一串逗号看不出少了谁。"""
-    a = [t for t in (before or "").split(",") if t]
-    b = [t for t in (after or "").split(",") if t]
+    a, b = _tag_list(before), _tag_list(after)
     return {
         "before": before or "",
         "after": after or "",
@@ -197,6 +209,12 @@ _LIST_SQL = """SELECT e.*, m.date, m.space, m.tier,
 def _seen(row) -> str:
     """轩看到的那一版的指纹：提议号 + 版本 + 改前 + 改后，任何一样变了都对不上。"""
     return _hash(row["id"], row["version"], _values(row, "cur_"), {f: row[f] for f in FIELDS})
+
+
+def _stale(row, current: dict) -> bool:
+    """这条提议要改的字段里，有没有哪个在 AI 提完之后又被改过（多半是轩在记忆库亲手改的）。"""
+    base = json.loads(row["base"] or "{}")
+    return any(base.get(f) != _hash(current[f]) for f in FIELDS if row[f] is not None)
 
 
 def _present(row) -> dict:
@@ -225,7 +243,7 @@ def _present(row) -> dict:
         "reason": row["reason"] or "",
         "created_by": row["created_by"] or "",
         "updated_at": row["updated_at"],
-        "stale": row["base_hash"] != _hash(*current.values()),
+        "stale": _stale(row, current),
         "changes": changes,
     }
 

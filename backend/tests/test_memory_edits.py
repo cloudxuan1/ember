@@ -183,6 +183,39 @@ def test_list_card_shape_and_stale_flag():
     assert _card(mid)["stale"] is True
 
 
+def test_stale_only_for_fields_the_proposal_changes():
+    """AI 只改标签，轩在记忆库改了正文：确认不碰正文，卡上不该吓她"会盖掉"。"""
+    mid = _mem(content="原文", tags="日常")
+    memory_edits.propose_edit(mid, tags="日常,吃饭")
+    memories.update_memory(mid, {"content": "她改过的正文"})
+    assert _card(mid)["stale"] is False
+
+
+def test_resubmitting_a_field_resets_its_stale_flag():
+    mid = _mem(content="原文", tags="日常")
+    memory_edits.propose_edit(mid, content="AI 第一版")
+    memories.update_memory(mid, {"content": "她修过的原文"})
+    assert _card(mid)["stale"] is True
+    memory_edits.propose_edit(mid, tags="日常,吃饭")  # 只交了标签：正文那份还是基于旧原文的
+    assert _card(mid)["stale"] is True
+    memory_edits.propose_edit(mid, content="她修过的原文。补一句")  # 看着现在的正文重交
+    assert _card(mid)["stale"] is False
+
+
+def test_tags_diff_normalizes_legacy_spacing():
+    """早期存进来的"日常, sensitive"带空格：不规整就认不出去掉的是 sensitive，警告不亮。"""
+    mid = _mem(tags="日常, sensitive")
+    memory_edits.propose_edit(mid, tags="日常,吃饭")
+    tags = _card(mid)["changes"]["tags"]
+    assert tags["removed"] == ["sensitive"] and tags["kept"] == ["日常"] and tags["added"] == ["吃饭"]
+
+
+def test_reordering_tags_is_no_change():
+    mid = _mem(tags="日常,吃饭")
+    assert memory_edits.propose_edit(mid, tags="吃饭,日常")["status"] == "unchanged"
+    assert _rows() == []
+
+
 # ---------- 确认 / 驳回 ----------
 
 

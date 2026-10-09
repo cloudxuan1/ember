@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS memory_edits (
     tags       TEXT,
     topic      TEXT,
     reason     TEXT DEFAULT '',    -- AI 写给轩看的一句理由
-    base_hash  TEXT NOT NULL,      -- 提议时记忆现值的哈希（不是旧文）：对不上 = 提议后记忆又被改过
+    base       TEXT NOT NULL DEFAULT '{}',  -- {字段: 提议时现值的哈希}（不是旧文）：对不上 = 这个字段在提议后又被改过
     version    INTEGER NOT NULL DEFAULT 1,
     created_by TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now','+8 hours')),
