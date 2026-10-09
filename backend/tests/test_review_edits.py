@@ -168,6 +168,17 @@ def test_console_has_edits_view_and_valid_escapes(client):
     assert 'id="editBtn"' in page and "/review/api/edits/" in page
     assert "replace(/\\n/g" in page and "/^\\s+$/" in page
     assert "\n/g" not in page  # 正则里没有被吃成真换行的 \n
+    assert "Array.from(text)" in page  # 折叠按码点切，emoji 不被劈成两半
+    assert 'resp.status === 404 && path.startsWith("/review/api/edits/")' in page  # 撤回 / 换版的旧卡片要刷新
+
+
+def test_withdrawn_proposal_404_says_so(client):
+    mid, card = _proposal()
+    memory_edits.propose_edit(mid, content="原文")  # AI 撤回
+    memory_edits.propose_edit(mid, content="原文。另一版")  # 又提一版（新提议号）
+    resp = client.post(f"/review/api/edits/{card['id']}/confirm", json={"version": card["version"], "seen": card["seen"]})
+    assert resp.status_code == 404 and "撤回" in resp.json()["error_description"]
+    assert memories.get_memory(mid)["content"] == "原文"
 
 
 def _forged(key: str) -> dict:

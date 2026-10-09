@@ -256,7 +256,8 @@ async function api(path, options) {
   const data = await resp.json();
   if (!resp.ok) {
     toast(data.error_description || data.error || "出错了");
-    if (resp.status === 409) load();  // 内容在她看过之后变了：拉最新的给她重看，不留旧卡片
+    // 内容在她看过之后变了（409），或改动已被撤回 / 换成新的一版（改动的 404）：拉最新的给她重看，不留旧卡片
+    if (resp.status === 409 || (resp.status === 404 && path.startsWith("/review/api/edits/"))) load();
     throw new Error(data.error);
   }
   return data;
@@ -450,12 +451,15 @@ async function loadEdits() {
 
 function unchanged(text, first, last) {
   // 没变的长段落折成可点开的小框；开头 / 结尾的段只留贴着改动那一侧
+  // 按字（码点）切，跟服务端对比一致——按 JS 默认的 UTF-16 切会把 emoji 劈成两半显示成 �
   const frag = document.createDocumentFragment();
-  const head = first ? "" : text.slice(0, FOLD_KEEP), tail = last ? "" : text.slice(-FOLD_KEEP);
-  const hidden = text.slice(head.length, text.length - tail.length);
-  if (text.length <= FOLD_OVER || hidden.length < 8) { frag.append(text); return frag; }
-  const b = btn("…" + hidden.length + " 字没变…", "fold", () => b.replaceWith(hidden));
-  frag.append(head, b, tail);
+  const chars = Array.from(text);
+  const head = first ? [] : chars.slice(0, FOLD_KEEP), tail = last ? [] : chars.slice(-FOLD_KEEP);
+  const hidden = chars.slice(head.length, chars.length - tail.length).join("");
+  const hiddenLen = chars.length - head.length - tail.length;
+  if (chars.length <= FOLD_OVER || hiddenLen < 8) { frag.append(text); return frag; }
+  const b = btn("…" + hiddenLen + " 字没变…", "fold", () => b.replaceWith(hidden));
+  frag.append(head.join(""), b, tail.join(""));
   return frag;
 }
 
@@ -1019,6 +1023,9 @@ def _conflict(message: str) -> JSONResponse:
     return JSONResponse({"error": "conflict", "error_description": message}, status_code=409)
 
 
+EDIT_GONE = "这条改动已经处理过，或 AI 撤回 / 换了一版，已刷新"
+
+
 @router.get("/review/api/edits")
 def api_list_edits(request: Request):
     """AI 提的改动（等轩确认）：每条带改前 / 改后对照、version 和 seen 指纹。"""
@@ -1054,7 +1061,7 @@ async def api_confirm_edit(edit_id: int, request: Request):
     except ValueError as e:
         return JSONResponse({"error": "invalid_memory", "error_description": str(e)}, status_code=400)
     if updated is None:
-        return JSONResponse({"error": "not_found", "error_description": "这条改动已经处理过了"}, status_code=404)
+        return JSONResponse({"error": "not_found", "error_description": EDIT_GONE}, status_code=404)
     return updated
 
 
@@ -1073,7 +1080,7 @@ async def api_reject_edit(edit_id: int, request: Request):
     except memory_edits.EditConflict:
         return _conflict("这条改动在你打开页面后又变了，已刷新，请再看一眼")
     if result is None:
-        return JSONResponse({"error": "not_found", "error_description": "这条改动已经处理过了"}, status_code=404)
+        return JSONResponse({"error": "not_found", "error_description": EDIT_GONE}, status_code=404)
     return result
 
 
