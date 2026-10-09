@@ -4,7 +4,7 @@
 的一方（含正常 OAuth 后的 claude.ai 后端）只该有 MCP 的权限，不该开得了审核台
 ——审核台是"轩本人质检"的门，尤其撤回动作能删正式记忆。
   - 浏览器：GET /review 登录页输 EMBER_OAUTH_PASSWORD → 下发签名 cookie（30 天，
-    HMAC 密钥 = EMBER_REVIEW_TOKEN（缺省退回口令），重启不失效；SameSite=Lax 挡跨站 POST）
+    HMAC 密钥 = 数据目录里自动生成的随机密钥文件，重启不失效；SameSite=Lax 挡跨站 POST）
   - 脚本 / 提取会话：API 带 Bearer EMBER_REVIEW_TOKEN（openssl rand -hex 32，
     与 MCP 的 token 不是同一个；未设置该变量则 API 只认 cookie）
   - 门禁关闭（本地开发）= 免登录，与 MCP 行为一致
@@ -14,16 +14,19 @@
 import hashlib
 import hmac
 import os
+import secrets
 import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app import drafts, memories, memory_edits, oauth
+from app.db import db_path
 
 router = APIRouter()
 
 COOKIE_NAME = "ember_review"
+COOKIE_KEY_FILE = "review_cookie.key"  # 跟数据库同目录（Docker 卷），永不入库
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60
 LOCK_AFTER_FAILS = 5
 LOCK_SECONDS = 60
@@ -38,10 +41,34 @@ def _review_token() -> str:
     return os.environ.get("EMBER_REVIEW_TOKEN", "")
 
 
+_cookie_keys: dict = {}  # 密钥文件路径 → 密钥（测试里每个用例的库在不同目录）
+
+
 def _secret() -> str:
-    # cookie 签名密钥不用 MCP 的 access token——否则持有它的一方能伪造登录态，
-    # P1 就从旁门绕回来了。口令兜底：它只有轩知道。
-    return _review_token() or oauth._password()
+    """cookie 签名密钥：数据目录里的随机密钥文件，首次用时生成。
+
+    不用 MCP 的 access token（PR #6 P1），也不用 EMBER_REVIEW_TOKEN——那把钥匙在提取用的
+    AI 会话手里，拿它签名等于 AI 能自己算出轩的登录态，"确认 / 驳回只认浏览器登录"就形同虚设。
+    也不直接拿口令当密钥：口令熵低，偷到一枚 cookie 就能离线猜口令。
+    """
+    path = db_path().parent / COOKIE_KEY_FILE
+    key = _cookie_keys.get(path)
+    if key:
+        return key
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(secrets.token_hex(32))
+        os.chmod(tmp, 0o600)
+        try:
+            os.link(tmp, path)  # 原子落地：并发首建只有一份生效，没人读到写了一半的文件
+        except FileExistsError:
+            pass
+        finally:
+            tmp.unlink()
+    key = path.read_text().strip()
+    _cookie_keys[path] = key
+    return key
 
 
 def _sign(payload: str) -> str:

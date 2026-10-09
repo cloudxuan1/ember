@@ -168,3 +168,37 @@ def test_console_has_edits_view_and_valid_escapes(client):
     assert 'id="editBtn"' in page and "/review/api/edits/" in page
     assert "replace(/\\n/g" in page and "/^\\s+$/" in page
     assert "\n/g" not in page  # 正则里没有被吃成真换行的 \n
+
+
+def _forged(key: str) -> dict:
+    import hashlib
+    import hmac
+    import time
+
+    exp = str(int(time.time()) + 3600)
+    return {"Cookie": f"ember_review={exp}.{hmac.new(key.encode(), exp.encode(), hashlib.sha256).hexdigest()}"}
+
+
+def test_review_token_cannot_forge_login_cookie(gated):
+    """审出来的洞：cookie 曾用 EMBER_REVIEW_TOKEN 签名，持钥匙的 AI 会话能自己算出轩的登录态，
+    绕过"确认只认浏览器"。现在签名密钥是数据目录里的随机文件，钥匙和口令都签不出有效 cookie。"""
+    mid, card = _proposal()
+    body = {"version": card["version"], "seen": card["seen"]}
+    for key in ("review-tok", "token-abc", "开门"):
+        assert gated.post(f"/review/api/edits/{card['id']}/confirm", json=body, headers=_forged(key)).status_code == 401
+        assert gated.get("/review/api/drafts", headers=_forged(key)).status_code == 401
+    assert memories.get_memory(mid)["content"] == "原文"
+    # 轩正常登录拿到的 cookie 照样能确认
+    assert gated.post(f"/review/api/edits/{card['id']}/confirm", json=body, headers=_cookie(gated)).status_code == 200
+
+
+def test_cookie_key_file_is_private_and_stable(tmp_path):
+    import os
+    import stat
+
+    key = review._secret()
+    path = tmp_path / review.COOKIE_KEY_FILE
+    assert path.exists() and len(key) == 64
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    review._cookie_keys.clear()
+    assert review._secret() == key  # 重启（缓存清空）后读回同一把，登录态不失效
