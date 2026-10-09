@@ -125,3 +125,19 @@ def test_gate_rejects_anonymous_and_mcp_token(gated):
         == 401
     )
     assert gated.get("/review/api/memories", headers=BEARER).status_code == 200
+
+
+def test_update_memory_borrows_caller_transaction():
+    """conn 给定时只在调用方事务里写、不提交——回滚就像没改过（确认 AI 改动要靠它做原子事务）。"""
+    from app.db import get_conn
+
+    mid = _save("原文")
+    conn = get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        assert memories.update_memory(mid, {"content": "新文"}, conn=conn) == {"id": mid}
+        assert memories.update_memory(9999, {"content": "x"}, conn=conn) is None
+        conn.rollback()
+    finally:
+        conn.close()
+    assert memories.get_memory(mid)["content"] == "原文"
