@@ -111,6 +111,24 @@ CREATE TABLE IF NOT EXISTS briefing_log (
 );
 CREATE INDEX IF NOT EXISTS idx_briefing_mem ON briefing_log(memory_id, surfaced_at);
 
+-- 已入库记忆的修改提议（app/memory_edits.py）：AI 经 MCP memory_edit 提交，轩在审核台确认才覆盖。
+-- 只存提议的新值（NULL = 该字段不改），不存旧值——"改前"永远现读 memories，确认后不留旧版本。
+-- 一条记忆最多一张待确认提议（UNIQUE），再改合并进来、version +1；记忆被删（撤回）时提议跟着删。
+-- AUTOINCREMENT：删掉的提议号不复用，开着的旧卡片不会确认到另一条提议上。
+CREATE TABLE IF NOT EXISTS memory_edits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id  INTEGER NOT NULL UNIQUE REFERENCES memories(id) ON DELETE CASCADE,
+    content    TEXT,
+    tags       TEXT,
+    topic      TEXT,
+    reason     TEXT DEFAULT '',    -- AI 写给轩看的一句理由
+    base_hash  TEXT NOT NULL,      -- 提议时记忆现值的哈希（不是旧文）：对不上 = 提议后记忆又被改过
+    version    INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now','+8 hours')),
+    updated_at TEXT DEFAULT (datetime('now','+8 hours'))
+);
+
 -- chat-lite 思考彩蛋词库（app/thinking_words.py）：和记忆完全无关，只是借住同一个库。
 -- 整份词库一行 JSON + 版本号（写入必须带 base_version，对不上即冲突）；覆盖前旧版进 history，留最近 20 份。
 CREATE TABLE IF NOT EXISTS thinking_library (
