@@ -4,7 +4,7 @@
 的一方（含正常 OAuth 后的 claude.ai 后端）只该有 MCP 的权限，不该开得了审核台
 ——审核台是"轩本人质检"的门，尤其撤回动作能删正式记忆。
   - 浏览器：GET /review 登录页输 EMBER_OAUTH_PASSWORD → 下发签名 cookie（30 天，
-    HMAC 密钥 = EMBER_REVIEW_TOKEN（缺省退回口令），重启不失效；SameSite=Lax 挡跨站 POST）
+    HMAC 密钥 = 数据目录里自动生成的随机密钥文件，重启不失效；SameSite=Lax 挡跨站 POST）
   - 脚本 / 提取会话：API 带 Bearer EMBER_REVIEW_TOKEN（openssl rand -hex 32，
     与 MCP 的 token 不是同一个；未设置该变量则 API 只认 cookie）
   - 门禁关闭（本地开发）= 免登录，与 MCP 行为一致
@@ -14,16 +14,20 @@
 import hashlib
 import hmac
 import os
+import secrets
+import tempfile
 import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from app import drafts, memories, oauth
+from app import drafts, memories, memory_edits, oauth
+from app.db import db_path
 
 router = APIRouter()
 
 COOKIE_NAME = "ember_review"
+COOKIE_KEY_FILE = "review_cookie.key"  # 跟数据库同目录（Docker 卷），永不入库
 COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60
 LOCK_AFTER_FAILS = 5
 LOCK_SECONDS = 60
@@ -38,10 +42,36 @@ def _review_token() -> str:
     return os.environ.get("EMBER_REVIEW_TOKEN", "")
 
 
+_cookie_keys: dict = {}  # 密钥文件路径 → 密钥（测试里每个用例的库在不同目录）
+
+
 def _secret() -> str:
-    # cookie 签名密钥不用 MCP 的 access token——否则持有它的一方能伪造登录态，
-    # P1 就从旁门绕回来了。口令兜底：它只有轩知道。
-    return _review_token() or oauth._password()
+    """cookie 签名密钥：数据目录里的随机密钥文件，首次用时生成。
+
+    不用 MCP 的 access token（PR #6 P1），也不用 EMBER_REVIEW_TOKEN——那把钥匙在提取用的
+    AI 会话手里，拿它签名等于 AI 能自己算出轩的登录态，"确认 / 驳回只认浏览器登录"就形同虚设。
+    也不直接拿口令当密钥：口令熵低，偷到一枚 cookie 就能离线猜口令。
+    """
+    path = db_path().parent / COOKIE_KEY_FILE
+    key = _cookie_keys.get(path)
+    if key:
+        return key
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # PID 不能区分线程池里的并发请求。每次使用独立候选文件，创建时就限定为 600，
+        # 写完再原子发布；输掉竞争的请求只清理自己的候选，绝不改动赢家的密钥。
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
+        ) as tmp:
+            tmp.write(secrets.token_hex(32))
+            tmp.flush()
+            try:
+                os.link(tmp.name, path)
+            except FileExistsError:
+                pass
+    key = path.read_text().strip()
+    _cookie_keys[path] = key
+    return key
 
 
 def _sign(payload: str) -> str:
@@ -71,6 +101,14 @@ def _authed(request: Request) -> bool:
     if not oauth.oauth_enabled():
         return True  # 本地开发
     if _valid_review_bearer(request.headers.get("authorization")):
+        return True
+    return _valid_cookie(request.cookies.get(COOKIE_NAME, ""))
+
+
+def _authed_human(request: Request) -> bool:
+    """只认轩本人的浏览器登录（cookie），不认脚本钥匙 EMBER_REVIEW_TOKEN——
+    那把钥匙在提取用的 AI 会话手里，AI 不能自己确认自己提的改动。"""
+    if not oauth.oauth_enabled():
         return True
     return _valid_cookie(request.cookies.get(COOKIE_NAME, ""))
 
@@ -113,8 +151,8 @@ CONSOLE_PAGE = """<!doctype html>
   body { font-family: "Noto Sans SC", system-ui, sans-serif; margin: 0; background: var(--bg); color: #4A3D2E; padding-bottom: 4rem; }
   header { position: sticky; top: 0; background: var(--bg); padding: .8rem 1rem .5rem; border-bottom: 1px solid var(--line); z-index: 2; }
   h1 { font-family: "Noto Serif SC", serif; font-weight: 900; font-size: 1.1rem; margin: 0; } h1::before { content: "🔥 "; }
-  #statsRow { display: flex; justify-content: space-between; align-items: center; gap: .5rem; margin-top: .25rem; flex-wrap: wrap; }
-  #stats { font-family: "Fira Code", ui-monospace, monospace; color: var(--dim); font-size: .85rem; }
+  #statsRow { display: flex; justify-content: flex-start; align-items: center; gap: .5rem; margin-top: .25rem; flex-wrap: wrap; }
+  #stats { font-family: "Fira Code", ui-monospace, monospace; color: var(--dim); font-size: .85rem; margin-right: auto; }
   #batches { display: flex; gap: .4rem; overflow-x: auto; padding: .5rem 0 .2rem; align-items: center; }
   .memsearch { flex: 1; min-width: 9rem; padding: .3rem .7rem; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: #4A3D2E; font-size: .85rem; }
   .chip { flex: none; font-family: "Fira Code", ui-monospace, monospace; border: 1px solid var(--line); border-radius: 999px; padding: .25rem .7rem; font-size: .8rem; color: var(--dim); background: none; }
@@ -131,10 +169,10 @@ CONSOLE_PAGE = """<!doctype html>
   .quote { margin-top: .6rem; padding: .5rem .7rem; border-left: 3px solid var(--line); color: var(--dim); font-size: .82rem; white-space: pre-wrap; }
   .quote .ref { display: block; font-family: "Fira Code", ui-monospace, monospace; margin-top: .3rem; opacity: .75; word-break: break-all; }
   .membox { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: .55rem .75rem; margin-top: .5rem; }
-  .membox .boxid, .addtitle { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; font-family: "Noto Serif SC", serif; font-size: 1.05rem; font-weight: 900; color: var(--accent); }
+  .membox .boxid, .addtitle, .edithead { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; font-family: "Noto Serif SC", serif; font-size: 1.05rem; font-weight: 900; color: var(--accent); }
   .odate { font-family: "Fira Code", ui-monospace, monospace; }
   .membox .boxid .odate { font-size: .72rem; font-weight: 400; color: var(--dim); }
-  .membox .boxid .meta { margin: 0; font-weight: 400; }
+  .membox .boxid .meta, .edithead .meta { margin: 0; font-weight: 400; }
   .membox .boxtext { white-space: pre-wrap; line-height: 1.55; font-size: .95rem; margin-top: .3rem; }
   .membox.target .boxtext { font-size: .85rem; color: var(--dim); }
   .membox .warn { display: block; color: #C24A28; font-size: .75rem; margin-top: .3rem; }
@@ -156,6 +194,20 @@ CONSOLE_PAGE = """<!doctype html>
   .editor textarea { min-height: 7rem; }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
   #empty { text-align: center; color: var(--dim); padding: 3rem 1rem; }
+  #empty.go { color: var(--accent); text-decoration: underline dotted; cursor: pointer; }
+  /* ✎ 改动视图：AI 提的改动，删掉的字珊瑚色划掉、新加的字青色下划线 */
+  .reason { margin-top: .45rem; font-size: .85rem; background: var(--bg); border-left: 3px solid #FFE394; padding: .35rem .6rem; border-radius: 0 6px 6px 0; }
+  .reason::before { content: "小克的理由　"; color: var(--dim); font-size: .75rem; }
+  .ewarn { color: #C24A28; font-size: .78rem; margin-top: .4rem; line-height: 1.5; }
+  .label { font-size: .72rem; color: var(--dim); margin: .7rem 0 .25rem; letter-spacing: .05em; }
+  .pane { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: .55rem .7rem; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: .95rem; }
+  del { background: rgba(244,143,104,.38); text-decoration: line-through; text-decoration-color: #C24A28; color: #6B2A12; border-radius: 3px; }
+  ins { background: rgba(139,223,221,.6); text-decoration: underline; text-decoration-color: var(--ok); text-underline-offset: 3px; color: #1C4E4B; border-radius: 3px; }
+  .fold { background: none; border: 1px dashed var(--line); border-radius: 6px; color: var(--dim); font-size: .75rem; padding: 0 .35rem; margin: 0 .15rem; font: inherit; font-size: .75rem; }
+  .tagrow { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+  .tag { font-family: "Fira Code", ui-monospace, monospace; font-size: .78rem; border-radius: 999px; padding: .1rem .55rem; border: 1px solid var(--line); color: var(--dim); }
+  .tag.add { background: rgba(139,223,221,.6); border-color: #8BDFDD; color: #1C4E4B; }
+  .tag.rm { background: rgba(244,143,104,.38); border-color: #F48F68; color: #6B2A12; text-decoration: line-through; }
   #toast { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); background: #4A3D2E; color: #fff; padding: .5rem 1rem; border-radius: 8px; font-size: .85rem; opacity: 0; transition: opacity .3s; pointer-events: none; }
   #toast.show { opacity: 1; }
 </style></head><body>
@@ -164,6 +216,7 @@ CONSOLE_PAGE = """<!doctype html>
   <div id="statsRow">
     <div id="stats">加载中…</div>
     <button id="addBtn" class="chip">＋ 添加</button>
+    <button id="editBtn" class="chip on" hidden>✎ 改动</button>
     <button id="memBtn" class="chip">🗂 记忆库</button>
     <button id="modeBtn" class="chip">↩ 已审核</button>
   </div>
@@ -175,7 +228,23 @@ CONSOLE_PAGE = """<!doctype html>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 let currentBatch = "";
-let mode = "pending";  // pending = 待审核 / reviewed = 反悔区
+let mode = "pending";  // pending = 待审核 / reviewed = 反悔区 / memories = 记忆库 / edits = AI 改动
+let editCount = 0;     // 等确认的 AI 改动条数：有才在顶栏亮出「✎ 改动 N」
+let loadGeneration = 0;  // 只有最后一次加载能渲染，切页 / 刷新后丢弃迟到的旧快照
+
+function setEmpty(show, text = "🎉 没有待审核的草稿", onclick = null) {
+  const e = $("#empty");
+  e.hidden = !show;
+  e.textContent = text;
+  e.className = onclick ? "go" : "";
+  e.onclick = onclick;
+}
+
+function renderEditBtn() {
+  const b = $("#editBtn");
+  b.hidden = mode !== "edits" && editCount === 0;
+  b.textContent = mode === "edits" ? "← 回待审核" : "✎ 改动 " + editCount;
+}
 
 function toast(msg) {
   const t = $("#toast");
@@ -188,42 +257,60 @@ async function api(path, options) {
   const resp = await fetch(path, options);
   if (resp.status === 401) { location.reload(); throw new Error("未登录"); }
   const data = await resp.json();
-  if (!resp.ok) { toast(data.error_description || data.error || "出错了"); throw new Error(data.error); }
+  if (!resp.ok) {
+    toast(data.error_description || data.error || "出错了");
+    // 内容在她看过之后变了（409），或改动已被撤回 / 换成新的一版（改动的 404）：拉最新的给她重看，不留旧卡片
+    if (resp.status === 409 || (resp.status === 404 && path.startsWith("/review/api/edits/"))) load();
+    throw new Error(data.error);
+  }
   return data;
 }
 
 async function load() {
   if (mode === "memories") return loadMemories();
   if (mode === "reviewed") return loadReviewed();
+  if (mode === "edits") return loadEdits();
+  const generation = ++loadGeneration;
   const q = currentBatch ? "&batch=" + encodeURIComponent(currentBatch) : "";
-  const data = await api("/review/api/drafts?status=pending" + q);
+  const [data, edits] = await Promise.all([
+    api("/review/api/drafts?status=pending" + q),
+    api("/review/api/edits"),
+  ]);
+  if (generation !== loadGeneration) return;
+  editCount = edits.stats.total;
+  renderEditBtn();
   renderStats(data.stats);
   renderBatches(data.stats.by_batch);
   const list = $("#list");
   list.replaceChildren(...data.items.map(card));
-  $("#empty").hidden = data.items.length > 0;
+  if (data.items.length || !editCount) setEmpty(!data.items.length);
+  else setEmpty(true, "草稿审完了，还有 " + editCount + " 条改动等你确认 →", () => setMode("edits"));
 }
 
 async function loadReviewed() {
+  const generation = ++loadGeneration;
   const [ok, no] = await Promise.all([
     api("/review/api/drafts?status=approved"),
     api("/review/api/drafts?status=rejected"),
   ]);
+  if (generation !== loadGeneration) return;
   $("#stats").textContent = "反悔区：已通过 " + ok.stats.total + " · 已删 " + no.stats.total;
   $("#batches").replaceChildren();
   const items = [...ok.items, ...no.items].sort((a, b) => b.id - a.id);
   $("#list").replaceChildren(...items.map(reviewedCard));
-  $("#empty").hidden = items.length > 0;
+  setEmpty(!items.length);
 }
 
 function setMode(next) {
   mode = mode === next ? "pending" : next;
   $("#modeBtn").textContent = mode === "reviewed" ? "← 回待审核" : "↩ 已审核";
   $("#memBtn").textContent = mode === "memories" ? "← 回待审核" : "🗂 记忆库";
+  renderEditBtn();
   load();
 }
 $("#modeBtn").onclick = () => setMode("reviewed");
 $("#memBtn").onclick = () => setMode("memories");
+$("#editBtn").onclick = () => setMode("edits");
 
 // ---------- 手动添加：提取切粗了轩顺手补一条，走同一条草稿→入库管线（反悔区照样能撤回） ----------
 
@@ -279,7 +366,7 @@ $("#addBtn").onclick = () => {
   head.className = "addtitle";
   head.append(span("＋ 手动添加"));
   el.append(head, form);
-  $("#empty").hidden = true;
+  setEmpty(false);
   $("#list").prepend(el);
   form.querySelector("textarea").focus();
 };
@@ -289,8 +376,10 @@ $("#addBtn").onclick = () => {
 let memPage = 1, memQuery = "";
 
 async function loadMemories() {
+  const generation = ++loadGeneration;
   const params = "?page=" + memPage + (memQuery ? "&q=" + encodeURIComponent(memQuery) : "");
   const data = await api("/review/api/memories" + params);
+  if (generation !== loadGeneration) return;
   $("#stats").textContent = "记忆库 " + data.stats.total + " 条 · 第 " + data.page + "/" + data.total_pages + " 页";
   const box = $("#batches");
   box.replaceChildren();
@@ -311,7 +400,7 @@ async function loadMemories() {
     box.append(n);
   }
   $("#list").replaceChildren(...data.items.map(memCard));
-  $("#empty").hidden = data.items.length > 0;
+  setEmpty(!data.items.length);
 }
 
 function memCard(m) {
@@ -354,6 +443,137 @@ function openMemEditor(m, el) {
   el.replaceChildren(span("记忆#" + m.id), form);
 }
 
+// ---------- ✎ 改动视图：AI 经 MCP 提的修改，轩确认才覆盖（覆盖后不留旧版本） ----------
+
+const FOLD_OVER = 30, FOLD_KEEP = 10;  // 没变的段超过 30 字就折起来，只留头尾各 10 字
+
+async function loadEdits() {
+  const generation = ++loadGeneration;
+  const data = await api("/review/api/edits");
+  if (generation !== loadGeneration) return;
+  editCount = data.stats.total;
+  renderEditBtn();
+  $("#stats").textContent = "改动 " + editCount + " 条（小克提的，等你确认）";
+  $("#batches").replaceChildren();
+  $("#list").replaceChildren(...data.items.map(editCard));
+  setEmpty(!data.items.length, "没有等你确认的改动");
+}
+
+function unchanged(text, first, last) {
+  // 没变的长段落折成可点开的小框；开头 / 结尾的段只留贴着改动那一侧
+  // 按字（码点）切，跟服务端对比一致——按 JS 默认的 UTF-16 切会把 emoji 劈成两半显示成 �
+  const frag = document.createDocumentFragment();
+  const chars = Array.from(text);
+  const head = first ? [] : chars.slice(0, FOLD_KEEP), tail = last ? [] : chars.slice(-FOLD_KEEP);
+  const hidden = chars.slice(head.length, chars.length - tail.length).join("");
+  const hiddenLen = chars.length - head.length - tail.length;
+  if (chars.length <= FOLD_OVER || hiddenLen < 8) { frag.append(text); return frag; }
+  const b = btn("…" + hiddenLen + " 字没变…", "fold", () => b.replaceWith(hidden));
+  frag.append(head.join(""), b, tail.join(""));
+  return frag;
+}
+
+function visible(t) {
+  // 只改了换行 / 空格时，划线和下划线画在空白上看不见——换成看得见的记号
+  return /^\\s+$/.test(t) ? t.replace(/ /g, "·").replace(/\\n/g, "↵\\n") : t;
+}
+
+function diffPane(segs, side) {  // side: a = 改前（划掉删掉的字）/ b = 改后（下划线新加的字）
+  const box = document.createElement("div");
+  box.className = "pane";
+  segs.forEach((s, i) => {
+    if (s.op === "equal") { box.append(unchanged(s.a, i === 0, i === segs.length - 1)); return; }
+    if (side === "a" && s.a) { const x = document.createElement("del"); x.textContent = visible(s.a); box.append(x); }
+    if (side === "b" && s.b) { const x = document.createElement("ins"); x.textContent = visible(s.b); box.append(x); }
+  });
+  return box;
+}
+
+function labeled(text, node) {
+  const w = document.createElement("div");
+  const l = document.createElement("div");
+  l.className = "label";
+  l.textContent = text;
+  w.append(l, node);
+  return w;
+}
+
+function contentDiff(segs) {
+  // 改前在上、改后在下，各占满宽（轩看预览定的 B）
+  return [labeled("改前", diffPane(segs, "a")), labeled("改后", diffPane(segs, "b"))];
+}
+
+function editCard(e) {
+  const el = document.createElement("div");
+  el.className = "card";
+  const head = document.createElement("div");
+  head.className = "edithead";  // 跟记忆库 / 草稿卡同一副门牌
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  for (const p of [e.date, e.space]) meta.append(span(p));
+  const tier = span(e.tier);
+  tier.className = "badge" + (e.tier === "anchor" ? " anchor" : "");
+  meta.append(tier);
+  head.append(span("记忆#" + e.memory_id), meta);
+  el.append(head);
+  if (e.reason) { const r = document.createElement("div"); r.className = "reason"; r.textContent = e.reason; el.append(r); }
+  if (e.stale) {
+    const w = document.createElement("div");
+    w.className = "ewarn";
+    w.textContent = "⚠ 小克提了这条改动之后，这条记忆又被改过（可能是你在记忆库改的）。确认会用「改后」盖掉现在的内容，下面标出的就是会变的地方。";
+    el.append(w);
+  }
+  const c = e.changes;
+  if (c.content) el.append(...contentDiff(c.content.segments));
+  if (c.topic) {
+    const row = document.createElement("div");
+    row.className = "pane";
+    const a = document.createElement("del"), b = document.createElement("ins");
+    a.textContent = c.topic.before || "（空）";
+    b.textContent = c.topic.after;
+    row.append(a, "  →  ", b);
+    el.append(labeled("主题", row));
+  }
+  if (c.tags) {
+    const row = document.createElement("div");
+    row.className = "tagrow";
+    const chip = (t, cls, prefix) => { const x = span((prefix || "") + t); x.className = "tag" + cls; row.append(x); };
+    c.tags.kept.forEach(t => chip(t, ""));
+    c.tags.removed.forEach(t => chip(t, " rm"));
+    c.tags.added.forEach(t => chip(t, " add", "+"));
+    el.append(labeled("标签", row));
+    if (c.tags.removed.includes("sensitive")) {
+      const w = document.createElement("div");
+      w.className = "ewarn";
+      w.textContent = "⚠ 去掉了 sensitive：确认后这条会出现在开场小抄里";
+      el.append(w);
+    }
+  }
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(
+    btn("✓ 确认覆盖", "approve", async () => {
+      if (!confirm("确定覆盖？覆盖后旧内容不保留。")) return;
+      await api("/review/api/edits/" + e.id + "/confirm", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: e.version, seen: e.seen }),  // 她看到的那一版，变了服务端回 409
+      });
+      toast("已覆盖 ✓");
+      load();
+    }),
+    btn("✕ 驳回", "reject", async () => {
+      await api("/review/api/edits/" + e.id + "/reject", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: e.version }),
+      });
+      toast("已驳回，记忆保持原样");
+      load();
+    }),
+  );
+  el.append(actions);
+  return el;
+}
+
 function reviewedCard(d) {
   const el = document.createElement("div");
   el.className = "card";
@@ -363,9 +583,10 @@ function reviewedCard(d) {
   const box = document.createElement("div");
   box.className = "actions";
   box.append(btn("↩ 撤回到待审核", "edit", async () => {
-    await api("/review/api/drafts/" + d.id + "/unreview", { method: "POST" });
+    const r = await api("/review/api/drafts/" + d.id + "/unreview", { method: "POST" });
     el.remove();
-    toast(d.status === "approved" ? "已撤回，记忆已删" : "已捞回待审核");
+    toast(d.status !== "approved" ? "已捞回待审核"
+      : r.dropped_edit ? "已撤回，记忆已删（挂着的小克改动也一起丢了）" : "已撤回，记忆已删");
     load();
   }));
   el.append(box);
@@ -374,7 +595,8 @@ function reviewedCard(d) {
 
 function renderStats(stats) {
   const n = Object.values(stats.by_batch).reduce((a, b) => a + b, 0);
-  $("#stats").textContent = "待审核 " + n + " 条" + (currentBatch ? "（当前批次 " + stats.total + " 条）" : "");
+  $("#stats").textContent = "待审核 " + n + " 条" + (currentBatch ? "（当前批次 " + stats.total + " 条）" : "")
+    + (editCount ? " · 改动 " + editCount + " 条" : "");
 }
 
 function renderBatches(byBatch) {
@@ -416,11 +638,12 @@ const REL_WORDS = {
 const REL_MENU = [["led_to", "导致"], ["supersedes", "覆盖"], ["none", "不关联（单独入库）"]];
 const isDirectional = (l) => l.relation === "led_to" || l.relation === "supersedes";
 
-function bodyEl(d, el, badge) {
+function bodyEl(d, el, badge, mainNode) {
   // 整张卡就是一句话：本条完整内容坐在句子里自己的位置上，不重复出现（轩的定稿）。
   // 主语组（它导致/覆盖本条）在本条上方，其余（本条是主语 / 不关联）在下方。
+  // mainNode：编辑时用编辑框顶替本条的位置，连线和原话照常摆着，对着改。
   const links = d.links || [];
-  const main = mainBox(d, badge);
+  const main = mainNode || mainBox(d, badge);
   const rest = d.quote || d.source_ref ? [quoteEl(d)] : [];
   if (!links.length) {
     const wrap = document.createElement("div");
@@ -572,7 +795,8 @@ function actionsEl(d, el) {
   const box = document.createElement("div");
   box.className = "actions";
   box.append(
-    btn("✓ 通过", "approve", () => act(d.id, "approve", el)),
+    // 带上卡片上看到的内容：她打开页面后 AI 又改过这条，服务端对不上回 409，不让通过没看过的内容
+    btn("✓ 通过", "approve", () => act(d.id, "approve", el, { expect: { content: d.content, tags: d.tags, topic: d.topic } })),
     btn("✎ 改", "edit", () => openEditor(d, el)),
     btn("✕ 删", "reject", () => confirm("确定不要这条草稿？") && act(d.id, "reject", el)),
   );
@@ -656,8 +880,15 @@ function openEditor(d, el) {
     }),
     btn("取消", "reject", () => el.replaceWith(card(d))),
   );
-  form.append(actions);
-  el.replaceChildren(metaEl(d), form);
+  // 编辑框坐进本条的框里：门牌、连线句子框、原话都还在（连线这时只读，改完再调）；
+  // 按钮留在框外，跟平时卡片同一个位置
+  const box = document.createElement("div");
+  box.className = "membox";
+  const head = document.createElement("div");
+  head.className = "boxid";
+  head.append(span("草稿#" + d.id), metaEl(d));
+  box.append(head, form);
+  el.replaceChildren(bodyEl(d, null, null, box), actions);
 }
 
 load();
@@ -747,8 +978,13 @@ async def api_approve_draft(draft_id: int, request: Request):
     if not _authed(request):
         return _unauthorized()
     edits = await request.json() if int(request.headers.get("content-length") or 0) else None
+    expect = edits.pop("expect", None) if isinstance(edits, dict) else None
     try:
-        result = drafts.approve_draft(draft_id, edits=edits)
+        result = drafts.approve_draft(
+            draft_id, edits=edits, expect=expect if isinstance(expect, dict) else None
+        )
+    except drafts.DraftConflict:
+        return _conflict("这条草稿在你打开页面后被小克改过，已刷新，请再看一眼")
     except ValueError as e:
         return JSONResponse({"error": "invalid_draft", "error_description": str(e)}, status_code=400)
     if result is None:
@@ -786,6 +1022,71 @@ async def api_update_memory(memory_id: int, request: Request):
     if updated is None:
         return JSONResponse({"error": "not_found", "error_description": "记忆不存在"}, status_code=404)
     return updated
+
+
+def _conflict(message: str) -> JSONResponse:
+    return JSONResponse({"error": "conflict", "error_description": message}, status_code=409)
+
+
+EDIT_GONE = "这条改动已经处理过，或小克撤回 / 换了一版，已刷新"
+
+
+@router.get("/review/api/edits")
+def api_list_edits(request: Request):
+    """AI 提的改动（等轩确认）：每条带改前 / 改后对照、version 和 seen 指纹。"""
+    if not _authed(request):
+        return _unauthorized()
+    return memory_edits.list_edits()
+
+
+async def _edit_body(request: Request) -> dict:
+    body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+    return body if isinstance(body, dict) else {}
+
+
+def _int_or_none(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+@router.post("/review/api/edits/{edit_id}/confirm")
+async def api_confirm_edit(edit_id: int, request: Request):
+    """确认覆盖：只认轩的浏览器登录；带她看到的 version + seen，对不上 409。"""
+    if not _authed_human(request):
+        return _unauthorized()
+    body = await _edit_body(request)
+    version, seen = _int_or_none(body.get("version")), body.get("seen")
+    if version is None or not isinstance(seen, str):
+        return JSONResponse(
+            {"error": "invalid_request", "error_description": "要带上 version 和 seen"}, status_code=400
+        )
+    try:
+        updated = memory_edits.confirm_edit(edit_id, version, seen)
+    except memory_edits.EditConflict:
+        return _conflict("这条改动在你打开页面后又变了（小克又改过，或记忆被改过），已刷新，请再看一眼")
+    except ValueError as e:
+        return JSONResponse({"error": "invalid_memory", "error_description": str(e)}, status_code=400)
+    if updated is None:
+        return JSONResponse({"error": "not_found", "error_description": EDIT_GONE}, status_code=404)
+    return updated
+
+
+@router.post("/review/api/edits/{edit_id}/reject")
+async def api_reject_edit(edit_id: int, request: Request):
+    """驳回：记忆保持原样。只认轩的浏览器登录；version 对不上 409。"""
+    if not _authed_human(request):
+        return _unauthorized()
+    version = _int_or_none((await _edit_body(request)).get("version"))
+    if version is None:
+        return JSONResponse(
+            {"error": "invalid_request", "error_description": "要带上 version"}, status_code=400
+        )
+    try:
+        result = memory_edits.reject_edit(edit_id, version)
+    except memory_edits.EditConflict:
+        return _conflict("这条改动在你打开页面后又变了，已刷新，请再看一眼")
+    if result is None:
+        return JSONResponse({"error": "not_found", "error_description": EDIT_GONE}, status_code=404)
+    return result
 
 
 @router.post("/review/api/drafts/{draft_id}/unreview")

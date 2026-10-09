@@ -154,3 +154,24 @@ def test_disabled_without_key_keeps_old_behavior(monkeypatch):
     assert "embedded" not in saved
     assert _emb_rows() == []
     assert [r["id"] for r in memories.search_memories("难过")] == [saved["id"]]
+
+
+def test_update_failure_drops_stale_fingerprint_and_rebuild_restores(monkeypatch):
+    """改内容时指纹算不出来：旧指纹必须删掉——留着它会按改前的意思被召回，
+    而 rebuild 只补缺席/换模型的行，同模型的过时指纹它永远补不到。"""
+    saved = memories.save_memory(date="2026-07-05", content="那晚眼泪在眼眶里打转")
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    memories.update_memory(saved["id"], {"content": "那天很开心，一直在笑"})
+    assert _emb_rows() == []
+    assert memories.search_memories("伤心") == []  # 不再按旧意思召回
+    monkeypatch.setattr(embeddings, "embed_texts", fake_embed)
+    assert embeddings.rebuild_embeddings()["embedded_now"] == 1
+    assert [r["id"] for r in memories.search_memories("高兴")] == [saved["id"]]
+
+
+def test_update_unchanged_text_keeps_fingerprint(monkeypatch):
+    """只改日期等非语义字段不碰指纹，API 挂了也不会误删。"""
+    saved = memories.save_memory(date="2026-07-05", content="今天很难过")
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    memories.update_memory(saved["id"], {"date": "2026-07-06"})
+    assert len(_emb_rows()) == 1

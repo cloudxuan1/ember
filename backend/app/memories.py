@@ -361,11 +361,14 @@ def browse_memories(q: str | None = None, space: str | None = None, page: int = 
     }
 
 
-def update_memory(memory_id: int, edits: dict) -> dict | None:
-    """改一条已入库记忆（审核台"记忆库"视图的后端）。
+def update_memory(memory_id: int, edits: dict, conn=None) -> dict | None:
+    """改一条已入库记忆（审核台"记忆库"视图 / 确认 AI 改动提议的后端）。
 
-    只收白名单字段；content/topic/tags 任一变了就重算语义指纹（软失败，
-    rebuild 可补）。返回更新后的完整记忆，不存在返回 None。
+    只收白名单字段；content/topic/tags 任一变了就重算语义指纹。指纹算不出来时
+    删掉旧指纹——留着它语义检索会按改前的意思召回这条，而 rebuild 只补缺席/换模型的行，
+    补不回"同模型但过时"的；删了就回到缺指纹状态，关键词照常、rebuild 能补。
+    conn 给定时借用调用方的连接和事务（不提交，与 save_memory 同款），返回 {"id"}，
+    完整记忆由调用方提交后再取；不给时自开事务，返回更新后的完整记忆。不存在返回 None。
     """
     fields = {k: edits[k] for k in MEMORY_EDITABLE if k in edits}
     if not fields:
@@ -381,17 +384,26 @@ def update_memory(memory_id: int, edits: dict) -> dict | None:
     for k in ("start_date", "end_date"):  # 表单送来的空串 = 清掉区间端点
         if k in fields and not fields[k]:
             fields[k] = None
-    with get_conn() as conn:
-        row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+
+    def _write(c) -> bool:
+        row = c.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row is None:
-            return None
+            return False
         sets = ", ".join(f"{k} = ?" for k in fields)
-        conn.execute(f"UPDATE memories SET {sets} WHERE id = ?", [*fields.values(), memory_id])
+        c.execute(f"UPDATE memories SET {sets} WHERE id = ?", [*fields.values(), memory_id])
         if any(k in fields and fields[k] != row[k] for k in ("content", "topic", "tags")):
             merged = {**dict(row), **fields}
-            embeddings.embed_memory(
-                conn, memory_id, merged["content"], topic=merged["topic"], tags=merged["tags"]
-            )
+            if not embeddings.embed_memory(
+                c, memory_id, merged["content"], topic=merged["topic"], tags=merged["tags"]
+            ):
+                c.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,))
+        return True
+
+    if conn is not None:
+        return {"id": memory_id} if _write(conn) else None
+    with get_conn() as c:
+        if not _write(c):
+            return None
     return get_memory(memory_id)
 
 
