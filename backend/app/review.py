@@ -429,11 +429,12 @@ const REL_WORDS = {
 const REL_MENU = [["led_to", "导致"], ["supersedes", "覆盖"], ["none", "不关联（单独入库）"]];
 const isDirectional = (l) => l.relation === "led_to" || l.relation === "supersedes";
 
-function bodyEl(d, el, badge) {
+function bodyEl(d, el, badge, mainNode) {
   // 整张卡就是一句话：本条完整内容坐在句子里自己的位置上，不重复出现（轩的定稿）。
   // 主语组（它导致/覆盖本条）在本条上方，其余（本条是主语 / 不关联）在下方。
+  // mainNode：编辑时用编辑框顶替本条的位置，连线和原话照常摆着，对着改。
   const links = d.links || [];
-  const main = mainBox(d, badge);
+  const main = mainNode || mainBox(d, badge);
   const rest = d.quote || d.source_ref ? [quoteEl(d)] : [];
   if (!links.length) {
     const wrap = document.createElement("div");
@@ -670,8 +671,15 @@ function openEditor(d, el) {
     }),
     btn("取消", "reject", () => el.replaceWith(card(d))),
   );
-  form.append(actions);
-  el.replaceChildren(metaEl(d), form);
+  // 编辑框坐进本条的框里：门牌、连线句子框、原话都还在（连线这时只读，改完再调）；
+  // 按钮留在框外，跟平时卡片同一个位置
+  const box = document.createElement("div");
+  box.className = "membox";
+  const head = document.createElement("div");
+  head.className = "boxid";
+  head.append(span("草稿#" + d.id), metaEl(d));
+  box.append(head, form);
+  el.replaceChildren(bodyEl(d, null, null, box), actions);
 }
 
 load();
