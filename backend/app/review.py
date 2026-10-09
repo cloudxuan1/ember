@@ -441,7 +441,7 @@ async function loadEdits() {
   const data = await api("/review/api/edits");
   editCount = data.stats.total;
   renderEditBtn();
-  $("#stats").textContent = "改动 " + editCount + " 条（AI 提的，等你确认）";
+  $("#stats").textContent = "改动 " + editCount + " 条（小克提的，等你确认）";
   $("#batches").replaceChildren();
   $("#list").replaceChildren(...data.items.map(editCard));
   setEmpty(!data.items.length, "没有等你确认的改动");
@@ -508,7 +508,7 @@ function editCard(e) {
   if (e.stale) {
     const w = document.createElement("div");
     w.className = "ewarn";
-    w.textContent = "⚠ AI 提了这条改动之后，这条记忆又被改过（可能是你在记忆库改的）。确认会用「改后」盖掉现在的内容，下面标出的就是会变的地方。";
+    w.textContent = "⚠ 小克提了这条改动之后，这条记忆又被改过（可能是你在记忆库改的）。确认会用「改后」盖掉现在的内容，下面标出的就是会变的地方。";
     el.append(w);
   }
   const c = e.changes;
@@ -574,7 +574,7 @@ function reviewedCard(d) {
     const r = await api("/review/api/drafts/" + d.id + "/unreview", { method: "POST" });
     el.remove();
     toast(d.status !== "approved" ? "已捞回待审核"
-      : r.dropped_edit ? "已撤回，记忆已删（挂着的 AI 改动也一起丢了）" : "已撤回，记忆已删");
+      : r.dropped_edit ? "已撤回，记忆已删（挂着的小克改动也一起丢了）" : "已撤回，记忆已删");
     load();
   }));
   el.append(box);
@@ -972,7 +972,7 @@ async def api_approve_draft(draft_id: int, request: Request):
             draft_id, edits=edits, expect=expect if isinstance(expect, dict) else None
         )
     except drafts.DraftConflict:
-        return _conflict("这条草稿在你打开页面后被 AI 改过，已刷新，请再看一眼")
+        return _conflict("这条草稿在你打开页面后被小克改过，已刷新，请再看一眼")
     except ValueError as e:
         return JSONResponse({"error": "invalid_draft", "error_description": str(e)}, status_code=400)
     if result is None:
@@ -1016,7 +1016,7 @@ def _conflict(message: str) -> JSONResponse:
     return JSONResponse({"error": "conflict", "error_description": message}, status_code=409)
 
 
-EDIT_GONE = "这条改动已经处理过，或 AI 撤回 / 换了一版，已刷新"
+EDIT_GONE = "这条改动已经处理过，或小克撤回 / 换了一版，已刷新"
 
 
 @router.get("/review/api/edits")
@@ -1050,7 +1050,7 @@ async def api_confirm_edit(edit_id: int, request: Request):
     try:
         updated = memory_edits.confirm_edit(edit_id, version, seen)
     except memory_edits.EditConflict:
-        return _conflict("这条改动在你打开页面后又变了（AI 又改过，或记忆被改过），已刷新，请再看一眼")
+        return _conflict("这条改动在你打开页面后又变了（小克又改过，或记忆被改过），已刷新，请再看一眼")
     except ValueError as e:
         return JSONResponse({"error": "invalid_memory", "error_description": str(e)}, status_code=400)
     if updated is None:
