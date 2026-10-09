@@ -230,6 +230,7 @@ const $ = (s, el = document) => el.querySelector(s);
 let currentBatch = "";
 let mode = "pending";  // pending = 待审核 / reviewed = 反悔区 / memories = 记忆库 / edits = AI 改动
 let editCount = 0;     // 等确认的 AI 改动条数：有才在顶栏亮出「✎ 改动 N」
+let loadGeneration = 0;  // 只有最后一次加载能渲染，切页 / 刷新后丢弃迟到的旧快照
 
 function setEmpty(show, text = "🎉 没有待审核的草稿", onclick = null) {
   const e = $("#empty");
@@ -269,11 +270,13 @@ async function load() {
   if (mode === "memories") return loadMemories();
   if (mode === "reviewed") return loadReviewed();
   if (mode === "edits") return loadEdits();
+  const generation = ++loadGeneration;
   const q = currentBatch ? "&batch=" + encodeURIComponent(currentBatch) : "";
   const [data, edits] = await Promise.all([
     api("/review/api/drafts?status=pending" + q),
     api("/review/api/edits"),
   ]);
+  if (generation !== loadGeneration) return;
   editCount = edits.stats.total;
   renderEditBtn();
   renderStats(data.stats);
@@ -285,10 +288,12 @@ async function load() {
 }
 
 async function loadReviewed() {
+  const generation = ++loadGeneration;
   const [ok, no] = await Promise.all([
     api("/review/api/drafts?status=approved"),
     api("/review/api/drafts?status=rejected"),
   ]);
+  if (generation !== loadGeneration) return;
   $("#stats").textContent = "反悔区：已通过 " + ok.stats.total + " · 已删 " + no.stats.total;
   $("#batches").replaceChildren();
   const items = [...ok.items, ...no.items].sort((a, b) => b.id - a.id);
@@ -371,8 +376,10 @@ $("#addBtn").onclick = () => {
 let memPage = 1, memQuery = "";
 
 async function loadMemories() {
+  const generation = ++loadGeneration;
   const params = "?page=" + memPage + (memQuery ? "&q=" + encodeURIComponent(memQuery) : "");
   const data = await api("/review/api/memories" + params);
+  if (generation !== loadGeneration) return;
   $("#stats").textContent = "记忆库 " + data.stats.total + " 条 · 第 " + data.page + "/" + data.total_pages + " 页";
   const box = $("#batches");
   box.replaceChildren();
@@ -441,7 +448,9 @@ function openMemEditor(m, el) {
 const FOLD_OVER = 30, FOLD_KEEP = 10;  // 没变的段超过 30 字就折起来，只留头尾各 10 字
 
 async function loadEdits() {
+  const generation = ++loadGeneration;
   const data = await api("/review/api/edits");
+  if (generation !== loadGeneration) return;
   editCount = data.stats.total;
   renderEditBtn();
   $("#stats").textContent = "改动 " + editCount + " 条（小克提的，等你确认）";
