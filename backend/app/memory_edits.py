@@ -19,6 +19,7 @@ from app.db import get_conn
 FIELDS = ("content", "tags", "topic")
 REASON_MAX = 200
 FRAGMENT_MAX = 2  # 夹在两处改动之间、不超过这么多字的"没变"并进改动，免得红绿碎成一地
+DIFF_WORK_LIMIT = 1_000_000  # SequenceMatcher 最坏平方级：限制剩余中段的比较规模
 
 
 class EditConflict(Exception):
@@ -171,9 +172,23 @@ def diff_segments(before: str, after: str) -> list[dict]:
 
     autojunk 关掉：默认开着时 200 字以上的文本里"的/了/，"这类高频字被当垃圾跳过，
     改两个字可能整句标红。夹在两处改动之间的 1–2 字"没变"并进改动，免得碎块。
+    先剥掉共同首尾；中段太大时整段标为替换，仍完整显示双方原文，避免长重复文本卡住审核台。
     """
-    ops = difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes()
-    segs = [{"op": tag, "a": before[i1:i2], "b": after[j1:j2]} for tag, i1, i2, j1, j2 in ops]
+    prefix, suffix = 0, 0
+    common = min(len(before), len(after))
+    while prefix < common and before[prefix] == after[prefix]:
+        prefix += 1
+    while suffix < common - prefix and before[-suffix - 1] == after[-suffix - 1]:
+        suffix += 1
+    a, b = before[prefix:len(before) - suffix], after[prefix:len(after) - suffix]
+    segs = [{"op": "equal", "a": before[:prefix], "b": after[:prefix]}] if prefix else []
+    if len(a) * len(b) > DIFF_WORK_LIMIT:
+        segs.append({"op": "replace", "a": a, "b": b})
+    else:
+        ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+        segs.extend({"op": tag, "a": a[i1:i2], "b": b[j1:j2]} for tag, i1, i2, j1, j2 in ops)
+    if suffix:
+        segs.append({"op": "equal", "a": before[-suffix:], "b": after[-suffix:]})
     merged: list[dict] = []
     for i, seg in enumerate(segs):
         island = seg["op"] == "equal" and len(seg["a"]) <= FRAGMENT_MAX and 0 < i < len(segs) - 1

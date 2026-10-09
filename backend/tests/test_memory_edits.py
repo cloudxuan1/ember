@@ -166,6 +166,28 @@ def test_diff_merges_tiny_equal_islands():
     assert "".join(s["b"] for s in segs) == "她说其实有点冷"
 
 
+@pytest.mark.parametrize("before,after", [
+    ("记忆" * 5000, "记忆" * 2500 + "补" + "记忆" * 2500),
+    ("记忆" * 2500 + "删" + "记忆" * 2500, "记忆" * 5000),
+    ("甲" + "记忆" * 5000 + "乙", "丙" + "记忆" * 5000 + "丁"),
+], ids=["insert", "delete", "large-middle"])
+def test_long_diff_has_bounded_matching_work_without_losing_text(monkeypatch, before, after):
+    """不靠机器快慢断言：平方级算法只能接收有限的中段，全文仍必须完整呈现。"""
+    matcher = memory_edits.difflib.SequenceMatcher
+
+    def bounded_matcher(junk, a, b, **kwargs):
+        assert len(a) * len(b) <= 1_000_000
+        return matcher(junk, a, b, **kwargs)
+
+    monkeypatch.setattr(memory_edits.difflib, "SequenceMatcher", bounded_matcher)
+    segs = memory_edits.diff_segments(before, after)
+    assert "".join(s["a"] for s in segs) == before
+    assert "".join(s["b"] for s in segs) == after
+    assert all(s["a"] == s["b"] for s in segs if s["op"] == "equal")
+    if "补" in after:
+        assert [s for s in segs if s["op"] != "equal"] == [{"op": "insert", "a": "", "b": "补"}]
+
+
 def test_tags_diff_as_sets():
     d = memory_edits.tags_diff("日常,海,sensitive", "日常,海,冬天")
     assert d["kept"] == ["日常", "海"] and d["added"] == ["冬天"] and d["removed"] == ["sensitive"]
