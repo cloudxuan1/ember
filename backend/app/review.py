@@ -19,7 +19,7 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from app import drafts, memories, oauth
+from app import drafts, memories, memory_edits, oauth
 
 router = APIRouter()
 
@@ -71,6 +71,14 @@ def _authed(request: Request) -> bool:
     if not oauth.oauth_enabled():
         return True  # 本地开发
     if _valid_review_bearer(request.headers.get("authorization")):
+        return True
+    return _valid_cookie(request.cookies.get(COOKIE_NAME, ""))
+
+
+def _authed_human(request: Request) -> bool:
+    """只认轩本人的浏览器登录（cookie），不认脚本钥匙 EMBER_REVIEW_TOKEN——
+    那把钥匙在提取用的 AI 会话手里，AI 不能自己确认自己提的改动。"""
+    if not oauth.oauth_enabled():
         return True
     return _valid_cookie(request.cookies.get(COOKIE_NAME, ""))
 
@@ -188,7 +196,11 @@ async function api(path, options) {
   const resp = await fetch(path, options);
   if (resp.status === 401) { location.reload(); throw new Error("未登录"); }
   const data = await resp.json();
-  if (!resp.ok) { toast(data.error_description || data.error || "出错了"); throw new Error(data.error); }
+  if (!resp.ok) {
+    toast(data.error_description || data.error || "出错了");
+    if (resp.status === 409) load();  // 内容在她看过之后变了：拉最新的给她重看，不留旧卡片
+    throw new Error(data.error);
+  }
   return data;
 }
 
@@ -363,9 +375,10 @@ function reviewedCard(d) {
   const box = document.createElement("div");
   box.className = "actions";
   box.append(btn("↩ 撤回到待审核", "edit", async () => {
-    await api("/review/api/drafts/" + d.id + "/unreview", { method: "POST" });
+    const r = await api("/review/api/drafts/" + d.id + "/unreview", { method: "POST" });
     el.remove();
-    toast(d.status === "approved" ? "已撤回，记忆已删" : "已捞回待审核");
+    toast(d.status !== "approved" ? "已捞回待审核"
+      : r.dropped_edit ? "已撤回，记忆已删（挂着的 AI 改动也一起丢了）" : "已撤回，记忆已删");
     load();
   }));
   el.append(box);
@@ -572,7 +585,8 @@ function actionsEl(d, el) {
   const box = document.createElement("div");
   box.className = "actions";
   box.append(
-    btn("✓ 通过", "approve", () => act(d.id, "approve", el)),
+    // 带上卡片上看到的内容：她打开页面后 AI 又改过这条，服务端对不上回 409，不让通过没看过的内容
+    btn("✓ 通过", "approve", () => act(d.id, "approve", el, { expect: { content: d.content, tags: d.tags, topic: d.topic } })),
     btn("✎ 改", "edit", () => openEditor(d, el)),
     btn("✕ 删", "reject", () => confirm("确定不要这条草稿？") && act(d.id, "reject", el)),
   );
@@ -747,8 +761,13 @@ async def api_approve_draft(draft_id: int, request: Request):
     if not _authed(request):
         return _unauthorized()
     edits = await request.json() if int(request.headers.get("content-length") or 0) else None
+    expect = edits.pop("expect", None) if isinstance(edits, dict) else None
     try:
-        result = drafts.approve_draft(draft_id, edits=edits)
+        result = drafts.approve_draft(
+            draft_id, edits=edits, expect=expect if isinstance(expect, dict) else None
+        )
+    except drafts.DraftConflict:
+        return _conflict("这条草稿在你打开页面后被 AI 改过，已刷新，请再看一眼")
     except ValueError as e:
         return JSONResponse({"error": "invalid_draft", "error_description": str(e)}, status_code=400)
     if result is None:
@@ -786,6 +805,68 @@ async def api_update_memory(memory_id: int, request: Request):
     if updated is None:
         return JSONResponse({"error": "not_found", "error_description": "记忆不存在"}, status_code=404)
     return updated
+
+
+def _conflict(message: str) -> JSONResponse:
+    return JSONResponse({"error": "conflict", "error_description": message}, status_code=409)
+
+
+@router.get("/review/api/edits")
+def api_list_edits(request: Request):
+    """AI 提的改动（等轩确认）：每条带改前 / 改后对照、version 和 seen 指纹。"""
+    if not _authed(request):
+        return _unauthorized()
+    return memory_edits.list_edits()
+
+
+async def _edit_body(request: Request) -> dict:
+    body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+    return body if isinstance(body, dict) else {}
+
+
+def _int_or_none(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+@router.post("/review/api/edits/{edit_id}/confirm")
+async def api_confirm_edit(edit_id: int, request: Request):
+    """确认覆盖：只认轩的浏览器登录；带她看到的 version + seen，对不上 409。"""
+    if not _authed_human(request):
+        return _unauthorized()
+    body = await _edit_body(request)
+    version, seen = _int_or_none(body.get("version")), body.get("seen")
+    if version is None or not isinstance(seen, str):
+        return JSONResponse(
+            {"error": "invalid_request", "error_description": "要带上 version 和 seen"}, status_code=400
+        )
+    try:
+        updated = memory_edits.confirm_edit(edit_id, version, seen)
+    except memory_edits.EditConflict:
+        return _conflict("这条改动在你打开页面后又变了（AI 又改过，或记忆被改过），已刷新，请再看一眼")
+    except ValueError as e:
+        return JSONResponse({"error": "invalid_memory", "error_description": str(e)}, status_code=400)
+    if updated is None:
+        return JSONResponse({"error": "not_found", "error_description": "这条改动已经处理过了"}, status_code=404)
+    return updated
+
+
+@router.post("/review/api/edits/{edit_id}/reject")
+async def api_reject_edit(edit_id: int, request: Request):
+    """驳回：记忆保持原样。只认轩的浏览器登录；version 对不上 409。"""
+    if not _authed_human(request):
+        return _unauthorized()
+    version = _int_or_none((await _edit_body(request)).get("version"))
+    if version is None:
+        return JSONResponse(
+            {"error": "invalid_request", "error_description": "要带上 version"}, status_code=400
+        )
+    try:
+        result = memory_edits.reject_edit(edit_id, version)
+    except memory_edits.EditConflict:
+        return _conflict("这条改动在你打开页面后又变了，已刷新，请再看一眼")
+    if result is None:
+        return JSONResponse({"error": "not_found", "error_description": "这条改动已经处理过了"}, status_code=404)
+    return result
 
 
 @router.post("/review/api/drafts/{draft_id}/unreview")

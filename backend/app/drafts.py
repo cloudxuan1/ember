@@ -23,6 +23,14 @@ _DEFAULTS = {
     "source_ref": None, "quote": None, "batch": "", "links": "",
 }
 
+# 轩点"通过"时核对的字段：AI 经 MCP memory_edit 能改的就这三个
+EXPECT_FIELDS = ("content", "tags", "topic")
+
+
+class DraftConflict(Exception):
+    """轩点通过时看到的草稿，跟库里现在的对不上（她打开页面后 AI 又改过）。"""
+
+
 _INSERT_SQL = """INSERT INTO memory_drafts
     (date, content, tags, tier, topic, space, start_date, end_date, source_ref, quote, batch, links)
     VALUES (:date, :content, :tags, :tier, :topic, :space, :start_date, :end_date, :source_ref, :quote, :batch, :links)"""
@@ -282,11 +290,25 @@ def _backfill_edges(conn, draft_id: int, memory_id: int) -> None:
             memories.add_edges(conn, row["memory_id"], wanted, created_by="extraction")
 
 
-def approve_draft(draft_id: int, edits: dict | None = None) -> dict | None:
+def _matches(expect: dict, row) -> bool:
+    for f in EXPECT_FIELDS:
+        if f not in expect:
+            continue
+        seen, now = str(expect[f] or ""), str(row[f] or "")
+        if f == "tags":
+            seen, now = memories.normalize_tags(seen), memories.normalize_tags(now)
+        if seen != now:
+            return False
+    return True
+
+
+def approve_draft(draft_id: int, edits: dict | None = None, expect: dict | None = None) -> dict | None:
     """通过：（可带最后修改）写入 memories + memory_sources + 边建议，草稿标记 approved。
 
     服务端幂等（不靠前端禁按钮）："拿写锁 → 重读 pending → 写记忆 → 标记 approved"
     全在同一个写事务里。并发/重复 approve 时后来者重读拿不到 pending 行，返回 None。
+    expect = 轩卡片上看到的 content/tags/topic：锁内重读后对不上就抛 DraftConflict——
+    AI 能经 MCP 改待审草稿，她不能通过她没看过的内容（"AI 绕不过轩"）。不传则不核对。
     """
     fields = {}
     if edits:
@@ -305,6 +327,9 @@ def approve_draft(draft_id: int, edits: dict | None = None) -> dict | None:
         if row is None:
             conn.rollback()
             return None
+        if expect and not _matches(expect, row):
+            conn.rollback()
+            raise DraftConflict
         draft = {**dict(row), **fields}
         _validate(draft["date"], draft["content"], draft["tier"])
         saved = memories.save_memory(
@@ -359,6 +384,7 @@ def unreview_draft(draft_id: int) -> dict | None:
     approved 的同时删掉它生成的正式记忆（含来源和边）；
     该记忆经 supersedes 边压过的旧记忆，superseded_by 一并松开（边没了，压制也该解除）。
     重新 approve 时边建议还在草稿里，会随记忆重新生成。
+    记忆上挂着待确认的 AI 改动时一并丢弃，返回 dropped_edit=True。
     """
     conn = get_conn()
     try:
@@ -376,8 +402,13 @@ def unreview_draft(draft_id: int) -> dict | None:
                WHERE id = ?""",
             (draft_id,),
         )
+        dropped_edit = False
         if row["status"] == "approved" and row["memory_id"]:
             mid = row["memory_id"]
+            # 挂在这条记忆上的 AI 改动提议会随记忆级联删掉——告诉轩一声
+            dropped_edit = conn.execute(
+                "SELECT 1 FROM memory_edits WHERE memory_id = ?", (mid,)
+            ).fetchone() is not None
             conn.execute("DELETE FROM memory_sources WHERE memory_id = ?", (mid,))
             conn.execute("DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?", (mid, mid))
             conn.execute("UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?", (mid,))
@@ -391,4 +422,7 @@ def unreview_draft(draft_id: int) -> dict | None:
         raise
     finally:
         conn.close()
-    return {"draft_id": draft_id, "status": "pending"}
+    result = {"draft_id": draft_id, "status": "pending"}
+    if dropped_edit:
+        result["dropped_edit"] = True
+    return result
