@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import tempfile
 import time
 
 from fastapi import APIRouter, Request
@@ -57,15 +58,17 @@ def _secret() -> str:
         return key
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(secrets.token_hex(32))
-        os.chmod(tmp, 0o600)
-        try:
-            os.link(tmp, path)  # 原子落地：并发首建只有一份生效，没人读到写了一半的文件
-        except FileExistsError:
-            pass
-        finally:
-            tmp.unlink()
+        # PID 不能区分线程池里的并发请求。每次使用独立候选文件，创建时就限定为 600，
+        # 写完再原子发布；输掉竞争的请求只清理自己的候选，绝不改动赢家的密钥。
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
+        ) as tmp:
+            tmp.write(secrets.token_hex(32))
+            tmp.flush()
+            try:
+                os.link(tmp.name, path)
+            except FileExistsError:
+                pass
     key = path.read_text().strip()
     _cookie_keys[path] = key
     return key

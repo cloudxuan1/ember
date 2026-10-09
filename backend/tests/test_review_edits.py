@@ -215,3 +215,28 @@ def test_cookie_key_file_is_private_and_stable(tmp_path):
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     review._cookie_keys.clear()
     assert review._secret() == key  # 重启（缓存清空）后读回同一把，登录态不失效
+
+
+def test_cookie_key_concurrent_first_requests(tmp_path, monkeypatch):
+    """同步 API 在线程池里校验 cookie：同一进程的首次请求也会并发建密钥。"""
+    import os
+    import stat
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    ready = Barrier(2)
+    link = os.link
+
+    def publish(src, dst):
+        assert stat.S_IMODE(os.stat(src).st_mode) == 0o600
+        ready.wait(timeout=5)  # 两份候选都写完再发布，不依赖碰巧撞上的时序
+        return link(src, dst)
+
+    monkeypatch.setattr(os, "link", publish)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        keys = list(pool.map(lambda _: review._secret(), range(2)))
+    path = tmp_path / review.COOKIE_KEY_FILE
+    assert keys[0] == keys[1] == path.read_text().strip()
+    assert not list(tmp_path.glob(f"{review.COOKIE_KEY_FILE}.*.tmp"))
+    review._cookie_keys.clear()
+    assert review._secret() == keys[0]
