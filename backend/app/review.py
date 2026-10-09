@@ -194,11 +194,10 @@ CONSOLE_PAGE = """<!doctype html>
   #empty.go { color: var(--accent); text-decoration: underline dotted; cursor: pointer; }
   /* ✎ 改动视图：AI 提的改动，删掉的字珊瑚色划掉、新加的字青色下划线 */
   .reason { margin-top: .45rem; font-size: .85rem; background: var(--bg); border-left: 3px solid #FFE394; padding: .35rem .6rem; border-radius: 0 6px 6px 0; }
-  .reason::before { content: "AI 的理由　"; color: var(--dim); font-size: .75rem; }
+  .reason::before { content: "小克的理由　"; color: var(--dim); font-size: .75rem; }
   .ewarn { color: #C24A28; font-size: .78rem; margin-top: .4rem; line-height: 1.5; }
   .label { font-size: .72rem; color: var(--dim); margin: .7rem 0 .25rem; letter-spacing: .05em; }
   .pane { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: .55rem .7rem; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: .95rem; }
-  .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .5rem; }
   del { background: rgba(244,143,104,.38); text-decoration: line-through; text-decoration-color: #C24A28; color: #6B2A12; border-radius: 3px; }
   ins { background: rgba(139,223,221,.6); text-decoration: underline; text-decoration-color: var(--ok); text-underline-offset: 3px; color: #1C4E4B; border-radius: 3px; }
   .fold { background: none; border: 1px dashed var(--line); border-radius: 6px; color: var(--dim); font-size: .75rem; padding: 0 .35rem; margin: 0 .15rem; font: inherit; font-size: .75rem; }
@@ -436,7 +435,6 @@ function openMemEditor(m, el) {
 
 // ---------- ✎ 改动视图：AI 经 MCP 提的修改，轩确认才覆盖（覆盖后不留旧版本） ----------
 
-const EDIT_LAYOUT = "B";  // A 左右两栏 / B 上下叠放 / C 合成一栏（轩看预览后定）
 const FOLD_OVER = 30, FOLD_KEEP = 10;  // 没变的段超过 30 字就折起来，只留头尾各 10 字
 
 async function loadEdits() {
@@ -468,13 +466,13 @@ function visible(t) {
   return /^\\s+$/.test(t) ? t.replace(/ /g, "·").replace(/\\n/g, "↵\\n") : t;
 }
 
-function diffPane(segs, side) {  // side: a = 改前 / b = 改后 / both = 合成一栏
+function diffPane(segs, side) {  // side: a = 改前（划掉删掉的字）/ b = 改后（下划线新加的字）
   const box = document.createElement("div");
   box.className = "pane";
   segs.forEach((s, i) => {
     if (s.op === "equal") { box.append(unchanged(s.a, i === 0, i === segs.length - 1)); return; }
-    if (side !== "b" && s.a) { const x = document.createElement("del"); x.textContent = visible(s.a); box.append(x); }
-    if (side !== "a" && s.b) { const x = document.createElement("ins"); x.textContent = visible(s.b); box.append(x); }
+    if (side === "a" && s.a) { const x = document.createElement("del"); x.textContent = visible(s.a); box.append(x); }
+    if (side === "b" && s.b) { const x = document.createElement("ins"); x.textContent = visible(s.b); box.append(x); }
   });
   return box;
 }
@@ -489,13 +487,8 @@ function labeled(text, node) {
 }
 
 function contentDiff(segs) {
-  if (EDIT_LAYOUT === "C") return [labeled("正文改动", diffPane(segs, "both"))];
-  const before = labeled("改前", diffPane(segs, "a")), after = labeled("改后", diffPane(segs, "b"));
-  if (EDIT_LAYOUT === "B") return [before, after];
-  const cols = document.createElement("div");
-  cols.className = "cols";
-  cols.append(before, after);
-  return [cols];
+  // 改前在上、改后在下，各占满宽（轩看预览定的 B）
+  return [labeled("改前", diffPane(segs, "a")), labeled("改后", diffPane(segs, "b"))];
 }
 
 function editCard(e) {

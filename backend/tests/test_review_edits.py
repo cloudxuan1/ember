@@ -169,6 +169,7 @@ def test_console_has_edits_view_and_valid_escapes(client):
     assert "replace(/\\n/g" in page and "/^\\s+$/" in page
     assert "\n/g" not in page  # 正则里没有被吃成真换行的 \n
     assert "Array.from(text)" in page  # 折叠按码点切，emoji 不被劈成两半
+    assert "小克的理由" in page and "AI 的理由" not in page
     assert 'resp.status === 404 && path.startsWith("/review/api/edits/")' in page  # 撤回 / 换版的旧卡片要刷新
 
 
