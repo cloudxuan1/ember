@@ -13,7 +13,7 @@ import difflib
 import hashlib
 import json
 
-from app import memories
+from app import drafts, memories
 from app.db import get_conn
 
 FIELDS = ("content", "tags", "topic")
@@ -39,6 +39,13 @@ def _same(field: str, new: str, current: str) -> bool:
     if field == "tags":
         return new == memories.normalize_tags(current)
     return new == current.strip()
+
+
+def target_preview(mem) -> dict:
+    """改的是哪一条：日期 + 开头几十字，让 AI 自己核对没把草稿号当成记忆号。"""
+    content = mem["content"] or ""
+    preview = content[:drafts.PREVIEW_LEN] + ("…" if len(content) > drafts.PREVIEW_LEN else "")
+    return {"date": mem["date"], "preview": preview}
 
 
 def normalize_fields(content=None, tags=None, topic=None) -> dict:
@@ -94,7 +101,9 @@ def propose_edit(
             if old:
                 conn.execute("DELETE FROM memory_edits WHERE id = ?", (old["id"],))
             conn.commit()
-            return {"memory_id": memory_id, "status": "unchanged", "replaced": replaced}
+            return {
+                "memory_id": memory_id, "target": target_preview(mem), "status": "unchanged", "replaced": replaced,
+            }
         if old is None:
             edit_id = conn.execute(
                 """INSERT INTO memory_edits
@@ -122,6 +131,7 @@ def propose_edit(
     return {
         "edit_id": edit_id,
         "memory_id": memory_id,
+        "target": target_preview(mem),
         "status": "pending_review",
         "merged": old is not None,
         "pending": {f: pending[f] for f in FIELDS if pending[f] is not None},

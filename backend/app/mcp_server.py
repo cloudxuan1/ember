@@ -1,11 +1,12 @@
-"""ember 的 MCP 工具层：五个记忆操作工具 + briefing（V6b）+ chat-lite 思考彩蛋词库两个工具，少而清楚。纪律写进工具本身。"""
+"""ember 的 MCP 工具层：五个记忆操作工具 + memory_edit（改动等轩确认）+ briefing（V6b）
++ chat-lite 思考彩蛋词库两个工具，少而清楚。纪律写进工具本身。"""
 
 import os
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from app import briefing, drafts, memories, thinking_words
+from app import briefing, drafts, memories, memory_edits, thinking_words
 
 # FastMCP 默认只放行本机 Host 头（DNS-rebinding 防护），
 # 经 Cloudflare Tunnel 进来的请求带公网域名，必须显式加进白名单，否则 421。
@@ -103,6 +104,106 @@ def memory_save(
         "draft_id": saved["id"],
         "status": "pending",
         "message": "已存为待审草稿，等轩审核后入库。",
+    }
+
+
+@mcp.tool()
+def memory_edit(
+    memory_id: int | None = None,
+    draft_id: int | None = None,
+    content: str | None = None,
+    tags: str | None = None,
+    topic: str | None = None,
+    reason: str | None = None,
+) -> dict:
+    """改一条正式记忆或待审草稿的 content / tags / topic。memory_id 和 draft_id 只给一个：
+    memory_search / memory_recall / memory_list 给的是 memory_id；memory_save 返回的是 draft_id。
+
+    先读后改：只给编号、不给内容 = 读出当前的 content / tags / topic
+    （正式记忆还带 pending_edit：已经在排队等轩确认的改动，在它的基础上改，别把它冲掉）。
+    - content 是整段替换：在末尾补一句，就传「原文 + 新增」的完整全文；不要顺手润色、压缩原话。
+    - tags 也是整组替换（加标签要带上原有的）。tags / topic 不传或传空 = 不改，不能清空。
+    - 改正式记忆（memory_id）：不会直接改正式记忆，而是生成一条修改提议，等轩在审核台确认后才覆盖；
+      确认前 memory_recall / memory_search 查到的仍是旧内容。已有待确认的改动时合并进去，
+      replaced = 被这次冲掉的上一版待确认值。
+    - 改待审草稿（draft_id）：直接改草稿，草稿仍待审，轩在审核台通过后才入库。
+    - 只用来改错字、补原话、补标签 / 主题。事情本身变了（计划成了结果、想法变了），
+      用 memory_save 新存一条，links 连 supersedes 指向旧记忆，旧的留作历史。
+    reason 写一句为什么改，审核台上给轩看。返回里的 target 是改的那一条的日期和开头，核对一下没改错。
+    """
+    if (memory_id is None) == (draft_id is None):
+        return {"error": "memory_id 和 draft_id 要给且只给一个（memory_save 返回的是 draft_id）"}
+    try:
+        fields = memory_edits.normalize_fields(content, tags, topic)
+    except ValueError as err:
+        return {"error": str(err)}
+    if draft_id is not None:
+        return _edit_draft(draft_id, fields)
+    if not fields:  # 只给编号 = 读
+        memory = memories.get_memory(memory_id)
+        if memory is None:
+            return {"error": f"记忆 {memory_id} 不存在（草稿号请用 draft_id）"}
+        return {
+            "memory_id": memory_id,
+            "date": memory["date"],
+            "content": memory["content"],
+            "tags": memory["tags"],
+            "topic": memory["topic"],
+            "pending_edit": memory_edits.pending_for(memory_id),
+        }
+    result = memory_edits.propose_edit(memory_id, reason=reason, by="mcp", **fields)
+    if result is None:
+        return {"error": f"记忆 {memory_id} 不存在（草稿号请用 draft_id）"}
+    if result["status"] == "unchanged":
+        withdrawn = "；之前排队的那版改动已撤回" if result["replaced"] else ""
+        return {
+            "memory_id": memory_id,
+            "target": result["target"],
+            "status": "unchanged",
+            "message": f"跟现在的内容一样，没有要改的{withdrawn}。",
+        }
+    out = {
+        "memory_id": memory_id,
+        "edit_id": result["edit_id"],
+        "target": result["target"],
+        "status": "pending_review",
+        "pending": result["pending"],
+        "message": "已提交修改，等轩在审核台确认后才覆盖；确认前查到的仍是旧内容。"
+        + ("已合并进这条记忆原有的待确认改动。" if result["merged"] else ""),
+    }
+    if result["replaced"]:
+        out["replaced"] = result["replaced"]
+    return out
+
+
+def _edit_draft(draft_id: int, fields: dict) -> dict:
+    """草稿本来就要等轩审，改了直接生效；只给 pending 的看和改（被拒的是审计记录，不外露）。"""
+    draft = drafts.get_draft(draft_id)
+    if draft is None or draft["status"] == "rejected":
+        return {"error": f"草稿 {draft_id} 不存在或已被轩删掉"}
+    if draft["status"] == "approved":
+        return {
+            "error": f"草稿 {draft_id} 已经入库成记忆 {draft['memory_id']}，请用 memory_id 改",
+            "memory_id": draft["memory_id"],
+        }
+    if not fields:  # 只给编号 = 读
+        return {
+            "draft_id": draft_id,
+            "status": "pending",
+            "date": draft["date"],
+            "content": draft["content"],
+            "tags": draft["tags"],
+            "topic": draft["topic"],
+        }
+    updated = drafts.update_draft(draft_id, fields)
+    if updated is None or updated["status"] != "pending":  # 读完到改之间被轩审掉了
+        return {"error": f"草稿 {draft_id} 刚被轩审核了，这次没改上；已入库的话请用 memory_id 改"}
+    return {
+        "draft_id": draft_id,
+        "target": memory_edits.target_preview(updated),
+        "status": "pending",
+        "changed": [f for f in memory_edits.FIELDS if f in fields],
+        "message": "草稿已改，仍待轩在审核台通过后入库。",
     }
 
 
