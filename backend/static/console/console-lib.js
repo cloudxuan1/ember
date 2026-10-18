@@ -7,7 +7,8 @@
   // ---------- 配色（每台设备自己记） ----------
   var THEMES = ['matcha', 'pink', 'blue', 'night'];
   var THEME_LABELS = { matcha: '抹茶', pink: '粉粉', blue: '淡蓝', night: '夜间' };
-  var THEME_BG = { matcha: '#F4F6EC', pink: '#FFF0F3', blue: '#EEF5FC', night: '#14111B' };
+  // 状态栏颜色（theme-color），跟 console.css 各主题的 --top 一致
+  var THEME_BAR = { matcha: '#E5ECD5', pink: '#FBDDE5', blue: '#DDEBF9', night: '#14111B' };
   var THEME_KEY = 'ember-console-theme';
 
   function storedTheme() {
@@ -40,7 +41,7 @@
     root.classList.add('theme-' + t);
     var meta = document.querySelector('meta[name="theme-color"]');
     if (meta) {
-      meta.setAttribute('content', THEME_BG[t]);
+      meta.setAttribute('content', THEME_BAR[t]);
     }
     if (persist) {
       try {

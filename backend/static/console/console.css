@@ -39,6 +39,7 @@
   --xuan-ink: #4F6B2E;
   --fade: rgba(244, 246, 236, .78);
   --fade0: rgba(244, 246, 236, 0);
+  --top: #E5ECD5;  /* 状态栏颜色（theme-color），页面顶上从它渐变下来；改了要同步 console-lib.js 的 THEME_BAR */
   --b1: #B9CC8F;
   --b2: #D5E4BF;
   --b3: #F0E7C3;
@@ -83,6 +84,7 @@
   --xuan-ink: #8A2B53;
   --fade: rgba(255, 240, 243, .78);
   --fade0: rgba(255, 240, 243, 0);
+  --top: #FBDDE5;
   --b1: #FFB8CC;
   --b2: #FFD0DC;
   --b3: #EDD0F2;
@@ -127,6 +129,7 @@
   --xuan-ink: #2F5F92;
   --fade: rgba(238, 245, 252, .78);
   --fade0: rgba(238, 245, 252, 0);
+  --top: #DDEBF9;
   --b1: #A9D0F5;
   --b2: #BFE8E6;
   --b3: #C3D9F2;
@@ -171,6 +174,7 @@
   --xuan-ink: #F3B0D3;
   --fade: rgba(20, 17, 27, .8);
   --fade0: rgba(20, 17, 27, 0);
+  --top: #14111B;
   --b1: #7A46BA;
   --b2: #C9663F;
   --b3: #A3407E;
@@ -231,8 +235,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 
 /* ---------- 背后飘着的模糊色块 ---------- */
 .blobs { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
-/* 顶端接缝：手机状态栏是 theme-color 纯色（= --bg），色块飘到顶会跟它切出一条线；顶上一小段从 --bg 渐到透明，状态栏像是长进页面里 */
-.blobs::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: calc(56px + env(safe-area-inset-top)); z-index: 1; background: linear-gradient(to bottom, var(--bg) 0%, var(--fade0) 100%); transition: background .5s ease; }
+/* 顶端接缝：手机状态栏是 theme-color 纯色（= --top），色块飘到顶会跟它切出一条线；顶上 140px 从 --top 渐到透明，状态栏像是长进页面里 */
+.blobs::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: calc(140px + env(safe-area-inset-top)); z-index: 1; background: linear-gradient(to bottom, var(--top) 0%, var(--fade0) 100%); transition: background .5s ease; }
 .blob { position: absolute; border-radius: 50%; filter: blur(46px); opacity: var(--blob-op); transition: background-color .6s ease, opacity .6s ease; will-change: transform; }
 .b1 { width: 320px; height: 320px; left: -80px; top: -70px; background: var(--b1); animation: d1 26s ease-in-out infinite alternate; }
 .b2 { width: 280px; height: 280px; right: -100px; top: 180px; background: var(--b2); animation: d2 31s ease-in-out infinite alternate; }
