@@ -49,11 +49,16 @@ def normalize_tags(tags: str) -> str:
     return ",".join(t.strip() for t in tags.split(",") if t.strip())
 
 
+_FULLWIDTH = str.maketrans("０１２３４５６７８９－．／", "0123456789-./")
+
+
 def normalize_date(value, *, allow_year: bool = False) -> str:
-    """发生日期：YYYY-MM-DD 或只到月 YYYY-MM（. / 也认，月日补零），得是日历上真有的日子。
-    allow_year=True 时还认只有年份（按日期范围筛选用）。"""
-    text = str(value or "").strip().replace("/", "-").replace(".", "-")
-    m = re.fullmatch(r"(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?", text)
+    """发生日期：YYYY-MM-DD 或只到月 YYYY-MM（. / 全角数字 2026年7月18日 也认，月日补零），
+    得是日历上真有的日子。allow_year=True 时还认只有年份（按日期范围筛选用）。"""
+    text = str(value or "").strip().translate(_FULLWIDTH)
+    text = re.sub(r"(\d)\s*[年月]\s*(?=\d)", r"\1-", text).removesuffix("日").removesuffix("月").removesuffix("年")
+    text = text.replace("/", "-").replace(".", "-")
+    m = re.fullmatch(r"([0-9]{4})(?:-([0-9]{1,2})(?:-([0-9]{1,2}))?)?", text)
     if not m or (m.group(2) is None and not allow_year):
         raise ValueError(DATE_HINT)
     year, month, day = m.group(1), m.group(2), m.group(3)
@@ -69,29 +74,32 @@ def normalize_date(value, *, allow_year: bool = False) -> str:
         raise ValueError(DATE_HINT) from None
 
 
-def _next_period(prefix: str) -> str:
-    """'2026' → '2027'；'2026-12' → '2027-01'：给"到某年 / 某月为止"做开区间上界。"""
-    if len(prefix) == 4:
-        return f"{int(prefix) + 1:04d}"
-    year, month = int(prefix[:4]), int(prefix[5:7])
-    return f"{year + month // 12:04d}-{month % 12 + 1:02d}"
+def _period(value: str) -> tuple[str, str]:
+    """一个日期覆盖的头尾两天（字符串比较用）：'2026' → 01-01..12-31；'2026-08' → 08-01..08-31。
+    月底一律写 31：只拿来比大小，'2026-09-31' 照样排在所有 9 月的日子后面。"""
+    if len(value) == 4:
+        return f"{value}-01-01", f"{value}-12-31"
+    if len(value) == 7:
+        return f"{value}-01", f"{value}-31"
+    return value, value
 
 
-def date_conditions(date_from: str | None, date_to: str | None) -> tuple[list[str], list]:
-    """按发生日期筛：两头都能只写到年或月——date_from="2026-08", date_to="2026-08" = 8 月发生的。
-    只到月的记忆（'2026-08'）算在那个月里。"""
+def _date_end(col: str) -> str:
+    """记忆自己覆盖到哪天为止：只到月的 '2026-08' 算到 8 月底。"""
+    return f"(CASE WHEN length({col}) = 7 THEN {col} || '-31' WHEN length({col}) = 4 THEN {col} || '-12-31' ELSE {col} END)"
+
+
+def date_conditions(date_from: str | None, date_to: str | None, col: str = "date") -> tuple[list[str], list]:
+    """按发生日期筛，记忆和查询范围有重叠就算：两头都能只写到年或月——
+    date_from="2026-08", date_to="2026-08" = 8 月发生的；只到月的记忆（'2026-08'）算在那个月里，
+    从 8 月 10 日起查也会带上它（那个月里哪天都有可能）。"""
     conds, params = [], []
     if date_from:
-        conds.append("date >= ?")
-        params.append(normalize_date(date_from, allow_year=True))
+        conds.append(f"{_date_end(col)} >= ?")
+        params.append(_period(normalize_date(date_from, allow_year=True))[0])
     if date_to:
-        to = normalize_date(date_to, allow_year=True)
-        if len(to) == 10:
-            conds.append("date <= ?")
-            params.append(to)
-        else:
-            conds.append("date < ?")
-            params.append(_next_period(to))
+        conds.append(f"{col} <= ?")
+        params.append(_period(normalize_date(date_to, allow_year=True))[1])
     return conds, params
 
 
@@ -104,11 +112,19 @@ def interval_status(start_date: str | None, end_date: str | None, today: str | N
     if not start_date and not end_date:
         return None
     today = today or _today()
-    if start_date and today < start_date:
+    if start_date and today < _bound(start_date, 0):
         return "upcoming"
-    if end_date and today > end_date:
+    if end_date and today > _bound(end_date, 1):
         return "ended"
     return "ongoing"
+
+
+def _bound(value: str, end: int) -> str:
+    """区间端点只到月 / 年时，起点按月初、终点按月底算（'2026-10' 截止 = 整个 10 月都还没过期）。"""
+    try:
+        return _period(normalize_date(value, allow_year=True))[end]
+    except ValueError:
+        return value  # 老数据里认不出的格式照原样比
 
 
 def _short(row) -> dict:
@@ -400,7 +416,9 @@ def search_memories(
     space = resolve_space(space)
     dates = date_conditions(date_from, date_to)
     kw_rows = _keyword_rows(query, space, dates)
-    vec_ids = embeddings.vector_search(query, space=space, k=VEC_TOP_K)
+    vec_ids = embeddings.vector_search(
+        query, space=space, k=VEC_TOP_K, where=date_conditions(date_from, date_to, col="m.date")
+    )
     if not vec_ids:
         return [_short(r) for r in kw_rows[:limit]]
 

@@ -108,8 +108,10 @@ def test_search_and_list_date_ranges():
     ids = {d: memories.save_memory(date=d, content=f"旅行 {d}")["id"] for d in ("2026-07-31", "2026-08", "2026-08-15", "2026-09-01")}
     aug = mcp_server.memory_search("旅行", date_from="2026-08", date_to="2026-08")
     assert {r["id"] for r in aug["results"]} == {ids["2026-08"], ids["2026-08-15"]}
-    since = mcp_server.memory_search("旅行", date_from="2026-08-10")
-    assert {r["id"] for r in since["results"]} == {ids["2026-08-15"], ids["2026-09-01"]}
+    since = mcp_server.memory_search("旅行", date_from="2026-08-10")  # 只到 8 月的那条也可能在 10 号之后
+    assert {r["id"] for r in since["results"]} == {ids["2026-08"], ids["2026-08-15"], ids["2026-09-01"]}
+    first_day = mcp_server.memory_search("旅行", date_from="2026-08-01", date_to="2026-08-31")
+    assert {r["id"] for r in first_day["results"]} == {ids["2026-08"], ids["2026-08-15"]}
     year = mcp_server.memory_list(date_from="2026", date_to="2026")
     assert year["stats"]["total"] == 4
     assert "error" in mcp_server.memory_search("旅行", date_from="上个月")
@@ -123,3 +125,15 @@ def test_deleted_memory_edges_hidden_from_recall_and_briefing():
     assert memories.get_memory(a)["edges"] == []
     assert all(i["id"] != b for i in mcp_server.memory_briefing()["items"])
     assert activity.list_activity()["items"][0]["can"] == "restore"
+
+
+def test_dates_accept_chinese_and_fullwidth_input():
+    for raw, stored in (("２０２６－０７", "2026-07"), ("2026年7月18日", "2026-07-18"), ("2026/7/5", "2026-07-05")):
+        assert mcp_server.memory_save(date=raw, content=f"日期 {raw}")["date"] == stored
+
+
+def test_month_only_interval_ends_at_month_end():
+    assert memories.interval_status(None, "2026-10", today="2026-10-18") == "ongoing"
+    assert memories.interval_status(None, "2026-09", today="2026-10-18") == "ended"
+    assert memories.interval_status("2026-10", None, today="2026-10-01") == "ongoing"
+    assert memories.interval_status("2026-11", None, today="2026-10-18") == "upcoming"

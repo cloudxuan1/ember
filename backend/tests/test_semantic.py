@@ -175,3 +175,13 @@ def test_update_unchanged_text_keeps_fingerprint(monkeypatch):
     monkeypatch.setattr(embeddings, "embed_texts", boom)
     memories.update_memory(saved["id"], {"date": "2026-07-06"})
     assert len(_emb_rows()) == 1
+
+
+def test_date_filter_applies_before_semantic_top_k(monkeypatch):
+    """语义腿先按日期筛再取前 k 个：范围外的相近记忆不能把范围内的挤出候选。"""
+    monkeypatch.setattr(memories, "VEC_TOP_K", 2)
+    for d in ("2026-05-01", "2026-05-02", "2026-05-03"):
+        memories.save_memory(date=d, content="哭了一场")
+    inside = memories.save_memory(date="2026-08-02", content="眼泪")["id"]
+    hits = memories.search_memories("伤心", date_from="2026-08", date_to="2026-08")
+    assert [h["id"] for h in hits] == [inside]
