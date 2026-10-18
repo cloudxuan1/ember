@@ -3,48 +3,48 @@
    记忆卡片、动静行、设置分组是实心卡片。 */
 
 /* ---------- 三套配色（class 挂在 <html> 上） ---------- */
-.theme-warm {
+.theme-matcha {
   color-scheme: light;
-  --bg: #F8F5F0;
-  --ink: #26211D;
-  --ink2: #685F58;
-  --ink3: #8E857E;
-  --accent: #D9775B;
-  --accent-ink: #A9502F;
-  --accent-soft: #FBE6DC;
-  --card: rgba(255, 255, 255, .80);
-  --card-edge: rgba(38, 33, 29, .07);
-  --card-shadow: 0 1px 2px rgba(70, 45, 30, .05), 0 10px 28px rgba(70, 45, 30, .07);
-  --glass: rgba(255, 255, 255, .40);
-  --glass-strong: rgba(253, 251, 248, .72);
-  --glass-solid: #FBF9F6;
-  --glass-edge: rgba(255, 255, 255, .55);
-  --glass-hi: rgba(255, 255, 255, .95);
-  --glass-lo: rgba(255, 255, 255, .10);
-  --glass-shadow: 0 12px 32px rgba(90, 55, 35, .14), 0 2px 8px rgba(90, 55, 35, .06);
-  --glass-sat: 185%;
-  --glass-bright: 1.05;
-  --bubble: rgba(255, 255, 255, .80);
-  --btn: #2B2622;
+  --bg: #F4F6EC;
+  --ink: #2F3A2A;
+  --ink2: #5E6B55;
+  --ink3: #7F8A75;
+  --accent: #5F7F32;
+  --accent-ink: #4F6B2E;
+  --accent-soft: #E6EDD6;
+  --card: #FBFCF7;
+  --card-edge: rgba(47, 58, 42, .07);
+  --card-shadow: 0 1px 2px rgba(50, 70, 30, .05), 0 10px 28px rgba(50, 70, 30, .07);
+  --glass: rgba(255, 255, 255, .42);
+  --glass-strong: rgba(251, 252, 247, .74);
+  --glass-solid: #FBFCF7;
+  --glass-edge: rgba(222, 236, 198, .7);
+  --glass-hi: rgba(248, 255, 236, .95);
+  --glass-lo: rgba(236, 246, 220, .14);
+  --glass-shadow: 0 12px 32px rgba(60, 80, 40, .14), 0 2px 8px rgba(60, 80, 40, .06);
+  --glass-sat: 170%;
+  --glass-bright: 1.04;
+  --bubble: rgba(255, 255, 255, .82);
+  --btn: #5F7F32;
   --btn-ink: #FFFFFF;
   --danger: #B3261E;
   --danger-soft: rgba(179, 38, 30, .09);
-  --scrim: rgba(40, 24, 14, .24);
-  --seg: rgba(38, 33, 29, .06);
+  --scrim: rgba(30, 40, 20, .22);
+  --seg: rgba(47, 58, 42, .06);
   --seg-on: #FFFFFF;
-  --old-bg: rgba(38, 33, 29, .07);
-  --ke: #FBE2D5;
-  --ke-ink: #86391C;
-  --xuan: #F7DDE8;
-  --xuan-ink: #7C2C51;
-  --fade: rgba(248, 245, 240, .78);
-  --fade0: rgba(248, 245, 240, 0);
-  --b1: #F6B091;
-  --b2: #F8D6A2;
-  --b3: #EE9FA6;
-  --b4: #CBBEF0;
+  --old-bg: rgba(47, 58, 42, .07);
+  --ke: #F0E7C3;
+  --ke-ink: #6B5A1E;
+  --xuan: #E6EDD6;
+  --xuan-ink: #4F6B2E;
+  --fade: rgba(244, 246, 236, .78);
+  --fade0: rgba(244, 246, 236, 0);
+  --b1: #B9CC8F;
+  --b2: #D5E4BF;
+  --b3: #F0E7C3;
+  --b4: #B9CC8F;
   --blob-op: .8;
-  --off: rgba(120, 116, 112, .30);
+  --off: rgba(94, 107, 85, .30);
   --r-card: 22px;
 }
 .theme-pink {
@@ -313,8 +313,12 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .lmt-glint{opacity:1;animation:lmt-twinkle var(--lmt-t) ease-in-out var(--lmt-d) infinite;}
 .lmt-glint::before{width:22px;height:22px;margin:-11px 0 0 -11px;
   background:radial-gradient(closest-side,var(--lmt-aura-hi) 18%,42%,transparent);}
+/* 抹茶的 logo 描边用 --accent 那个绿，--accent-ink 太深 */
+.theme-matcha .lmt-logo{--lmt-rim:color-mix(in srgb,#5F7F32 72%,transparent);}
+.theme-matcha .lmt-word{stroke:#5F7F32;}
 @supports not (color:color-mix(in srgb,red 50%,blue)){
   .lmt-logo{--lmt-rim:var(--accent-ink);--lmt-aura:var(--accent-soft);--lmt-aura-hi:var(--accent);}
+  .theme-matcha .lmt-logo{--lmt-rim:#5F7F32;}
 }
 @keyframes lmt-drift{
   0%{opacity:0;transform:translate(var(--lmt-dx),var(--lmt-dy)) rotate(var(--lmt-r));}
