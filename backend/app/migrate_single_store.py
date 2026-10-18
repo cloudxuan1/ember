@@ -25,6 +25,7 @@ SKIP_DRAFTS = (130, 156, 158, 167, 173)
 OLD_TAG = "旧档"
 OLD_BEFORE = "2026-08"  # 字符串比较：'2026-07-31' / '2026-07' 都 < '2026-08'，'2026-08' 和 8 月的日子都不算
 REPORT_FILE = "migration_single_store.json"
+DONE_VERSION = 1  # PRAGMA user_version：第一次搬完记上。老程序回退后会重建空的草稿表，再搬时不重打旧档、不覆盖第一份报告
 
 
 def _tables(conn) -> set[str]:
@@ -39,8 +40,11 @@ def needed(conn) -> bool:
     return bool(_tables(conn) & {"memory_drafts", "memory_edits"})
 
 
-def _resolve_links(links_text: str, draft_to_memory: dict[int, int]) -> tuple[list[dict], list[dict]]:
-    """草稿的连线 → add_edges 认的 [{id, relation, dir}]；对不上号的放进 skipped。"""
+def _resolve_links(
+    links_text: str, draft_to_memory: dict[int, int], pre_ids: set[int]
+) -> tuple[list[dict], list[dict]]:
+    """草稿的连线 → add_edges 认的 [{id, relation, dir}]；对不上号的放进 skipped。
+    memory_id 只认搬家前就在库里的：撤回删掉的编号可能已经分给了刚搬进来的草稿，不能连错人。"""
     if not links_text:
         return [], []
     resolved, skipped = [], []
@@ -49,7 +53,7 @@ def _resolve_links(links_text: str, draft_to_memory: dict[int, int]) -> tuple[li
         if relation == "none":
             continue  # 轩在审核台设了「不关联」
         if link.get("memory_id") is not None:
-            target = link["memory_id"]
+            target = link["memory_id"] if link["memory_id"] in pre_ids else None
         else:
             target = draft_to_memory.get(link.get("draft_id"))
         if target is None:
@@ -73,7 +77,8 @@ def _move_drafts(conn, report: dict) -> None:
         "dropped_rejected": sum(1 for r in rows if r["status"] == "rejected"),
         "dropped_approved_snapshots": sum(1 for r in rows if r["status"] == "approved"),
     }
-    next_id = (conn.execute("SELECT MAX(id) FROM memories").fetchone()[0] or 0) + 1
+    pre_ids = {r[0] for r in conn.execute("SELECT id FROM memories")}
+    next_id = (max(pre_ids) if pre_ids else 0) + 1
     moved = []
     for r in pending:
         new_id = next_id
@@ -96,9 +101,28 @@ def _move_drafts(conn, report: dict) -> None:
     # 连线放第二遍：草稿之间互连时，目标草稿要先有新编号
     edges, skipped_links = 0, []
     for r, new_id in moved:
-        links, skipped = _resolve_links(r.get("links") or "", draft_to_memory)
+        links, skipped = _resolve_links(r.get("links") or "", draft_to_memory, pre_ids)
         edges += memories.add_edges(conn, new_id, links, created_by="extraction")
         skipped_links += [{"draft_id": r["id"], "link": link} for link in skipped]
+    # 反向补线（老审核台 _backfill_edges 的活）：已通过的草稿当初连向还在待审的草稿，
+    # 那条线要等对方通过才写；现在对方进库了，补上。对方没搬（重复 / 被拒）的记进报告。
+    moved_ids = {r["id"]: new_id for r, new_id in moved}
+    for r in rows:
+        if r["status"] != "approved" or not r.get("links") or r.get("memory_id") not in pre_ids:
+            continue
+        for link in json.loads(r["links"]):
+            target_draft = link.get("draft_id")
+            already_written = target_draft in draft_to_memory and target_draft not in moved_ids
+            if target_draft is None or link.get("relation") == "none" or already_written:
+                continue  # 指向已入库记忆 / 已通过草稿的线，当初通过时已经写过
+            if target_draft not in moved_ids:
+                skipped_links.append({"draft_id": r["id"], "link": link})
+                continue
+            edges += memories.add_edges(
+                conn, r["memory_id"],
+                [{"id": moved_ids[target_draft], "relation": link.get("relation", "related"), "dir": link.get("dir", "out")}],
+                created_by="extraction",
+            )
     report["moved"] = [{"draft_id": r["id"], "memory_id": new_id} for r, new_id in moved]
     report["moved_count"] = len(moved)
     report["new_id_range"] = [moved[0][1], moved[-1][1]] if moved else None
@@ -124,9 +148,12 @@ def _pending_edits(conn, report: dict) -> None:
     ]
 
 
-def _tag_old(conn, report: dict) -> None:
+def _tag_old(conn, report: dict, only_ids: list[int] | None = None) -> None:
     tagged = []
-    for r in conn.execute("SELECT id, tags FROM memories WHERE date < ? ORDER BY id", (OLD_BEFORE,)).fetchall():
+    rows = conn.execute("SELECT id, tags FROM memories WHERE date < ? ORDER BY id", (OLD_BEFORE,)).fetchall()
+    for r in rows:
+        if only_ids is not None and r["id"] not in only_ids:
+            continue
         tags = [t for t in memories.normalize_tags(r["tags"] or "").split(",") if t]
         if OLD_TAG in tags:
             continue
@@ -144,20 +171,24 @@ def migrate(conn) -> dict | None:
     report: dict = {"memories_before": conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]}
     conn.commit()  # 交出之前可能挂着的隐式事务，下面整段自己包
     conn.execute("BEGIN IMMEDIATE")
+    first = conn.execute("PRAGMA user_version").fetchone()[0] < DONE_VERSION
     try:
         if "memory_drafts" in tables:
             _move_drafts(conn, report)
         if "memory_edits" in tables:
             _pending_edits(conn, report)
-        _tag_old(conn, report)
+        # 第一次：全库按发生日期打旧档；再搬（老程序回退期间又存了草稿）：只给这次搬进来的打
+        _tag_old(conn, report, None if first else [m["memory_id"] for m in report.get("moved", [])])
         conn.execute("DROP TABLE IF EXISTS memory_edits")
         conn.execute("DROP TABLE IF EXISTS memory_drafts")
         report["memories_after"] = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        conn.execute(f"PRAGMA user_version = {DONE_VERSION}")  # 跟搬家同一个事务：搬失败标记也回滚
         conn.commit()
     except BaseException:
         conn.rollback()
         raise
-    path = db_path().parent / REPORT_FILE
+    name = REPORT_FILE if first else REPORT_FILE.replace(".json", f".{_now(conn).replace(' ', 'T').replace(':', '')}.json")
+    path = db_path().parent / name
     try:
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         report["report_file"] = str(path)
@@ -184,6 +215,9 @@ def main(argv: list[str]) -> int:
 
     if len(argv) != 2:
         print("用法：python -m app.migrate_single_store /path/to/copy.db（只在备份拷贝上跑）", file=sys.stderr)
+        return 2
+    if not os.path.isfile(argv[1]):  # 打错路径时 sqlite 会悄悄建一个空库，再报"没有要搬的"
+        print(f"找不到库文件：{argv[1]}", file=sys.stderr)
         return 2
     os.environ["EMBER_DB"] = argv[1]
     from app.db import init_db

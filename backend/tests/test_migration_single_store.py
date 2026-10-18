@@ -136,7 +136,7 @@ def test_migration_reports_pending_edits_without_applying_and_drops_old_tables(o
 
 
 def test_migration_runs_once_and_is_atomic(old_db, monkeypatch):
-    def boom(conn, report):
+    def boom(conn, report, only_ids=None):
         raise RuntimeError("搬到一半出错")
 
     monkeypatch.setattr(migrate_single_store, "_tag_old", boom)
@@ -165,3 +165,81 @@ def test_trial_run_cli_on_copy(old_db, capsys):
     assert '"moved_count": 3' in out
     assert migrate_single_store.main(["x", str(old_db / "old.db")]) == 0
     assert "没有要搬的" in capsys.readouterr().out
+
+
+def _old_db_with(tmp_path, monkeypatch, memory_rows, drafts, seq_bump=0):
+    monkeypatch.setenv("EMBER_DB", str(tmp_path / "o.db"))
+    conn = sqlite3.connect(db_path())
+    conn.executescript(OLD_SCHEMA)
+    conn.executemany("INSERT INTO memories (id, date, content, created_at) VALUES (?, ?, ?, ?)", memory_rows)
+    if seq_bump:  # 撤回删掉过顶上的记忆：自增序列比最大号大
+        conn.execute("INSERT INTO memories (id, date, content) VALUES (?, '2026-09-30', '后来撤回的')", (seq_bump,))
+        conn.execute("DELETE FROM memories WHERE id = ?", (seq_bump,))
+    conn.executemany(
+        """INSERT INTO memory_drafts (id, date, content, status, memory_id, created_at, links)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        drafts,
+    )
+    conn.commit()
+    conn.close()
+
+
+def _edges():
+    return {(e["from_id"], e["to_id"], e["relation"]) for e in _rows("SELECT * FROM memory_edges")}
+
+
+def test_link_to_withdrawn_memory_is_not_rebound_to_a_moved_draft(tmp_path, monkeypatch):
+    _old_db_with(tmp_path, monkeypatch, [(1, "2026-09-01", "一", "x"), (2, "2026-09-02", "二", "x")], [
+        (200, "2026-10-01", "无关的草稿", "pending", None, "2026-10-01 09:00:00", ""),
+        (201, "2026-10-02", "连向撤回记忆的草稿", "pending", None, "2026-10-02 09:00:00",
+         json.dumps([{"memory_id": 3, "relation": "supersedes", "dir": "out"}])),
+    ], seq_bump=3)
+    report = init_db()
+    assert report["moved"] == [{"draft_id": 200, "memory_id": 3}, {"draft_id": 201, "memory_id": 4}]
+    assert _edges() == set()
+    assert memories.get_memory(3)["superseded_by"] is None
+    assert report["links_skipped"] == [{"draft_id": 201, "link": {"memory_id": 3, "relation": "supersedes", "dir": "out"}}]
+
+
+def test_links_from_approved_drafts_to_pending_ones_are_backfilled(tmp_path, monkeypatch):
+    _old_db_with(tmp_path, monkeypatch, [(1, "2026-09-01", "因", "x"), (2, "2026-09-02", "旧计划", "x")], [
+        (120, "2026-09-01", "因", "approved", 1, "2026-09-01 09:00:00",
+         json.dumps([{"draft_id": 150, "relation": "led_to", "dir": "out"}])),
+        (121, "2026-09-02", "旧计划", "approved", 2, "2026-09-02 09:00:00",
+         json.dumps([{"draft_id": 150, "relation": "supersedes", "dir": "in"},
+                     {"draft_id": 130, "relation": "related", "dir": "out"}])),
+        (130, "2026-09-03", "重复的", "pending", None, "2026-09-03 09:00:00", ""),
+        (150, "2026-09-05", "果 / 新计划", "pending", None, "2026-09-05 09:00:00", ""),
+    ])
+    report = init_db()
+    assert report["moved"] == [{"draft_id": 150, "memory_id": 3}]
+    assert _edges() == {(1, 3, "led_to"), (3, 2, "supersedes")}
+    assert memories.get_memory(2)["superseded_by"] == 3
+    assert report["links_skipped"] == [{"draft_id": 121, "link": {"draft_id": 130, "relation": "related", "dir": "out"}}]
+
+
+def test_rerun_after_program_rollback_keeps_first_report_and_tags(old_db):
+    first = init_db()
+    first_report = Path(first["report_file"])
+    with get_conn() as conn:  # 轩手动去掉了 1 号的旧档
+        conn.execute("UPDATE memories SET tags = '起点' WHERE id = 1")
+    # 老程序回退：它的 init_db 重建空的草稿表，期间又存了一条七月的草稿
+    conn = sqlite3.connect(db_path())
+    conn.executescript(OLD_SCHEMA)
+    conn.execute(
+        "INSERT INTO memory_drafts (id, date, content, created_at) VALUES (300, '2026-07-09', '回退期间存的', '2026-10-19 09:00:00')"
+    )
+    conn.commit()
+    conn.close()
+    second = init_db()
+    assert second["moved"] == [{"draft_id": 300, "memory_id": 6}]
+    assert second["tagged_old"] == [6]  # 只给这次搬进来的打
+    assert memories.get_memory(1)["tags"] == "起点"
+    assert Path(second["report_file"]) != first_report
+    assert json.loads(first_report.read_text(encoding="utf-8"))["pending_edits_not_applied"]
+
+
+def test_trial_cli_refuses_missing_path(tmp_path, capsys):
+    missing = tmp_path / "typo.db"
+    assert migrate_single_store.main(["x", str(missing)]) == 2
+    assert not missing.exists() and "找不到" in capsys.readouterr().err
