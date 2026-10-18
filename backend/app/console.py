@@ -15,10 +15,13 @@ import hashlib
 import hmac
 import os
 import secrets
+import sqlite3
 import tempfile
 import time
 from pathlib import Path
+from typing import Annotated
 
+import fastapi
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -37,6 +40,9 @@ LOCK_SECONDS = 60
 PAGE_FILE = Path(__file__).resolve().parent.parent / "static" / "console" / "index.html"
 
 _login_guard = {"fails": 0, "locked_until": 0.0}
+
+# 路径和查询里的编号：超过 SQLite 整数上限的直接 422，不让它一路跑到数据库报 500
+RowId = Annotated[int, fastapi.Path(ge=1, le=memories.MAX_ID)]
 
 
 # ---------- cookie 签发与校验 ----------
@@ -125,8 +131,23 @@ async def _json_body(request: Request):
         return {}
     try:
         return await request.json()
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
+
+
+def _housekeep() -> None:
+    """打开列表时顺手真删过期的；正好有人在写（小克存记忆时可能在等语义指纹）就下次再清，不让读页面报错。"""
+    try:
+        memories.purge_expired()
+    except sqlite3.OperationalError:
+        pass
+
+
+def _conflict() -> JSONResponse:
+    return JSONResponse(
+        {"error": "conflict", "error_description": "这条在你打开之后又被改过（多半是小克），已刷新，再看一眼"},
+        status_code=409,
+    )
 
 
 # ---------- 页面 ----------
@@ -212,8 +233,8 @@ async def login(request: Request):
 def api_browse(
     request: Request,
     q: str | None = None,
-    page: int = 1,
-    page_size: int = 50,
+    page: Annotated[int, fastapi.Query(ge=1, le=10**6)] = 1,
+    page_size: Annotated[int, fastapi.Query(ge=1, le=memories.BROWSE_PAGE_MAX)] = 50,
     date_from: str | None = None,
     date_to: str | None = None,
     tag: str | None = None,
@@ -222,7 +243,7 @@ def api_browse(
     """记忆库列表：默认跨全库，按发生日期新的在前，content 不截断，带 history_count。"""
     if not _is_xuan(request):
         return _unauthorized()
-    memories.purge_expired()
+    _housekeep()
     try:
         return memories.browse_memories(
             q=q, space=space, page=page, page_size=page_size,
@@ -255,7 +276,7 @@ async def api_save(request: Request):
 
 
 @router.get("/api/memories/{memory_id}")
-def api_get(memory_id: int, request: Request):
+def api_get(memory_id: RowId, request: Request):
     """一条的全文 + 来源 + 连线 + 留着的上一版（新的在前）。"""
     if not _is_xuan(request):
         return _unauthorized()
@@ -267,7 +288,7 @@ def api_get(memory_id: int, request: Request):
 
 
 @router.patch("/api/memories/{memory_id}")
-async def api_update(memory_id: int, request: Request):
+async def api_update(memory_id: RowId, request: Request):
     """直接改，立刻生效；改前的进上一版。带 expect_updated_at（打开时看到的修改时间）防冲掉别人刚改的。"""
     if not _is_xuan(request):
         return _unauthorized()
@@ -280,10 +301,7 @@ async def api_update(memory_id: int, request: Request):
     try:
         result = memories.update_memory(memory_id, body, by="xuan", **kwargs)
     except memories.Conflict:
-        return JSONResponse(
-            {"error": "conflict", "error_description": "这条在你打开之后又被改过（多半是小克），已刷新，再看一眼"},
-            status_code=409,
-        )
+        return _conflict()
     except ValueError as e:
         return _bad(str(e), "invalid_memory")
     if result is None:
@@ -294,7 +312,7 @@ async def api_update(memory_id: int, request: Request):
 
 
 @router.delete("/api/memories/{memory_id}")
-def api_delete(memory_id: int, request: Request):
+def api_delete(memory_id: RowId, request: Request):
     """删：先藏起来，最近动静里能恢复。确认弹窗在网页上做。"""
     if not _is_xuan(request):
         return _unauthorized()
@@ -305,7 +323,7 @@ def api_delete(memory_id: int, request: Request):
 
 
 @router.post("/api/memories/{memory_id}/restore")
-def api_restore(memory_id: int, request: Request):
+def api_restore(memory_id: RowId, request: Request):
     if not _is_xuan(request):
         return _unauthorized()
     result = memories.restore_memory(memory_id, by="xuan")
@@ -315,15 +333,19 @@ def api_restore(memory_id: int, request: Request):
 
 
 @router.post("/api/memories/{memory_id}/revert")
-async def api_revert(memory_id: int, request: Request):
-    """退回到留着的某一版：{"history_id": 那一版的编号}。"""
+async def api_revert(memory_id: RowId, request: Request):
+    """退回到留着的某一版：{"history_id": 那一版的编号, "expect_updated_at": 打开时看到的修改时间（可选）}。"""
     if not _is_xuan(request):
         return _unauthorized()
     body = await _json_body(request)
     history_id = body.get("history_id") if isinstance(body, dict) else None
-    if not isinstance(history_id, int) or isinstance(history_id, bool):
+    if not isinstance(history_id, int) or isinstance(history_id, bool) or not 0 < history_id <= memories.MAX_ID:
         return _bad("要带上 history_id（退到哪一版）")
-    result = memories.revert_memory(memory_id, history_id, by="xuan")
+    kwargs = {"expect_updated_at": body["expect_updated_at"]} if "expect_updated_at" in body else {}
+    try:
+        result = memories.revert_memory(memory_id, history_id, by="xuan", **kwargs)
+    except memories.Conflict:
+        return _conflict()
     if result is None:
         return _not_found("这一版已经不在了（可能被清掉或已经回退过），已刷新")
     memory = result["memory"]
@@ -332,7 +354,11 @@ async def api_revert(memory_id: int, request: Request):
 
 
 @router.delete("/api/memories/{memory_id}/history")
-def api_clear_history(memory_id: int, request: Request, history_id: int | None = None):
+def api_clear_history(
+    memory_id: RowId,
+    request: Request,
+    history_id: Annotated[int | None, fastapi.Query(ge=1, le=memories.MAX_ID)] = None,
+):
     """清掉这条的上一版：带 history_id 清那一版，不带清这条的全部。"""
     if not _is_xuan(request):
         return _unauthorized()
@@ -361,7 +387,7 @@ def api_tags(request: Request):
 def api_activity(request: Request):
     if not _is_xuan(request):
         return _unauthorized()
-    memories.purge_expired()
+    _housekeep()
     return activity.list_activity()
 
 
@@ -381,5 +407,5 @@ async def api_update_settings(request: Request):
         updated = settings.update_settings(body if isinstance(body, dict) else {})
     except ValueError as e:
         return _bad(str(e))
-    memories.purge_expired()  # 恢复期限调短了：过期的删除马上真删
+    _housekeep()  # 恢复期限调短了：过期的删除马上真删
     return updated

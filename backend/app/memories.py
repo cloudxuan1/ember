@@ -27,7 +27,10 @@ RELATIONS = ("led_to", "same_as", "contradicts", "supersedes", "related")
 MEMORY_EDITABLE = history.SNAPSHOT_FIELDS
 TIERS = ("anchor", "normal", "process")
 LIVE = "deleted_at IS NULL"  # 删了先藏起来：所有读和搜都带上这一句
+# 修改时间带毫秒：网页靠它判断"打开后有没有被改过"，同一秒里的两次改动也要分得开
+NOW_MS = "strftime('%Y-%m-%d %H:%M:%f', 'now', '+8 hours')"
 BROWSE_PAGE_MAX = 200
+MAX_ID = 2**63 - 1  # SQLite 整数上限：更大的编号直接当不存在
 
 _TZ_BEIJING = timezone(timedelta(hours=8))  # 与库里 created_at 的 +8 保持一致
 
@@ -196,7 +199,7 @@ def _validate_links(links) -> list[dict]:
         if direction not in ("out", "in"):
             raise ValueError(f"links 第 {i} 条 dir 必须是 out/in，收到: {direction}")
         target = link.get("id")
-        if not isinstance(target, int) or isinstance(target, bool) or target <= 0:
+        if not isinstance(target, int) or isinstance(target, bool) or not 0 < target <= MAX_ID:
             raise ValueError(f"links 第 {i} 条要有目标记忆 id（正整数）")
         out.append({"id": target, "relation": relation, "dir": direction})
     return out
@@ -231,6 +234,9 @@ def add_edges(conn, memory_id: int, links: list[dict], created_by: str = "") -> 
 def _clean_fields(edits: dict) -> dict:
     """白名单 + 规整 + 校验：日期得是具体日子或月份，内容不能空，tags 规整，区间空串 = 清掉。"""
     fields = {k: edits[k] for k in MEMORY_EDITABLE if k in edits}
+    for k, v in fields.items():
+        if v is not None and not isinstance(v, str):
+            raise ValueError(f"{k} 要是文字")
     if "date" in fields:
         fields["date"] = normalize_date(fields["date"])
     if "content" in fields:
@@ -275,6 +281,9 @@ def save_memory(
         "start_date": start_date, "end_date": end_date,
     })
     links = _validate_links(links)  # 先校验后落库，坏 links 不留半条记忆
+    for name, v in (("source_ref", source_ref), ("quote", quote)):
+        if v is not None and not isinstance(v, str):
+            raise ValueError(f"{name} 要是文字")
 
     with _write_tx(conn) as c:
         cur = c.execute(
@@ -567,7 +576,7 @@ def _apply(c, row, fields: dict) -> None:
     补不回"同模型但过时"的；删了就回到缺指纹状态，关键词照常、rebuild 能补。"""
     sets = ", ".join(f"{k} = ?" for k in fields)
     c.execute(
-        f"UPDATE memories SET {sets}, updated_at = datetime('now','+8 hours') WHERE id = ?",
+        f"UPDATE memories SET {sets}, updated_at = {NOW_MS} WHERE id = ?",
         [*fields.values(), row["id"]],
     )
     if any(k in fields and fields[k] != row[k] for k in ("content", "topic", "tags")):
@@ -577,6 +586,16 @@ def _apply(c, row, fields: dict) -> None:
 
 
 _UNSET = object()
+
+
+def _stored_norm(key: str, value):
+    """库里的旧值按同样规矩规整后再比：老代码存的原样（首尾空白、日期没补零、标签带空格）不算「改了」。"""
+    if value is None:
+        return None
+    try:
+        return _clean_fields({key: value}).get(key, value)
+    except ValueError:
+        return value
 
 
 def update_memory(
@@ -597,7 +616,7 @@ def update_memory(
             return None
         if expect_updated_at is not _UNSET and (expect_updated_at or None) != row["updated_at"]:
             raise Conflict
-        changed = {k: v for k, v in fields.items() if v != row[k]}
+        changed = {k: v for k, v in fields.items() if v != _stored_norm(k, row[k])}
         if changed:
             hid = history.push(c, row, by, "edit")
             _apply(c, row, changed)
@@ -607,7 +626,7 @@ def update_memory(
     return {"id": memory_id, "changed": list(changed), "memory": get_memory(memory_id)}
 
 
-def revert_memory(memory_id: int, history_id: int, by: str = "xuan") -> dict | None:
+def revert_memory(memory_id: int, history_id: int, by: str = "xuan", expect_updated_at=_UNSET) -> dict | None:
     """退回到留着的某一版（留 2 版时能选退到哪一版）。回退也算一次改：
     现在的内容挤进上一版，退回去的那一版从上一版里拿走。版本不存在 / 记忆已删返回 None。"""
     with _write_tx() as c:
@@ -615,6 +634,8 @@ def revert_memory(memory_id: int, history_id: int, by: str = "xuan") -> dict | N
         target = history.get(c, memory_id, history_id) if row is not None else None
         if target is None:
             return None
+        if expect_updated_at is not _UNSET and (expect_updated_at or None) != row["updated_at"]:
+            raise Conflict  # 页面打开后又被改过：退回去会连那次改动一起抹掉，先刷新看一眼
         snap = {k: v for k, v in json.loads(target["snapshot"]).items() if k in MEMORY_EDITABLE}
         c.execute("DELETE FROM memory_history WHERE id = ?", (history_id,))
         activity.mark_undone(c, memory_id, history_id=history_id)
@@ -623,7 +644,7 @@ def revert_memory(memory_id: int, history_id: int, by: str = "xuan") -> dict | N
         if changed:
             _apply(c, row, changed)
         else:  # 内容一样也记修改时间：网页的「打开后又被改过」要能看出来
-            c.execute("UPDATE memories SET updated_at = datetime('now','+8 hours') WHERE id = ?", (memory_id,))
+            c.execute(f"UPDATE memories SET updated_at = {NOW_MS} WHERE id = ?", (memory_id,))
         activity.log(c, by, "revert", memory_id, snap.get("content", row["content"]), history_id=hid)
     return {"id": memory_id, "reverted_to": history_id, "memory": get_memory(memory_id)}
 
@@ -685,6 +706,19 @@ def restore_memory(memory_id: int, by: str = "xuan") -> dict | None:
 def purge_expired() -> dict:
     """过了最近动静显示期限的：删掉的记忆真删（连同来源、连线、指纹、上一版），流水也清掉。
     被它压过（superseded_by）的旧记忆按剩下的活记忆重算压制。没有定时任务：网页列表 / 启动时顺手调。"""
+    probe = get_conn()  # 先只读看一眼有没有要清的：大多数时候没有，不去抢写锁
+    try:
+        cutoff = f"-{settings.get_settings(probe)['activity_days']} days"
+        due = probe.execute(
+            "SELECT EXISTS(SELECT 1 FROM memories WHERE deleted_at IS NOT NULL "
+            "AND deleted_at < datetime('now', '+8 hours', ?)) "
+            "OR EXISTS(SELECT 1 FROM activity_log WHERE at < datetime('now', '+8 hours', ?))",
+            (cutoff, cutoff),
+        ).fetchone()[0]
+    finally:
+        probe.close()
+    if not due:
+        return {"purged": [], "activity_pruned": 0}
     with _write_tx() as c:
         cutoff = f"-{settings.get_settings(c)['activity_days']} days"
         ids = [
@@ -712,8 +746,14 @@ def get_status() -> dict:
     with get_conn() as conn:
         total = conn.execute(f"SELECT COUNT(*) FROM memories WHERE {LIVE}").fetchone()[0]
         last = conn.execute(f"SELECT MAX(created_at) FROM memories WHERE {LIVE}").fetchone()[0]
-        edges = conn.execute("SELECT COUNT(*) FROM memory_edges").fetchone()[0]
-        sources = conn.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0]
+        edges = conn.execute(
+            """SELECT COUNT(*) FROM memory_edges e
+               JOIN memories a ON a.id = e.from_id JOIN memories b ON b.id = e.to_id
+               WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL"""
+        ).fetchone()[0]
+        sources = conn.execute(
+            "SELECT COUNT(*) FROM memory_sources s JOIN memories m ON m.id = s.memory_id WHERE m.deleted_at IS NULL"
+        ).fetchone()[0]
     return {
         "service": "ember",
         "status": "ok",

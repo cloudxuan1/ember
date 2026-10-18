@@ -352,3 +352,60 @@ def test_purging_one_superseder_keeps_the_other(client):
         conn.execute("UPDATE memories SET deleted_at = datetime('now','+8 hours','-31 days') WHERE id = ?", (b,))
     memories.purge_expired()
     assert memories.get_memory(old)["superseded_by"] == a
+
+
+def test_noop_save_of_legacy_row_is_not_an_edit(client):
+    mid = _save("原话")
+    with get_conn() as conn:  # 老代码存的原样：首尾空白、日期没补零、标签带空格
+        conn.execute("UPDATE memories SET content = '原话\n', topic = '海边 ', date = '2026-4-5', tags = '日常, 旅行' WHERE id = ?", (mid,))
+    shown = client.get(f"/api/memories/{mid}").json()
+    body = {k: shown[k] for k in ("date", "content", "tags", "topic", "tier", "space", "start_date", "end_date")}
+    assert client.patch(f"/api/memories/{mid}", json=body).json()["changed"] == []
+    assert client.get(f"/api/memories/{mid}").json()["history"] == []
+
+
+def test_conflict_detected_within_the_same_second_and_on_revert(client):
+    mid = _save("v1")
+    first = client.patch(f"/api/memories/{mid}", json={"content": "v2"}).json()["memory"]
+    memories.update_memory(mid, {"content": "小克同一秒又改了"}, by="ke")
+    assert client.patch(f"/api/memories/{mid}", json={"content": "v3", "expect_updated_at": first["updated_at"]}).status_code == 409
+    hid = client.get(f"/api/memories/{mid}").json()["history"][0]["id"]
+    stale = client.post(f"/api/memories/{mid}/revert", json={"history_id": hid, "expect_updated_at": first["updated_at"]})
+    assert stale.status_code == 409
+    assert memories.get_memory(mid)["content"] == "小克同一秒又改了"
+
+
+def test_bad_inputs_are_4xx_not_500(client):
+    mid = _save()
+    huge = 10**20
+    assert client.post("/api/memories", json={"date": "2026-10-01", "content": "x", "source_ref": {"f": 1}}).status_code == 400
+    assert client.post("/api/memories", json={"date": "2026-10-01", "content": "x", "links": [{"id": huge}]}).status_code == 400
+    assert client.post("/api/memories", json={"date": 20261001, "content": "x"}).status_code == 400
+    assert client.patch(f"/api/memories/{mid}", json={"tags": ["a", "b"]}).status_code == 400
+    for method, url in (("get", f"/api/memories/{huge}"), ("delete", f"/api/memories/{huge}"),
+                        ("post", f"/api/memories/{huge}/restore"), ("get", f"/api/memories?page={huge}"),
+                        ("delete", f"/api/memories/{mid}/history?history_id={huge}")):
+        assert getattr(client, method)(url).status_code == 422, url
+    assert client.post(f"/api/memories/{mid}/revert", json={"history_id": huge}).status_code == 400
+    deep = client.patch(f"/api/memories/{mid}", content="[" * 100000, headers={"content-type": "application/json"})
+    assert deep.status_code == 400
+
+
+def test_reads_do_not_wait_for_a_writer(client):
+    _save("在列表里")
+    writer = get_conn()
+    writer.execute("BEGIN IMMEDIATE")  # 模拟小克存记忆时卡在算语义指纹
+    try:
+        assert client.get("/api/memories").status_code == 200
+        assert client.get("/api/activity").status_code == 200
+    finally:
+        writer.rollback()
+        writer.close()
+
+
+def test_status_ignores_hidden_memories_edges_and_sources(client):
+    a = _save("留着")
+    b = memories.save_memory(date="2026-07-02", content="要删", quote="原话", links=[{"id": a, "relation": "related"}])["id"]
+    client.delete(f"/api/memories/{b}")
+    status = memories.get_status()
+    assert (status["memories"], status["edges"], status["sources"]) == (1, 0, 0)
