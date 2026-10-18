@@ -85,6 +85,19 @@ def test_browse_carries_interval_status_and_history_count(client):
     assert item["interval_status"] == "ongoing" and item["history_count"] == 1
 
 
+def test_month_chips_cover_the_whole_library_instead_of_the_first_page(client):
+    with get_conn() as conn:
+        conn.executemany("INSERT INTO memories (date, content) VALUES (?, ?)",
+                         [("2026-10-18", f"十月 {i}") for i in range(201)] +
+                         [(f"2026-{month:02d}", "更早的") for month in (9, 8, 7)])
+    first = client.get("/api/memories?page_size=200").json()
+    assert len(first["items"]) == 200 and all(m["date"] == "2026-10-18" for m in first["items"])
+    assert first["months"] == ["2026-10", "2026-09", "2026-08", "2026-07"]
+    filtered = client.get("/api/memories?q=更早的&date_from=2026-07&date_to=2026-07").json()
+    assert filtered["months"] == first["months"]  # 搜索和切月份不改变按钮的含义。
+    assert [m["date"] for m in filtered["items"]] == ["2026-07"]
+
+
 # ---------- 手写一条 ----------
 
 
@@ -460,3 +473,9 @@ def test_reads_skip_a_due_purge_instead_of_waiting(client):
     finally:
         writer.rollback()
         writer.close()
+
+
+def test_root_serves_the_page_without_caching(client):
+    resp = client.get("/")
+    assert resp.status_code == 200 and resp.headers["cache-control"] == "no-store"
+    assert "/static/console/console.js" in resp.text and 'id="brand"' in resp.text

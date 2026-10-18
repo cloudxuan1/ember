@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN" class="theme-warm">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F8F5F0">
+<meta name="referrer" content="no-referrer">
+<meta name="format-detection" content="telephone=no">
+<title>ember 记忆库</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%23D9775B'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/console/console.css">
+<!-- 先定配色，免得打开时闪一下默认色 -->
+<script src="/static/console/console-lib.js"></script>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="blobs" aria-hidden="true">
+    <span class="blob b1"></span>
+    <span class="blob b2"></span>
+    <span class="blob b3"></span>
+    <span class="blob b4"></span>
+  </div>
+
+  <div class="content" id="content">
+    <header class="topbar">
+      <!-- 左上角 logo：C「光点蒲公英」原版，定稿。样式在 console.css 的「题头 logo」一段（.lmt-*） -->
+      <!-- BRAND:START -->
+      <a class="brand" id="brand" href="/" aria-label="ember"><span class="lmt-logo" aria-hidden="true"><svg class="lmt-mark" viewBox="0 0 200 52" width="200" height="52" aria-hidden="true" focusable="false"><g class="lmt-twig"><path class="lmt-rimline" d="M11 39.4C30 41.5 58 41.2 82 39.7S110 37.9 121.5 33.4 M97.2 39C99.64 38.2 100.68 35.32 100.3 33.17C98.3 34.05 96.49 36.53 97.2 39Z M101.2 38.8C102.03 40.77 104.47 41.36 106.21 40.82C105.34 39.23 103.17 37.96 101.2 38.8Z M121.5 33.4C125.39 33.03 127.57 29.13 127.41 25.84C124.18 26.48 120.92 29.53 121.5 33.4Z M121.5 33.4L124.7 29.3 M121.5 33.4L120.44 31.02 M121.5 33.4L123.78 34.14"/><path class="lmt-coreline" d="M11 39.4C30 41.5 58 41.2 82 39.7S110 37.9 121.5 33.4 M97.2 39C99.64 38.2 100.68 35.32 100.3 33.17C98.3 34.05 96.49 36.53 97.2 39Z M101.2 38.8C102.03 40.77 104.47 41.36 106.21 40.82C105.34 39.23 103.17 37.96 101.2 38.8Z M121.5 33.4C125.39 33.03 127.57 29.13 127.41 25.84C124.18 26.48 120.92 29.53 121.5 33.4Z M121.5 33.4L124.7 29.3 M121.5 33.4L120.44 31.02 M121.5 33.4L123.78 34.14"/><circle class="lmt-twig-dot" cx="11" cy="39.4" r="1.5"/></g><path class="lmt-word" d="M28.06 20Q28.06 22.05 25.52 23.51Q22.98 24.96 18.69 25.25L18.63 26.35Q18.63 28.28 19.44 29.25Q20.25 30.23 21.84 30.23Q23.2 30.23 24.35 29.77Q25.5 29.31 26.5 28.71L26.94 29.35Q25.55 30.53 24 31.17Q22.45 31.8 21.05 31.8Q18.6 31.8 17.28 30.43Q15.95 29.06 15.95 26.5Q15.95 23.98 17.02 21.79Q18.09 19.6 19.98 18.25Q21.87 16.89 23.95 16.89Q25.81 16.89 26.94 17.75Q28.06 18.6 28.06 20ZM18.81 24.29Q21.81 24.07 23.61 22.89Q25.41 21.71 25.41 20Q25.41 19.15 24.95 18.6Q24.49 18.06 23.61 18.06Q22.55 18.06 21.55 18.92Q20.56 19.78 19.83 21.24Q19.1 22.69 18.81 24.29ZM43.27 20.21Q44.3 18.74 45.6 17.82Q46.91 16.89 48.1 16.89Q49.37 16.89 50.11 17.7Q50.84 18.51 50.84 20.04Q50.84 20.37 50.77 20.91Q50.71 21.45 49.16 30.44L51.14 30.82L51.01 31.5H46.45L48.01 22.69Q48.36 20.86 48.36 20.18Q48.36 19.5 48.04 19.08Q47.72 18.66 47.04 18.66Q46.38 18.66 45.45 19.3Q44.53 19.94 43.78 20.93Q43.03 21.92 42.88 22.78L41.38 31.5H38.87L40.41 22.69Q40.79 20.71 40.79 20.18Q40.79 19.5 40.46 19.08Q40.13 18.66 39.41 18.66Q38.75 18.66 37.78 19.34Q36.81 20.01 36.07 20.97Q35.33 21.93 35.19 22.78L33.69 31.5H31.18L33.5 18.33L31.71 17.95L31.83 17.27H36.04L35.61 20.21Q36.67 18.71 37.99 17.8Q39.31 16.89 40.47 16.89Q41.81 16.89 42.54 17.73Q43.27 18.57 43.27 20.21ZM58.36 11.04 56.35 10.67 56.47 9.99H61.01L59.89 16.67Q59.63 18.39 59.3 19.59Q60.51 18.35 61.79 17.62Q63.07 16.89 64.15 16.89Q66.04 16.89 67.17 18.25Q68.31 19.6 68.31 21.95Q68.31 24.55 67.18 26.86Q66.05 29.17 64.07 30.49Q62.09 31.8 59.74 31.8Q58.41 31.8 57.13 31.46Q55.85 31.12 54.9 30.53ZM57.5 29.88Q58.38 30.61 59.94 30.61Q61.48 30.61 62.79 29.46Q64.1 28.32 64.85 26.39Q65.6 24.46 65.6 22.34Q65.6 20.65 64.89 19.72Q64.19 18.79 63.01 18.79Q62.12 18.79 61.08 19.38Q60.04 19.97 59.1 20.89ZM83.61 20Q83.61 22.05 81.07 23.51Q78.52 24.96 74.24 25.25L74.18 26.35Q74.18 28.28 74.99 29.25Q75.8 30.23 77.39 30.23Q78.75 30.23 79.9 29.77Q81.05 29.31 82.05 28.71L82.49 29.35Q81.1 30.53 79.55 31.17Q77.99 31.8 76.6 31.8Q74.15 31.8 72.82 30.43Q71.5 29.06 71.5 26.5Q71.5 23.98 72.57 21.79Q73.63 19.6 75.53 18.25Q77.42 16.89 79.49 16.89Q81.35 16.89 82.48 17.75Q83.61 18.6 83.61 20ZM74.36 24.29Q77.36 24.07 79.16 22.89Q80.96 21.71 80.96 20Q80.96 19.15 80.5 18.6Q80.04 18.06 79.16 18.06Q78.1 18.06 77.1 18.92Q76.1 19.78 75.38 21.24Q74.65 22.69 74.36 24.29ZM96.56 16.89Q97.32 16.89 97.76 17.01L97.09 20.74H96.44L95.87 18.82Q94.66 18.82 93.36 19.74Q92.07 20.66 90.99 22.18L89.37 31.5H86.86L89.18 18.33L87.39 17.95L87.51 17.27H91.71L91.24 20.48Q92.37 18.77 93.77 17.83Q95.17 16.89 96.56 16.89Z"/></svg><span class="lmt-motes" aria-hidden="true"><span class="lmt-mote lmt-seed lmt-m1"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path class="lmt-rimline lmt-seed-rim" d="M8 6.4C8.1 9 8.5 11.4 8.9 13.6 M8 6.4L3.32 9.1 M8 6.4L3.7 6.4 M8 6.4L3.32 3.7 M8 6.4L5.85 2.68 M8 6.4L8 1 M8 6.4L10.15 2.68 M8 6.4L12.68 3.7 M8 6.4L12.3 6.4 M8 6.4L12.68 9.1"/><path class="lmt-coreline lmt-fine" d="M8 6.4C8.1 9 8.5 11.4 8.9 13.6 M8 6.4L3.32 9.1 M8 6.4L3.7 6.4 M8 6.4L3.32 3.7 M8 6.4L5.85 2.68 M8 6.4L8 1 M8 6.4L10.15 2.68 M8 6.4L12.68 3.7 M8 6.4L12.3 6.4 M8 6.4L12.68 9.1"/><ellipse class="lmt-achene" cx="9" cy="14.3" rx=".7" ry="1.25" transform="rotate(-12 9 14.3)"/><circle class="lmt-heart" cx="8" cy="6.4" r="1.15"/></svg></span><span class="lmt-mote lmt-seed lmt-m2"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path class="lmt-rimline lmt-seed-rim" d="M8 6.4C8.1 9 8.5 11.4 8.9 13.6 M8 6.4L3.32 9.1 M8 6.4L3.7 6.4 M8 6.4L3.32 3.7 M8 6.4L5.85 2.68 M8 6.4L8 1 M8 6.4L10.15 2.68 M8 6.4L12.68 3.7 M8 6.4L12.3 6.4 M8 6.4L12.68 9.1"/><path class="lmt-coreline lmt-fine" d="M8 6.4C8.1 9 8.5 11.4 8.9 13.6 M8 6.4L3.32 9.1 M8 6.4L3.7 6.4 M8 6.4L3.32 3.7 M8 6.4L5.85 2.68 M8 6.4L8 1 M8 6.4L10.15 2.68 M8 6.4L12.68 3.7 M8 6.4L12.3 6.4 M8 6.4L12.68 9.1"/><ellipse class="lmt-achene" cx="9" cy="14.3" rx=".7" ry="1.25" transform="rotate(-12 9 14.3)"/><circle class="lmt-heart" cx="8" cy="6.4" r="1.15"/></svg></span><span class="lmt-mote lmt-seed lmt-m3"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path class="lmt-rimline lmt-seed-rim" d="M8 6.4C8.1 9 8.5 11.4 8.9 13.6 M8 6.4L3.32 9.1 M8 6.4L3.7 6.4 M8 6.4L3.32 3.7 M8 6.4L5.85 2.68 M8 6.4L8 1 M8 6.4L10.15 2.68 M8 6.4L12.68 3.7 M8 6.4L12.3 6.4 M8 6.4L12.68 9.1"/><path class="lmt-coreline lmt-fine" d="M8 6.4C8.1 9 8.5 11.4 8.9 13.6 M8 6.4L3.32 9.1 M8 6.4L3.7 6.4 M8 6.4L3.32 3.7 M8 6.4L5.85 2.68 M8 6.4L8 1 M8 6.4L10.15 2.68 M8 6.4L12.68 3.7 M8 6.4L12.3 6.4 M8 6.4L12.68 9.1"/><ellipse class="lmt-achene" cx="9" cy="14.3" rx=".7" ry="1.25" transform="rotate(-12 9 14.3)"/><circle class="lmt-heart" cx="8" cy="6.4" r="1.15"/></svg></span><span class="lmt-mote lmt-glint lmt-m4"><svg viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path class="lmt-sparkle" d="M7 1.6C7.5 5.4 8.6 6.5 12.4 7C8.6 7.5 7.5 8.6 7 12.4C6.5 8.6 5.4 7.5 1.6 7C5.4 6.5 6.5 5.4 7 1.6Z"/></svg></span><span class="lmt-mote lmt-star lmt-m5"><svg viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path class="lmt-sparkle" d="M7 1.6C7.5 5.4 8.6 6.5 12.4 7C8.6 7.5 7.5 8.6 7 12.4C6.5 8.6 5.4 7.5 1.6 7C5.4 6.5 6.5 5.4 7 1.6Z"/></svg></span><span class="lmt-mote lmt-dot lmt-m6"></span><span class="lmt-mote lmt-dot lmt-m7"></span><span class="lmt-mote lmt-dot lmt-m8"></span><span class="lmt-mote lmt-star lmt-m9"><svg viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path class="lmt-sparkle" d="M7 1.6C7.5 5.4 8.6 6.5 12.4 7C8.6 7.5 7.5 8.6 7 12.4C6.5 8.6 5.4 7.5 1.6 7C5.4 6.5 6.5 5.4 7 1.6Z"/></svg></span></span></span></a>
+      <!-- BRAND:END -->
+    </header>
+
+    <main>
+      <!-- 记忆库 -->
+      <section class="view" id="view-library" aria-labelledby="h-library">
+        <!-- 页面不放大标题（轩定）：标题只留给读屏和焦点兜底，条数放进搜索框的提示字 -->
+        <h1 class="pagetitle sr" id="h-library" tabindex="-1">记忆库</h1>
+        <div class="stick-sentinel" id="stick-sentinel" aria-hidden="true"></div>
+        <div class="sticky" id="sticky">
+          <label class="glass searchwrap">
+            <svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="M20 20l-4.2-4.2"></path></svg>
+            <span class="sr">搜索记忆</span>
+            <input class="search" id="q" type="search" placeholder="搜内容或编号" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search">
+            <button class="press clearq" id="clearq" type="button" aria-label="清除搜索" hidden><svg class="ico" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+          </label>
+          <div class="chips" id="chips" role="group" aria-label="按月份看"></div>
+        </div>
+        <div class="listpad" id="lib-list" aria-live="polite"></div>
+      </section>
+
+      <!-- 最近动静 -->
+      <section class="view" id="view-activity" aria-labelledby="h-activity" hidden>
+        <div class="pagehead">
+          <h1 class="pagetitle sr" id="h-activity" tabindex="-1">最近动静</h1>
+          <span class="pagesub" id="act-sub">删掉的在这里还能恢复</span>
+        </div>
+        <div class="rows" id="act-list"></div>
+      </section>
+
+      <!-- 设置 -->
+      <section class="view" id="view-settings" aria-labelledby="h-settings" hidden>
+        <h1 class="pagetitle sr" id="h-settings" tabindex="-1">设置</h1>
+        <div class="setlist">
+          <section aria-labelledby="g-mem">
+            <h2 class="grouph" id="g-mem">记忆</h2>
+            <div class="group">
+              <div class="setrow">
+                <span class="pad"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8.5 4.5L12 12 3.5 7.5zM3.5 12L12 16.5 20.5 12M3.5 16.5L12 21l8.5-4.5"></path></svg></span>
+                <span class="settext"><span class="sett" id="keep-label">上一版留几版</span><span class="sets">改坏了能往回退几次</span></span>
+                <div class="stepper" role="group" aria-labelledby="keep-label">
+                  <button class="press stepbtn" id="keep-minus" type="button" aria-label="少留一版"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"></path></svg></button>
+                  <span class="stepval" id="keep-val" aria-live="polite">– 版</span>
+                  <button class="press stepbtn" id="keep-plus" type="button" aria-label="多留一版"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5v14"></path></svg></button>
+                </div>
+              </div>
+              <div class="sep"></div>
+              <div class="setrow setcol">
+                <span class="setline">
+                  <span class="pad"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7.5V12l3 2M20.5 12a8.5 8.5 0 1 1-17 0 8.5 8.5 0 0 1 17 0z"></path></svg></span>
+                  <span class="settext"><span class="sett" id="days-label">最近动静显示多久</span><span class="sets">也是删掉后还能恢复的期限</span></span>
+                </span>
+                <div class="seg" id="days-seg" role="group" aria-labelledby="days-label">
+                  <button class="press segbtn" type="button" data-days="7" aria-pressed="false">7 天</button>
+                  <button class="press segbtn" type="button" data-days="30" aria-pressed="false">30 天</button>
+                  <button class="press segbtn" type="button" data-days="90" aria-pressed="false">90 天</button>
+                </div>
+              </div>
+              <div class="sep"></div>
+              <div class="setrow">
+                <span class="pad"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5"></path></svg></span>
+                <span class="settext"><span class="sett">小克能不能删</span><span class="sets">关掉以后，小克只能存和改</span></span>
+                <button class="switch" id="ke-switch" type="button" role="switch" aria-checked="false" aria-label="小克能不能删"><span class="track"><span class="knob"></span></span></button>
+              </div>
+            </div>
+          </section>
+          <section aria-labelledby="g-look">
+            <h2 class="grouph" id="g-look">外观</h2>
+            <div class="group">
+              <div class="setrow setcol">
+                <span class="setline">
+                  <span class="pad"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.4 0 2-1 1.4-2.2-.6-1.2.2-2.3 1.6-2.3H17a3.5 3.5 0 0 0 3.5-3.5c0-5-3.8-9-8.5-9z"></path><circle cx="7.8" cy="11" r="1"></circle><circle cx="11" cy="7.5" r="1"></circle><circle cx="15.2" cy="8.8" r="1"></circle></svg></span>
+                  <span class="settext"><span class="sett" id="theme-label">配色</span><span class="sets">每台手机 / 电脑各记各的</span></span>
+                </span>
+                <div class="seg" id="theme-seg" role="group" aria-labelledby="theme-label">
+                  <button class="press segbtn" type="button" data-theme="warm" aria-pressed="false">暖白橙</button>
+                  <button class="press segbtn" type="button" data-theme="pink" aria-pressed="false">粉粉</button>
+                  <button class="press segbtn" type="button" data-theme="night" aria-pressed="false">夜间</button>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section aria-labelledby="g-clean">
+            <h2 class="grouph" id="g-clean">清理</h2>
+            <div class="group">
+              <button class="press setbtn" id="clear-all" type="button">
+                <span class="pad pad-danger"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 4.5l4 4L10 18H6l-2-2 9.5-9.5zM12.5 7.5l4 4M4 21h16"></path></svg></span>
+                <span class="settext"><span class="sett sett-danger">全部清空上一版</span><span class="sets">清掉以后，这些记忆就没法回退了</span></span>
+              </button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <nav class="glass tabbar" id="tabbar" aria-label="切换页面">
+    <div class="tabgrid">
+      <span class="tab-bubble" id="tab-bubble" aria-hidden="true"></span>
+      <button class="press tabbtn tab-on" type="button" data-tab="library" aria-current="page">
+        <svg class="ico" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19M9 7.5h6"></path></svg>
+        <span>记忆库</span>
+      </button>
+      <button class="press tabbtn" type="button" data-tab="activity" aria-current="false">
+        <svg class="ico" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7.5V12l3 2M20.5 12a8.5 8.5 0 1 1-17 0 8.5 8.5 0 0 1 17 0z"></path></svg>
+        <span>最近动静</span>
+      </button>
+      <button class="press tabbtn" type="button" data-tab="settings" aria-current="false">
+        <svg class="ico" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4"></path></svg>
+        <span>设置</span>
+      </button>
+    </div>
+  </nav>
+
+  <button class="glass press fab" id="fab" type="button" aria-label="写一条新的记忆"><svg class="ico" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+
+  <div class="layer" id="sheet-layer" hidden>
+    <button class="scrim" id="scrim" type="button" aria-label="关闭" tabindex="-1"></button>
+    <section class="glass glass-strong sheet" id="sheet-dialog" role="dialog" aria-modal="true" aria-label="记忆" tabindex="-1">
+      <span class="grabber" aria-hidden="true"></span>
+      <div class="sheet-in" id="sheet"></div>
+    </section>
+  </div>
+
+  <div class="alertwrap" id="alert-layer" hidden>
+    <section class="glass glass-strong alert" role="alertdialog" aria-modal="true" aria-labelledby="alert-title" aria-describedby="alert-msg">
+      <div class="alert-body">
+        <h2 class="alert-title" id="alert-title"></h2>
+        <span class="alert-msg" id="alert-msg"></span>
+      </div>
+      <div class="alert-btns">
+        <button class="press btn-ghost" id="alert-cancel" type="button">取消</button>
+        <button class="press btn-danger" id="alert-ok" type="button">确定</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="toastwrap" id="toastwrap" role="status" aria-live="polite"></div>
+</div>
+<script src="/static/console/console.js"></script>
+<script src="/static/console/console-sheet.js"></script>
+</body>
+</html>
