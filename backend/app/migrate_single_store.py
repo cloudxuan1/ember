@@ -69,8 +69,6 @@ def _move_drafts(conn, report: dict, first: bool = True) -> list[int]:
     order = "created_at, id" if "created_at" in cols else "id"
     # 转成 dict 用 .get：很老的草稿表缺列（测试里的 V3 库）也能走完
     rows = [dict(r) for r in conn.execute(f"SELECT * FROM memory_drafts ORDER BY {order}").fetchall()]
-    # 已通过的草稿行就是旧快照：只拿它们的 draft_id → memory_id 对照给连线用
-    draft_to_memory = {r["id"]: r.get("memory_id") for r in rows if r["status"] == "approved" and r.get("memory_id")}
     # 再搬时草稿表是老程序回退期间新建的，编号从 1 重排，跟那几条重复稿无关
     skip = SKIP_DRAFTS if first else ()
     pending = [r for r in rows if r["status"] == "pending" and r["id"] not in skip]
@@ -83,6 +81,11 @@ def _move_drafts(conn, report: dict, first: bool = True) -> list[int]:
     pre_ids = {r[0] for r in conn.execute("SELECT id FROM memories")}
     # 连线只认活着的：已删（藏起来）的记录进 links_skipped，别悄悄丢
     live_ids = {r[0] for r in conn.execute(f"SELECT id FROM memories WHERE {memories.LIVE}")}
+    # 旧快照指向的记忆也必须在搬家前仍活着；否则它的编号可能马上分给无关的新草稿。
+    draft_to_memory = {
+        r["id"]: r["memory_id"] for r in rows
+        if r["status"] == "approved" and r.get("memory_id") in live_ids
+    }
     next_id = (max(pre_ids) if pre_ids else 0) + 1
     moved = []
     for r in pending:
@@ -113,7 +116,7 @@ def _move_drafts(conn, report: dict, first: bool = True) -> list[int]:
     # 那条线要等对方通过才写；现在对方进库了，补上。对方没搬（重复 / 被拒）的记进报告。
     moved_ids = {r["id"]: new_id for r, new_id in moved}
     for r in rows:
-        if r["status"] != "approved" or not r.get("links") or r.get("memory_id") not in pre_ids:
+        if r["status"] != "approved" or not r.get("links") or r.get("memory_id") not in live_ids:
             continue
         for link in json.loads(r["links"]):
             target_draft = link.get("draft_id")
