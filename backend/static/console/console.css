@@ -2,7 +2,7 @@
    玻璃只用在浮在上面的东西：顶栏的配色圆点、搜索框、月份按钮、底部 tab、右下角 +、底部面板、弹窗、提示条。
    记忆卡片、动静行、设置分组是实心卡片。 */
 
-/* ---------- 三套配色（class 挂在 <html> 上） ---------- */
+/* ---------- 四套配色（class 挂在 <html> 上） ---------- */
 .theme-matcha {
   color-scheme: light;
   --bg: #F4F6EC;
@@ -90,6 +90,50 @@
   --blob-op: .85;
   --off: rgba(130, 80, 95, .28);
   --r-card: 28px;
+}
+.theme-blue {
+  color-scheme: light;
+  --bg: #EEF5FC;
+  --ink: #22344A;
+  --ink2: #56708C;
+  --ink3: #7F93A8;
+  --accent: #5B9BD5;
+  --accent-ink: #2F6BA3;
+  --accent-soft: #DCEBFA;
+  --card: rgba(255, 255, 255, .82);
+  --card-edge: rgba(47, 107, 163, .08);
+  --card-shadow: 0 1px 2px rgba(40, 80, 130, .05), 0 10px 28px rgba(40, 80, 130, .08);
+  --glass: rgba(255, 255, 255, .42);
+  --glass-strong: rgba(250, 252, 255, .74);
+  --glass-solid: #F7FAFE;
+  --glass-edge: rgba(255, 255, 255, .6);
+  --glass-hi: rgba(255, 255, 255, .95);
+  --glass-lo: rgba(255, 255, 255, .12);
+  --glass-shadow: 0 12px 32px rgba(50, 100, 160, .16), 0 2px 8px rgba(50, 100, 160, .07);
+  --glass-sat: 170%;
+  --glass-bright: 1.05;
+  --bubble: rgba(255, 255, 255, .84);
+  --btn: #A9CBEF;
+  --btn-ink: #1E3550;
+  --danger: #B3261E;
+  --danger-soft: rgba(179, 38, 30, .08);
+  --scrim: rgba(25, 45, 70, .22);
+  --seg: rgba(47, 107, 163, .08);
+  --seg-on: #FFFFFF;
+  --old-bg: rgba(34, 52, 74, .07);
+  --ke: #FFE6D6;
+  --ke-ink: #8A3B1E;
+  --xuan: #DCEBFA;
+  --xuan-ink: #2F5F92;
+  --fade: rgba(238, 245, 252, .78);
+  --fade0: rgba(238, 245, 252, 0);
+  --b1: #A9D0F5;
+  --b2: #BFE8E6;
+  --b3: #C3D9F2;
+  --b4: #BDE6F5;
+  --blob-op: .85;
+  --off: rgba(80, 105, 135, .28);
+  --r-card: 26px;
 }
 .theme-night {
   color-scheme: dark;
@@ -479,6 +523,7 @@ button.rowbody { margin: -6px 0 -6px -4px; padding: 6px 0 6px 4px; border-radius
 .stepval { min-width: 40px; text-align: center; font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
 
 .seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; border-radius: 14px; background: var(--seg); }
+.seg4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .segbtn { height: 40px; border-radius: 11px; font-size: 14px; font-weight: 600; color: var(--ink2); }
 .seg-on { background: var(--seg-on); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .08), 0 4px 10px rgba(0, 0, 0, .06); }
 .seg2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }

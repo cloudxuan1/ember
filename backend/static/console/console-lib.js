@@ -5,9 +5,9 @@
   'use strict';
 
   // ---------- 配色（每台设备自己记） ----------
-  var THEMES = ['matcha', 'pink', 'night'];
-  var THEME_LABELS = { matcha: '抹茶', pink: '粉粉', night: '夜间' };
-  var THEME_BG = { matcha: '#F4F6EC', pink: '#FFF0F3', night: '#14111B' };
+  var THEMES = ['matcha', 'pink', 'blue', 'night'];
+  var THEME_LABELS = { matcha: '抹茶', pink: '粉粉', blue: '淡蓝', night: '夜间' };
+  var THEME_BG = { matcha: '#F4F6EC', pink: '#FFF0F3', blue: '#EEF5FC', night: '#14111B' };
   var THEME_KEY = 'ember-console-theme';
 
   function storedTheme() {
