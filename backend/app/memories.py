@@ -27,7 +27,7 @@ RELATIONS = ("led_to", "same_as", "contradicts", "supersedes", "related")
 MEMORY_EDITABLE = history.SNAPSHOT_FIELDS
 TIERS = ("anchor", "normal", "process")
 LIVE = "deleted_at IS NULL"  # 删了先藏起来：所有读和搜都带上这一句
-# 修改时间带毫秒：网页靠它判断"打开后有没有被改过"，同一秒里的两次改动也要分得开
+# 修改时间带毫秒；_touch 保证每次递增，同一毫秒连改或系统时钟回拨也不会撞版本。
 NOW_MS = "strftime('%Y-%m-%d %H:%M:%f', 'now', '+8 hours')"
 BROWSE_PAGE_MAX = 200
 MAX_ID = 2**63 - 1  # SQLite 整数上限：更大的编号直接当不存在
@@ -591,15 +591,27 @@ def list_tags() -> list[dict]:
     return [{"tag": t, "count": n} for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
 
 
+def _touch(c, memory_id: int) -> None:
+    c.execute(
+        f"""UPDATE memories SET updated_at = CASE
+              WHEN updated_at >= {NOW_MS}
+              THEN strftime('%Y-%m-%d %H:%M:%f', updated_at, '+0.001 seconds')
+              ELSE {NOW_MS} END
+            WHERE id = ?""",
+        (memory_id,),
+    )
+
+
 def _apply(c, row, fields: dict) -> None:
     """写入新值、记修改时间；content/topic/tags 变了就重算语义指纹。指纹算不出来时
     删掉旧指纹——留着它语义检索会按改前的意思召回这条，而 rebuild 只补缺席/换模型的行，
     补不回"同模型但过时"的；删了就回到缺指纹状态，关键词照常、rebuild 能补。"""
     sets = ", ".join(f"{k} = ?" for k in fields)
     c.execute(
-        f"UPDATE memories SET {sets}, updated_at = {NOW_MS} WHERE id = ?",
+        f"UPDATE memories SET {sets} WHERE id = ?",
         [*fields.values(), row["id"]],
     )
+    _touch(c, row["id"])
     if any(k in fields and fields[k] != row[k] for k in ("content", "topic", "tags")):
         merged = {**dict(row), **fields}
         if not embeddings.embed_memory(c, row["id"], merged["content"], topic=merged["topic"], tags=merged["tags"]):
@@ -667,7 +679,7 @@ def revert_memory(memory_id: int, history_id: int, by: str = "xuan", expect_upda
         if changed:
             _apply(c, row, changed)
         else:  # 内容一样也记修改时间：网页的「打开后又被改过」要能看出来
-            c.execute(f"UPDATE memories SET updated_at = {NOW_MS} WHERE id = ?", (memory_id,))
+            _touch(c, memory_id)
         activity.log(c, by, "revert", memory_id, snap.get("content", row["content"]), history_id=hid)
     return {"id": memory_id, "reverted_to": history_id, "memory": get_memory(memory_id)}
 
