@@ -53,7 +53,10 @@ CREATE TABLE IF NOT EXISTS memories (
     end_date    TEXT,                    -- 区间型终点；状态不存死，读时现算（V3）
     is_resolved INTEGER DEFAULT 0,
     superseded_by INTEGER REFERENCES memories(id),
-    created_at  TEXT DEFAULT (datetime('now','+8 hours'))
+    created_at  TEXT DEFAULT (datetime('now','+8 hours')),  -- 存的时间（系统记，平时不显示）
+    updated_at  TEXT,                    -- 最后改的时间；没改过为空
+    deleted_at  TEXT,                    -- 删了先藏起来：非空 = 已删，过了恢复期限才真删
+    deleted_by  TEXT                     -- xuan / ke
 );
 CREATE INDEX IF NOT EXISTS idx_mem_date  ON memories(date);
 CREATE INDEX IF NOT EXISTS idx_mem_tier  ON memories(tier);
@@ -65,31 +68,6 @@ CREATE TABLE IF NOT EXISTS memory_sources (
     source_ref TEXT,   -- 指向 ember-logs 私有仓库的哪份文件哪一段（轻引用，不存全文）
     quote      TEXT    -- 关键原话片段
 );
-
--- 导入草稿暂存区（V3 审核台）：提取结果先进这里，人工通过后才写入 memories。
--- 拒绝的行保留 rejected 状态不删——这张表同时兼任导入审计记录。
-CREATE TABLE IF NOT EXISTS memory_drafts (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    date        TEXT NOT NULL,
-    content     TEXT NOT NULL,
-    tags        TEXT DEFAULT '',
-    tier        TEXT DEFAULT 'normal',
-    topic       TEXT DEFAULT '',
-    space       TEXT DEFAULT 'personal',
-    start_date  TEXT,
-    end_date    TEXT,
-    source_ref  TEXT,               -- 通过时随记忆一起写入 memory_sources
-    quote       TEXT,
-    links       TEXT DEFAULT '',    -- 边建议 JSON（V4）：目标 memory_id 或同批 draft_id，通过时随记忆写入
-
-    batch       TEXT DEFAULT '',    -- 提取批次，如 4.18起点/group_003（锚点推进的单位）
-    status      TEXT DEFAULT 'pending',  -- pending / approved / rejected
-    memory_id   INTEGER REFERENCES memories(id),  -- 通过后指向正式记忆
-    created_at  TEXT DEFAULT (datetime('now','+8 hours')),
-    reviewed_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_draft_status ON memory_drafts(status);
-CREATE INDEX IF NOT EXISTS idx_draft_batch  ON memory_drafts(batch);
 
 -- 语义指纹（V5）：普通表不用 vec0 虚拟表——维度是数据不是表结构，换模型不用改 DDL。
 -- model 列记录"谁算的这枚指纹"：搜索只用与当前配置同模型的行，换模型后旧行自动失效。
@@ -111,22 +89,39 @@ CREATE TABLE IF NOT EXISTS briefing_log (
 );
 CREATE INDEX IF NOT EXISTS idx_briefing_mem ON briefing_log(memory_id, surfaced_at);
 
--- 已入库记忆的修改提议（app/memory_edits.py）：AI 经 MCP memory_edit 提交，轩在审核台确认才覆盖。
--- 只存提议的新值（NULL = 该字段不改），不存旧值——"改前"永远现读 memories，确认后不留旧版本。
--- 一条记忆最多一张待确认提议（UNIQUE），再改合并进来、version +1；记忆被删（撤回）时提议跟着删。
--- AUTOINCREMENT：删掉的提议号不复用，开着的旧卡片不会确认到另一条提议上。
-CREATE TABLE IF NOT EXISTS memory_edits (
+-- 一条记忆只存一份（2026-10 单库改造）：谁改都直接改 memories，改前的整条旧值挤进这里，
+-- 每条记忆只留最近 N 版（设置 history_keep，1 或 2），更早的扔掉。记忆真删时跟着删。
+CREATE TABLE IF NOT EXISTS memory_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id   INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    snapshot    TEXT NOT NULL,          -- 被换下来的那一版：可改字段的 JSON
+    replaced_by TEXT NOT NULL,          -- 谁的改动把它换下来：xuan / ke
+    action      TEXT NOT NULL DEFAULT 'edit',  -- edit / revert
+    replaced_at TEXT DEFAULT (datetime('now','+8 hours'))
+);
+CREATE INDEX IF NOT EXISTS idx_history_mem ON memory_history(memory_id, id);
+
+-- 最近动静：谁（xuan 轩 / ke 小克）几点存了 / 改了 / 回退了 / 删了 / 恢复了哪条。
+-- 不挂外键：记忆真删后流水照样能显示（title 存当时的开头）；超过显示期限的行清掉。
+-- history_id = 这次改动换下来的那一版（edit / revert），回退按钮靠它；
+-- undone = 这一行已经被撤销（改动被回退 / 删除被恢复）。
+CREATE TABLE IF NOT EXISTS activity_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    memory_id  INTEGER NOT NULL UNIQUE REFERENCES memories(id) ON DELETE CASCADE,
-    content    TEXT,
-    tags       TEXT,
-    topic      TEXT,
-    reason     TEXT DEFAULT '',    -- AI 写给轩看的一句理由
-    base       TEXT NOT NULL DEFAULT '{}',  -- {字段: 提议时现值的哈希}（不是旧文）：对不上 = 这个字段在提议后又被改过
-    version    INTEGER NOT NULL DEFAULT 1,
-    created_by TEXT DEFAULT '',
-    created_at TEXT DEFAULT (datetime('now','+8 hours')),
-    updated_at TEXT DEFAULT (datetime('now','+8 hours'))
+    at         TEXT DEFAULT (datetime('now','+8 hours')),
+    actor      TEXT NOT NULL CHECK (actor IN ('xuan','ke')),
+    action     TEXT NOT NULL CHECK (action IN ('save','edit','revert','delete','restore')),
+    memory_id  INTEGER NOT NULL,
+    title      TEXT DEFAULT '',
+    history_id INTEGER,
+    undone     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_activity_at ON activity_log(at);
+CREATE INDEX IF NOT EXISTS idx_activity_mem ON activity_log(memory_id, id);
+
+-- 轩在网页设置里能调的几样（app/settings.py 管默认值和校验）。
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 
 -- chat-lite 思考彩蛋词库（app/thinking_words.py）：和记忆完全无关，只是借住同一个库。
@@ -172,7 +167,7 @@ def get_conn() -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """V4 就地升级老库，全部幂等：
+    """V4 就地升级老库，全部幂等（memory_drafts 那条只对还没做单库搬家的老库有意义）：
     - memory_edges 补 created_by/created_at + UNIQUE + relation CHECK（重建搬行，行数 0 也走同一条路）
     - memory_drafts 补 links 列
     """
@@ -190,7 +185,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE memory_drafts ADD COLUMN links TEXT DEFAULT ''")
 
 
-def init_db() -> None:
-    with get_conn() as conn:
+MEMORY_NEW_COLUMNS = ("updated_at", "deleted_at", "deleted_by")  # 单库改造（2026-10）加的列
+
+
+def _add_memory_columns(conn: sqlite3.Connection) -> None:
+    """老库的 memories 补单库改造的三列（CREATE TABLE IF NOT EXISTS 不会给已有表加列）。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
+    for col in MEMORY_NEW_COLUMNS:
+        if cols and col not in cols:
+            conn.execute(f"ALTER TABLE memories ADD COLUMN {col} TEXT")
+
+
+def init_db() -> dict | None:
+    """建表 + 就地升级；老库第一次跑到这里时顺带做单库搬家，返回搬家报告（不用搬返回 None）。"""
+    from app import migrate_single_store  # 搬家要用 memories 的工具函数，延迟导入免循环
+
+    conn = get_conn()
+    try:
         _migrate(conn)
+        _add_memory_columns(conn)
         conn.executescript(SCHEMA + EDGES_DDL)
+        return migrate_single_store.migrate(conn)
+    finally:
+        conn.close()

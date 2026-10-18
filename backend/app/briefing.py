@@ -3,7 +3,7 @@
 ① 没完的事——区间状态现算为 ongoing/upcoming；② 话题共振——topic 走
 V5 hybrid 检索（语义腿挂了自动退关键词）；③ 近期——事件时间最近
 （按 date 排不按 created_at 排：刚审完入库的四月旧事不算"最近"）。
-合并去重、sensitive 剔除、superseded 剔除，总上限 8 条。
+合并去重、sensitive 剔除、superseded 剔除、已删（藏起来的）剔除，总上限 8 条。
 冷却：①③ 层同一条记忆 3 天内不重复递（briefing_log）；② 层不冷却——
 主动聊到相关的事，相关记忆永远该到场。
 只看 personal 核心层——briefing 是关系连续性的开场，不是项目看板。
@@ -40,7 +40,7 @@ def _unfinished(conn) -> list:
     """区间型且今天现算为 upcoming/ongoing 的记忆（状态不存死，读时现算）。"""
     rows = conn.execute(
         """SELECT * FROM memories
-           WHERE space = 'personal' AND superseded_by IS NULL
+           WHERE space = 'personal' AND superseded_by IS NULL AND deleted_at IS NULL
              AND (start_date IS NOT NULL OR end_date IS NOT NULL)
            ORDER BY date DESC"""
     ).fetchall()
@@ -60,7 +60,8 @@ def _topic_rows(conn, topic: str) -> list:
     by_id = {
         r["id"]: r
         for r in conn.execute(
-            f"SELECT * FROM memories WHERE id IN ({marks}) AND superseded_by IS NULL", ids
+            f"SELECT * FROM memories WHERE id IN ({marks}) AND superseded_by IS NULL AND deleted_at IS NULL",
+            ids,
         ).fetchall()
     }
     return [by_id[i] for i in ids if i in by_id]  # 保住检索的相关性排序
@@ -69,7 +70,7 @@ def _topic_rows(conn, topic: str) -> list:
 def _recent(conn) -> list:
     return conn.execute(
         """SELECT * FROM memories
-           WHERE space = 'personal' AND superseded_by IS NULL
+           WHERE space = 'personal' AND superseded_by IS NULL AND deleted_at IS NULL
            ORDER BY date DESC, id DESC LIMIT ?""",
         (RECENT_CAP * 3,),  # 多取一些，冷却/sensitive/去重筛完还够用
     ).fetchall()

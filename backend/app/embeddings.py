@@ -91,7 +91,7 @@ def vector_search(query: str, space: str | None = None, k: int = 40) -> list[int
         return []
     sql = """SELECT e.memory_id
              FROM memory_embeddings e JOIN memories m ON m.id = e.memory_id
-             WHERE e.model = ? AND e.dim = ?"""
+             WHERE e.model = ? AND e.dim = ? AND m.deleted_at IS NULL"""
     params: list = [current_model(), len(qvec)]
     if space:
         sql += " AND m.space = ?"
