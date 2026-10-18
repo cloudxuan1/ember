@@ -33,7 +33,9 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def memory_search(query: str, space: str | None = None, limit: int = 8) -> dict:
+def memory_search(
+    query: str, space: str | None = None, limit: int = 8, include_drafts: bool = False
+) -> dict:
     """搜索记忆（语义 + 关键词 hybrid），返回目录（短结果 + ID），不含全文。
 
     用户提到过去的事、人物、约定、偏好时先调用这个。
@@ -43,8 +45,14 @@ def memory_search(query: str, space: str | None = None, limit: int = 8) -> dict:
     space 语义（V6 空间隔离）：**不传 = 只搜 personal 核心层**（关系与个人）。
     聊项目/技术话题务必显式传对应空间（ember / vps / ...）；
     确实要跨全库找传 "all"。
+    include_drafts=true：把还没审的草稿也搜进来（只按关键词），排在正式记忆后面，
+    带 status「待审」和 draft_id（不是 memory_id，取全文用 memory_edit(draft_id=…)）。
+    待审草稿轩还没确认过，可能有错，引用时说明是待审的。
     """
-    results = memories.search_memories(query, space=space, limit=min(limit, 20))
+    limit = min(limit, 20)
+    results = memories.search_memories(query, space=space, limit=limit)
+    if include_drafts:
+        results += review_queue.search_drafts(query, space=space, limit=limit)
     return {"count": len(results), "results": results}
 
 

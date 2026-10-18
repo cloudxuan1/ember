@@ -1,4 +1,5 @@
-"""审核台待办的只读视图（给 MCP）：还没审的草稿 + 还没确认的修改提议。只读，不碰任何状态。"""
+"""审核台待办的只读视图（给 MCP）：还没审的草稿 + 还没确认的修改提议，
+以及 memory_search 顺带搜待审草稿。只读，不碰任何状态。"""
 
 from app import memories, memory_edits
 from app.db import get_conn
@@ -59,3 +60,21 @@ def list_queue(page: int = 1) -> dict:
         "total_pages": max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1),
         "items": items,
     }
+
+
+def search_drafts(query: str, space: str | None = None, limit: int = 8) -> list[dict]:
+    """待审草稿的关键词检索（草稿没有语义指纹，只走关键词腿）；space 语义同 memory_search。"""
+    rows = memories._keyword_rows(query, memories.resolve_space(space), table="memory_drafts")
+    return [
+        {
+            "draft_id": r["id"],
+            "status": "待审",
+            "date": r["date"],
+            "content": _clip(r["content"], memories.SUMMARY_LEN),
+            "tags": r["tags"],
+            "tier": r["tier"],
+            "topic": r["topic"],
+            "space": r["space"],
+        }
+        for r in rows[:limit]
+    ]

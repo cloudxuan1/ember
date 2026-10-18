@@ -1,4 +1,4 @@
-"""MCP memory_queue（审核台待办只读）。"""
+"""MCP memory_queue（审核台待办只读）+ memory_search 的 include_drafts。"""
 
 import pytest
 
@@ -63,3 +63,23 @@ def test_queue_is_read_only():
     did = _draft()
     mcp_server.memory_queue()
     assert drafts.get_draft(did)["status"] == "pending"
+
+
+def test_search_drafts_off_by_default():
+    memories.save_memory(date="2026-09-01", content="猫咪打呼噜")
+    _draft("猫咪又打呼噜了")
+    r = mcp_server.memory_search("打呼噜")
+    assert r["count"] == 1 and "draft_id" not in r["results"][0]
+
+
+def test_search_include_drafts_after_formal():
+    mid = memories.save_memory(date="2026-09-01", content="猫咪打呼噜")["id"]
+    did = _draft("猫咪又打呼噜了")
+    _draft("项目里的打呼噜", space="ember")
+    drafts.reject_draft(_draft("被拒的打呼噜"))
+    r = mcp_server.memory_search("打呼噜", include_drafts=True)
+    assert r["count"] == 2
+    assert r["results"][0]["id"] == mid
+    assert r["results"][1]["draft_id"] == did and r["results"][1]["status"] == "待审"
+    assert "id" not in r["results"][1]
+    assert len(mcp_server.memory_search("打呼噜", space="all", include_drafts=True)["results"]) == 3
