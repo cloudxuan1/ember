@@ -328,3 +328,27 @@ def test_login_sets_root_cookie_and_old_address_redirects(gated):
     gated.cookies.set(console.COOKIE_NAME, resp.cookies[console.COOKIE_NAME])
     assert gated.get("/api/settings").status_code == 200
     assert gated.get("/review", follow_redirects=False).headers["location"] == "/"
+
+
+def test_deleting_a_superseder_releases_the_old_memory_and_restore_reapplies(client):
+    old = _save("旧计划")
+    new = memories.save_memory(date="2026-07-02", content="新计划", links=[{"id": old, "relation": "supersedes"}])["id"]
+    assert memories.get_memory(old)["superseded_by"] == new
+    client.delete(f"/api/memories/{new}")
+    assert memories.get_memory(old)["superseded_by"] is None  # 藏起来的不再压着它
+    assert "superseded_by" not in memories.search_memories("旧计划")[0]
+    client.post(f"/api/memories/{new}/restore")
+    assert memories.get_memory(old)["superseded_by"] == new
+
+
+def test_purging_one_superseder_keeps_the_other(client):
+    old = _save("最早的计划")
+    a = memories.save_memory(date="2026-07-02", content="改过一次", links=[{"id": old, "relation": "supersedes"}])["id"]
+    b = memories.save_memory(date="2026-07-03", content="又改一次", links=[{"id": old, "relation": "supersedes"}])["id"]
+    assert memories.get_memory(old)["superseded_by"] == b
+    client.delete(f"/api/memories/{b}")
+    assert memories.get_memory(old)["superseded_by"] == a
+    with get_conn() as conn:
+        conn.execute("UPDATE memories SET deleted_at = datetime('now','+8 hours','-31 days') WHERE id = ?", (b,))
+    memories.purge_expired()
+    assert memories.get_memory(old)["superseded_by"] == a

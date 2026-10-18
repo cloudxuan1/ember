@@ -610,6 +610,28 @@ def revert_memory(memory_id: int, history_id: int, by: str = "xuan") -> dict | N
     return {"id": memory_id, "reverted_to": history_id, "memory": get_memory(memory_id)}
 
 
+def _resync_superseded(c, memory_id: int) -> None:
+    """这条被删 / 恢复 / 真删后，重算它压过（supersedes）的旧记忆的 superseded_by：
+    取还活着的、最新的那个压它的记忆；没有了就松开。藏起来的记忆不该继续压着别人。"""
+    targets = {
+        r[0] for r in c.execute(
+            "SELECT to_id FROM memory_edges WHERE from_id = ? AND relation = 'supersedes'", (memory_id,)
+        )
+    } | {r[0] for r in c.execute("SELECT id FROM memories WHERE superseded_by = ?", (memory_id,))}
+    for target in targets:
+        _recompute_superseded(c, target)
+
+
+def _recompute_superseded(c, target: int) -> None:
+    c.execute(
+        """UPDATE memories SET superseded_by = (
+             SELECT MAX(e.from_id) FROM memory_edges e JOIN memories m ON m.id = e.from_id
+             WHERE e.to_id = ? AND e.relation = 'supersedes' AND m.deleted_at IS NULL)
+           WHERE id = ?""",
+        (target, target),
+    )
+
+
 def delete_memory(memory_id: int, by: str = "xuan") -> dict | None:
     """删：先藏起来，所有读和搜都看不见；最近动静里能恢复，过了显示期限才真删。不存在 / 已删返回 None。"""
     with _write_tx() as c:
@@ -620,6 +642,7 @@ def delete_memory(memory_id: int, by: str = "xuan") -> dict | None:
             "UPDATE memories SET deleted_at = datetime('now','+8 hours'), deleted_by = ? WHERE id = ?",
             (by, memory_id),
         )
+        _resync_superseded(c, memory_id)
         activity.log(c, by, "delete", memory_id, row["content"])
         days = settings.get_settings(c)["activity_days"]
     return {"id": memory_id, "deleted": True, "restorable_days": days}
@@ -635,6 +658,7 @@ def restore_memory(memory_id: int, by: str = "xuan") -> dict | None:
         if row is None:
             return None
         c.execute("UPDATE memories SET deleted_at = NULL, deleted_by = NULL WHERE id = ?", (memory_id,))
+        _resync_superseded(c, memory_id)
         activity.mark_undone(c, memory_id, action="delete")
         activity.log(c, by, "restore", memory_id, row["content"])
     return {"id": memory_id, "restored": True, "memory": get_memory(memory_id)}
@@ -642,7 +666,7 @@ def restore_memory(memory_id: int, by: str = "xuan") -> dict | None:
 
 def purge_expired() -> dict:
     """过了最近动静显示期限的：删掉的记忆真删（连同来源、连线、指纹、上一版），流水也清掉。
-    被它压过（superseded_by）的旧记忆松开压制。没有定时任务：网页列表 / 启动时顺手调。"""
+    被它压过（superseded_by）的旧记忆按剩下的活记忆重算压制。没有定时任务：网页列表 / 启动时顺手调。"""
     with _write_tx() as c:
         cutoff = f"-{settings.get_settings(c)['activity_days']} days"
         ids = [
@@ -654,9 +678,12 @@ def purge_expired() -> dict:
         ]
         for mid in ids:
             c.execute("DELETE FROM memory_sources WHERE memory_id = ?", (mid,))
-            c.execute("DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?", (mid, mid))
+            superseded = [r[0] for r in c.execute("SELECT id FROM memories WHERE superseded_by = ?", (mid,))]
             c.execute("UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?", (mid,))
-            c.execute("DELETE FROM memories WHERE id = ?", (mid,))  # 指纹 / 上一版 / 浮现冷却级联删
+            c.execute("DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?", (mid, mid))
+            c.execute("DELETE FROM memories WHERE id = ?", (mid,))
+            for target in superseded:  # 还有别的活记忆压着它的，压制要留着
+                _recompute_superseded(c, target)  # 指纹 / 上一版 / 浮现冷却级联删
         logs = c.execute(
             "DELETE FROM activity_log WHERE at < datetime('now', '+8 hours', ?)", (cutoff,)
         ).rowcount
