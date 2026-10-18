@@ -192,7 +192,7 @@ def memory_delete(memory_id: int) -> dict:
     轩可以在设置里关掉小克删除的权限，关着时这里会报错。
     """
     if not settings.get_settings()["ke_can_delete"]:
-        return {"error": "轩在设置里关掉了小克删除记忆的权限；要删请告诉轩，让她在网页上删"}
+        return {"error": "轩在设置里关掉了小克删除记忆的权限；要删请告诉轩，由轩在网页上删"}
     memory = memories.get_memory(memory_id)
     if memory is None:
         return {"error": f"记忆 {memory_id} 不存在（或已经删掉了）"}
