@@ -137,3 +137,8 @@ def test_month_only_interval_ends_at_month_end():
     assert memories.interval_status(None, "2026-09", today="2026-10-18") == "ended"
     assert memories.interval_status("2026-10", None, today="2026-10-01") == "ongoing"
     assert memories.interval_status("2026-11", None, today="2026-10-18") == "upcoming"
+
+
+def test_dates_with_spaces_around_chinese_units():
+    assert memories.normalize_date("2026 年 7 月") == "2026-07"
+    assert memories.normalize_date("2026 年 7 月 18 日") == "2026-07-18"

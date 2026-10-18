@@ -409,3 +409,46 @@ def test_status_ignores_hidden_memories_edges_and_sources(client):
     client.delete(f"/api/memories/{b}")
     status = memories.get_status()
     assert (status["memories"], status["edges"], status["sources"]) == (1, 0, 0)
+
+
+def test_saving_normalized_form_repairs_legacy_values_without_an_edit(client):
+    mid = _save("原话", tags="日常")
+    with get_conn() as conn:
+        conn.execute("UPDATE memories SET date = '2026-8-5', tags = '日常, 旅行', topic = NULL WHERE id = ?", (mid,))
+    resp = client.patch(f"/api/memories/{mid}", json={"date": "2026-08-05", "tags": "日常,旅行", "topic": ""})
+    assert resp.json()["changed"] == []
+    m = memories.get_memory(mid)
+    assert (m["date"], m["tags"], m["topic"]) == ("2026-08-05", "日常,旅行", "")
+    assert client.get(f"/api/memories/{mid}").json()["history"] == []
+    assert [i["id"] for i in client.get("/api/memories?tag=旅行").json()["items"]] == [mid]
+
+
+def test_month_filter_still_finds_legacy_unpadded_days_and_rejects_inverted_ranges(client):
+    mid = _save("老格式日期")
+    with get_conn() as conn:
+        conn.execute("UPDATE memories SET date = '2026-08-5' WHERE id = ?", (mid,))
+    assert [i["id"] for i in client.get("/api/memories?date_from=2026-08&date_to=2026-08").json()["items"]] == [mid]
+    assert client.get("/api/memories?date_from=2026-08-20&date_to=2026-08-10").status_code == 400
+
+
+def test_numeric_queries_never_500(client):
+    mid = _save("卡号 12345678901234567890 记在这")
+    assert [i["id"] for i in client.get("/api/memories?q=12345678901234567890").json()["items"]] == [mid]
+    assert client.get("/api/memories?q=²").status_code == 200
+
+
+def test_reads_skip_a_due_purge_instead_of_waiting(client):
+    import time
+    mid = _save("过期删掉的")
+    client.delete(f"/api/memories/{mid}")
+    with get_conn() as conn:
+        conn.execute("UPDATE memories SET deleted_at = datetime('now','+8 hours','-31 days') WHERE id = ?", (mid,))
+    writer = get_conn()
+    writer.execute("BEGIN IMMEDIATE")
+    try:
+        start = time.monotonic()
+        assert client.get("/api/memories").status_code == 200
+        assert time.monotonic() - start < 2
+    finally:
+        writer.rollback()
+        writer.close()

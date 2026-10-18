@@ -63,21 +63,26 @@ def _resolve_links(
     return resolved, skipped
 
 
-def _move_drafts(conn, report: dict) -> None:
+def _move_drafts(conn, report: dict, first: bool = True) -> list[int]:
+    """把待审草稿搬进 memories，返回这次新进库的记忆编号（再搬时还包括老程序回退期间通过入库的）。"""
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(memory_drafts)")}
     order = "created_at, id" if "created_at" in cols else "id"
     # 转成 dict 用 .get：很老的草稿表缺列（测试里的 V3 库）也能走完
     rows = [dict(r) for r in conn.execute(f"SELECT * FROM memory_drafts ORDER BY {order}").fetchall()]
     # 已通过的草稿行就是旧快照：只拿它们的 draft_id → memory_id 对照给连线用
     draft_to_memory = {r["id"]: r.get("memory_id") for r in rows if r["status"] == "approved" and r.get("memory_id")}
-    pending = [r for r in rows if r["status"] == "pending" and r["id"] not in SKIP_DRAFTS]
+    # 再搬时草稿表是老程序回退期间新建的，编号从 1 重排，跟那几条重复稿无关
+    skip = SKIP_DRAFTS if first else ()
+    pending = [r for r in rows if r["status"] == "pending" and r["id"] not in skip]
     report["drafts"] = {
         "pending": sum(1 for r in rows if r["status"] == "pending"),
-        "skipped_duplicates": sorted(r["id"] for r in rows if r["status"] == "pending" and r["id"] in SKIP_DRAFTS),
+        "skipped_duplicates": sorted(r["id"] for r in rows if r["status"] == "pending" and r["id"] in skip),
         "dropped_rejected": sum(1 for r in rows if r["status"] == "rejected"),
         "dropped_approved_snapshots": sum(1 for r in rows if r["status"] == "approved"),
     }
     pre_ids = {r[0] for r in conn.execute("SELECT id FROM memories")}
+    # 连线只认活着的：已删（藏起来）的记录进 links_skipped，别悄悄丢
+    live_ids = {r[0] for r in conn.execute(f"SELECT id FROM memories WHERE {memories.LIVE}")}
     next_id = (max(pre_ids) if pre_ids else 0) + 1
     moved = []
     for r in pending:
@@ -101,7 +106,7 @@ def _move_drafts(conn, report: dict) -> None:
     # 连线放第二遍：草稿之间互连时，目标草稿要先有新编号
     edges, skipped_links = 0, []
     for r, new_id in moved:
-        links, skipped = _resolve_links(r.get("links") or "", draft_to_memory, pre_ids)
+        links, skipped = _resolve_links(r.get("links") or "", draft_to_memory, live_ids)
         edges += memories.add_edges(conn, new_id, links, created_by="extraction")
         skipped_links += [{"draft_id": r["id"], "link": link} for link in skipped]
     # 反向补线（老审核台 _backfill_edges 的活）：已通过的草稿当初连向还在待审的草稿，
@@ -128,6 +133,7 @@ def _move_drafts(conn, report: dict) -> None:
     report["new_id_range"] = [moved[0][1], moved[-1][1]] if moved else None
     report["edges_written"] = edges
     report["links_skipped"] = skipped_links
+    return list(draft_to_memory.values()) if not first else [new_id for _, new_id in moved]
 
 
 def _pending_edits(conn, report: dict) -> None:
@@ -173,12 +179,13 @@ def migrate(conn) -> dict | None:
     conn.execute("BEGIN IMMEDIATE")
     first = conn.execute("PRAGMA user_version").fetchone()[0] < DONE_VERSION
     try:
+        new_ids: list[int] = []
         if "memory_drafts" in tables:
-            _move_drafts(conn, report)
+            new_ids = _move_drafts(conn, report, first)
         if "memory_edits" in tables:
             _pending_edits(conn, report)
         # 第一次：全库按发生日期打旧档；再搬（老程序回退期间又存了草稿）：只给这次搬进来的打
-        _tag_old(conn, report, None if first else [m["memory_id"] for m in report.get("moved", [])])
+        _tag_old(conn, report, None if first else new_ids)
         conn.execute("DROP TABLE IF EXISTS memory_edits")
         conn.execute("DROP TABLE IF EXISTS memory_drafts")
         report["memories_after"] = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
