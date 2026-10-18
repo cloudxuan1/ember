@@ -130,7 +130,7 @@
       S.lib.totalPages = data.total_pages;
       S.lib.all = data.stats.all;
       if (!more && isUnfiltered()) {
-        updateMonths(data.items, data.total_pages);
+        updateMonths(data.months);
       }
       renderLibrary();
     }, function (err) {
@@ -143,17 +143,11 @@
     });
   }
 
-  /** 月份按钮：有记忆的最近 3 个月 + 更早（数据来自不带筛选的第一页，按日期新的在前） */
-  function updateMonths(items, totalPages) {
-    var ms = [];
-    items.forEach(function (m) {
-      var ym = String(m.date || '').slice(0, 7);
-      if (ym.length === 7 && ms.indexOf(ym) === -1) {
-        ms.push(ym);
-      }
-    });
+  /** 服务端按全库算月份，返回至多 4 个；不受第一页条数影响。 */
+  function updateMonths(months) {
+    var ms = months || [];
     S.months = ms.slice(0, MONTH_CHIPS);
-    S.hasOlder = ms.length > MONTH_CHIPS || totalPages > 1;
+    S.hasOlder = ms.length > MONTH_CHIPS;
     renderChips();
   }
 
@@ -161,7 +155,7 @@
   function refreshMonths() {
     return api('GET', '/api/memories' + L.qs({ page: 1, page_size: PAGE_SIZE })).then(function (data) {
       S.lib.all = data.stats.all;
-      updateMonths(data.items, data.total_pages);
+      updateMonths(data.months);
       var f = S.lib.filter;
       var gone = (f === 'older' && !S.hasOlder) || (f !== 'all' && f !== 'older' && S.months.indexOf(f) === -1);
       if (gone) {
@@ -276,7 +270,7 @@
         'data-key': 'more',
         onclick: function (e) {
           var b = e.currentTarget;
-          if (b.getAttribute('aria-disabled') === 'true') {
+          if (S.lib.loading || b.getAttribute('aria-disabled') === 'true') {
             return;
           }
           b.setAttribute('aria-disabled', 'true');

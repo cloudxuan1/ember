@@ -565,6 +565,13 @@ def browse_memories(
                 "SELECT memory_id, COUNT(*) n FROM memory_history GROUP BY memory_id"
             ).fetchall()
         }
+        # 月份按钮看全库；第一页可能全是同一个月，不能从分页条目里推断。
+        months = set()
+        for r in conn.execute(f"SELECT DISTINCT date FROM memories WHERE {LIVE}"):
+            try:
+                months.add(normalize_date(r["date"])[:7])
+            except ValueError:
+                pass  # 老数据中无法辨认的日期仍可在「全部」查看。
     items = []
     for r in rows:
         item = dict(r)
@@ -573,6 +580,7 @@ def browse_memories(
         items.append(item)
     return {
         "stats": {"total": total, "all": live_total},
+        "months": sorted(months, reverse=True)[:4],  # 最近三个有记忆的月 + 是否还有更早。
         "page": page,
         "page_size": page_size,
         "total_pages": max((total + page_size - 1) // page_size, 1),
