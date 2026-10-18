@@ -1,4 +1,4 @@
-"""ember 的 MCP 工具层：五个记忆操作工具 + memory_edit（改动等轩确认）+ briefing（V6b）
+"""ember 的 MCP 工具层：五个记忆操作工具 + memory_edit（改动等轩确认）+ memory_queue（审核台待办，只读）+ briefing（V6b）
 + chat-lite 思考彩蛋词库两个工具，少而清楚。纪律写进工具本身。"""
 
 import os
@@ -6,7 +6,7 @@ import os
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from app import briefing, drafts, memories, memory_edits, thinking_words
+from app import briefing, drafts, memories, memory_edits, review_queue, thinking_words
 
 # FastMCP 默认只放行本机 Host 头（DNS-rebinding 防护），
 # 经 Cloudflare Tunnel 进来的请求带公网域名，必须显式加进白名单，否则 421。
@@ -33,7 +33,9 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def memory_search(query: str, space: str | None = None, limit: int = 8) -> dict:
+def memory_search(
+    query: str, space: str | None = None, limit: int = 8, include_drafts: bool = False
+) -> dict:
     """搜索记忆（语义 + 关键词 hybrid），返回目录（短结果 + ID），不含全文。
 
     用户提到过去的事、人物、约定、偏好时先调用这个。
@@ -43,8 +45,14 @@ def memory_search(query: str, space: str | None = None, limit: int = 8) -> dict:
     space 语义（V6 空间隔离）：**不传 = 只搜 personal 核心层**（关系与个人）。
     聊项目/技术话题务必显式传对应空间（ember / vps / ...）；
     确实要跨全库找传 "all"。
+    include_drafts=true：把还没审的草稿也搜进来（只按关键词），排在正式记忆后面，
+    带 status「待审」和 draft_id（不是 memory_id，取全文用 memory_edit(draft_id=…)）。
+    待审草稿轩还没确认过，可能有错，引用时说明是待审的。
     """
-    results = memories.search_memories(query, space=space, limit=min(limit, 20))
+    limit = min(limit, 20)
+    results = memories.search_memories(query, space=space, limit=limit)
+    if include_drafts:
+        results += review_queue.search_drafts(query, space=space, limit=limit)
     return {"count": len(results), "results": results}
 
 
@@ -223,6 +231,19 @@ def memory_list(
     return memories.list_memories(
         space=space, date_from=date_from, date_to=date_to, page=page
     )
+
+
+@mcp.tool()
+def memory_queue(page: int = 1) -> dict:
+    """看审核台里还没审的东西（只读）：待审草稿 + 等轩确认的修改提议，合成一个队列，新的在前。
+
+    先给总数 stats（total / drafts / edits），再给当页条目，每页 20 条：
+    - kind=draft：draft_id、date、topic、tags、content（前 80 字）
+    - kind=edit：memory_id、target（改的是哪条：日期 + 开头）、changed（改了哪些字段）
+    要看全文：草稿用 memory_edit(draft_id=…)，提议用 memory_edit(memory_id=…)（只给编号 = 读）。
+    审核本身只能轩在审核台做，这里不能通过 / 驳回。
+    """
+    return review_queue.list_queue(page=page)
 
 
 @mcp.tool()

@@ -222,15 +222,18 @@ def get_memory(memory_id: int) -> dict | None:
     return memory
 
 
-def _keyword_rows(query: str, space: str | None) -> list:
-    """关键词腿：LIKE 子串匹配 + 简单加权，中文子串直接好使（不上 FTS5，分词坑不值得踩）。"""
+def _keyword_rows(query: str, space: str | None, table: str = "memories") -> list:
+    """关键词腿：LIKE 子串匹配 + 简单加权，中文子串直接好使（不上 FTS5，分词坑不值得踩）。
+    table="memory_drafts" 时只搜 pending 草稿（memory_search 的 include_drafts 用）。"""
     tokens = query.split() or [query]
     where = " OR ".join(["(content LIKE ? OR tags LIKE ? OR topic LIKE ?)"] * len(tokens))
     params: list = []
     for t in tokens:
         like = f"%{t}%"
         params += [like, like, like]
-    sql = f"SELECT * FROM memories WHERE ({where})"
+    sql = f"SELECT * FROM {table} WHERE ({where})"
+    if table == "memory_drafts":
+        sql += " AND status = 'pending'"
     if space:
         sql += " AND space = ?"
         params.append(space)
