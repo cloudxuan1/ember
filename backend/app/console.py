@@ -138,7 +138,7 @@ async def _json_body(request: Request):
 def _housekeep() -> None:
     """打开列表时顺手真删过期的；正好有人在写（小克存记忆时可能在等语义指纹）就下次再清，不让读页面报错。"""
     try:
-        memories.purge_expired()
+        memories.purge_expired(wait=False)
     except sqlite3.OperationalError:
         pass
 

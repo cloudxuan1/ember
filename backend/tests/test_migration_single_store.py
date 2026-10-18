@@ -243,3 +243,50 @@ def test_trial_cli_refuses_missing_path(tmp_path, capsys):
     missing = tmp_path / "typo.db"
     assert migrate_single_store.main(["x", str(missing)]) == 2
     assert not missing.exists() and "找不到" in capsys.readouterr().err
+
+
+def test_rerun_keeps_rollback_era_drafts_with_reused_ids_and_tags_their_approvals(old_db):
+    init_db()
+    conn = sqlite3.connect(db_path())  # 老程序回退：草稿表重建，编号从 1 重排
+    conn.executescript(OLD_SCHEMA)
+    conn.execute("INSERT INTO memories (id, date, content) VALUES (50, '2026-07-02', '回退期间通过的七月旧事')")
+    conn.execute(
+        "INSERT INTO memory_drafts (id, date, content, status, memory_id) VALUES (129, '2026-07-02', '回退期间通过的七月旧事', 'approved', 50)"
+    )
+    conn.execute("INSERT INTO memory_drafts (id, date, content, created_at) VALUES (130, '2026-10-19', '刚好排到 130 号', '2026-10-19 09:00:00')")
+    conn.commit()
+    conn.close()
+    second = init_db()
+    assert second["drafts"]["skipped_duplicates"] == []
+    assert [m["draft_id"] for m in second["moved"]] == [130]
+    assert "旧档" in memories.get_memory(50)["tags"]
+
+
+def test_rerun_link_to_hidden_memory_is_reported(old_db):
+    init_db()
+    memories.delete_memory(2, by="xuan")
+    conn = sqlite3.connect(db_path())
+    conn.executescript(OLD_SCHEMA)
+    conn.execute(
+        "INSERT INTO memory_drafts (id, date, content, links) VALUES (1, '2026-10-19', '连向被删的', ?)",
+        (json.dumps([{"memory_id": 2, "relation": "led_to", "dir": "in"}]),),
+    )
+    conn.commit()
+    conn.close()
+    second = init_db()
+    assert second["links_skipped"] == [{"draft_id": 1, "link": {"memory_id": 2, "relation": "led_to", "dir": "in"}}]
+
+
+def test_superseded_by_points_at_newest_live_superseder_after_migration(tmp_path, monkeypatch):
+    _old_db_with(tmp_path, monkeypatch, [(1, "2026-09-01", "最早", "x")], [
+        (120, "2026-09-01", "最早", "approved", 1, "2026-09-01 09:00:00",
+         json.dumps([{"draft_id": 150, "relation": "supersedes", "dir": "out"}])),
+        (150, "2026-09-05", "被压的", "pending", None, "2026-09-05 09:00:00", ""),
+        (151, "2026-09-06", "最新", "pending", None, "2026-09-06 09:00:00",
+         json.dumps([{"draft_id": 150, "relation": "supersedes", "dir": "out"}])),
+    ])
+    init_db()
+    assert memories.get_memory(2)["superseded_by"] == 3
+    memories.delete_memory(1, by="xuan")
+    memories.restore_memory(1, by="xuan")
+    assert memories.get_memory(2)["superseded_by"] == 3

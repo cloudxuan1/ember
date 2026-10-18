@@ -59,7 +59,7 @@ def normalize_date(value, *, allow_year: bool = False) -> str:
     """发生日期：YYYY-MM-DD 或只到月 YYYY-MM（. / 全角数字 2026年7月18日 也认，月日补零），
     得是日历上真有的日子。allow_year=True 时还认只有年份（按日期范围筛选用）。"""
     text = str(value or "").strip().translate(_FULLWIDTH)
-    text = re.sub(r"(\d)\s*[年月]\s*(?=\d)", r"\1-", text).removesuffix("日").removesuffix("月").removesuffix("年")
+    text = re.sub(r"\s*[年月日]$", "", re.sub(r"(\d)\s*[年月]\s*(?=\d)", r"\1-", text))
     text = text.replace("/", "-").replace(".", "-")
     m = re.fullmatch(r"([0-9]{4})(?:-([0-9]{1,2})(?:-([0-9]{1,2}))?)?", text)
     if not m or (m.group(2) is None and not allow_year):
@@ -87,6 +87,15 @@ def _period(value: str) -> tuple[str, str]:
     return value, value
 
 
+def _next_period(prefix: str) -> str:
+    """'2026' → '2027'；'2026-12' → '2027-01'：只写到年 / 月的终点用开区间，老数据里没补零的
+    '2026-08-5' 也算在 8 月里（它按字符串比比 '2026-08-31' 大）。"""
+    if len(prefix) == 4:
+        return f"{int(prefix) + 1:04d}"
+    year, month = int(prefix[:4]), int(prefix[5:7])
+    return f"{year + month // 12:04d}-{month % 12 + 1:02d}"
+
+
 def _date_end(col: str) -> str:
     """记忆自己覆盖到哪天为止：只到月的 '2026-08' 算到 8 月底。"""
     return f"(CASE WHEN length({col}) = 7 THEN {col} || '-31' WHEN length({col}) = 4 THEN {col} || '-12-31' ELSE {col} END)"
@@ -97,12 +106,19 @@ def date_conditions(date_from: str | None, date_to: str | None, col: str = "date
     date_from="2026-08", date_to="2026-08" = 8 月发生的；只到月的记忆（'2026-08'）算在那个月里，
     从 8 月 10 日起查也会带上它（那个月里哪天都有可能）。"""
     conds, params = [], []
-    if date_from:
+    lo = _period(normalize_date(date_from, allow_year=True))[0] if date_from else None
+    to = normalize_date(date_to, allow_year=True) if date_to else None
+    if lo and to and lo > _period(to)[1]:
+        raise ValueError("开始日期晚于结束日期，两头是不是填反了")
+    if lo:
         conds.append(f"{_date_end(col)} >= ?")
-        params.append(_period(normalize_date(date_from, allow_year=True))[0])
-    if date_to:
+        params.append(lo)
+    if to and len(to) == 10:
         conds.append(f"{col} <= ?")
-        params.append(_period(normalize_date(date_to, allow_year=True))[1])
+        params.append(to)
+    elif to:
+        conds.append(f"{col} < ?")
+        params.append(_next_period(to))
     return conds, params
 
 
@@ -165,14 +181,19 @@ def resolve_space(space: str | None) -> str | None:
 
 
 @contextmanager
-def _write_tx(conn=None):
-    """写事务：给了 conn 就借调用方的事务（不提交）；没给就自开连接、先拿写锁，锁内重读才作数。"""
+def _write_tx(conn=None, wait: bool = True):
+    """写事务：给了 conn 就借调用方的事务（不提交）；没给就自开连接、先拿写锁，锁内重读才作数。
+    wait=False：写锁被占着就立刻放弃（抛 OperationalError），顺手做的杂活别让读页面干等。"""
     if conn is not None:
         yield conn
         return
     c = get_conn()
     try:
+        if not wait:
+            c.execute("PRAGMA busy_timeout = 0")
         c.execute("BEGIN IMMEDIATE")
+        if not wait:
+            c.execute("PRAGMA busy_timeout = 5000")
         yield c
         c.commit()
     except BaseException:
@@ -227,7 +248,7 @@ def add_edges(conn, memory_id: int, links: list[dict], created_by: str = "") -> 
         if cur.rowcount:
             written += 1
             if link["relation"] == "supersedes":
-                conn.execute("UPDATE memories SET superseded_by = ? WHERE id = ?", (from_id, to_id))
+                _recompute_superseded(conn, to_id)  # 跟删 / 恢复 / 真删同一条规矩：最新的活记忆压它
     return written
 
 
@@ -516,7 +537,7 @@ def browse_memories(
         q = q.strip()
         number = q.lstrip("#")
         like_cond = "(content LIKE ? OR tags LIKE ? OR topic LIKE ?)"
-        if number.isdigit():
+        if re.fullmatch(r"[0-9]{1,19}", number) and int(number) <= MAX_ID:
             conds.append(f"(id = ? OR {like_cond})")
             params += [int(number)] + [f"%{q}%"] * 3
         else:
@@ -589,9 +610,7 @@ _UNSET = object()
 
 
 def _stored_norm(key: str, value):
-    """库里的旧值按同样规矩规整后再比：老代码存的原样（首尾空白、日期没补零、标签带空格）不算「改了」。"""
-    if value is None:
-        return None
+    """库里的旧值按同样规矩规整后再比：老代码存的原样（首尾空白、日期没补零、标签带空格、NULL）不算「改了」。"""
     try:
         return _clean_fields({key: value}).get(key, value)
     except ValueError:
@@ -616,11 +635,15 @@ def update_memory(
             return None
         if expect_updated_at is not _UNSET and (expect_updated_at or None) != row["updated_at"]:
             raise Conflict
-        changed = {k: v for k, v in fields.items() if v != _stored_norm(k, row[k])}
+        rewrite = {k: v for k, v in fields.items() if v != row[k]}
+        changed = {k: v for k, v in rewrite.items() if v != _stored_norm(k, row[k])}
         if changed:
             hid = history.push(c, row, by, "edit")
-            _apply(c, row, changed)
+            _apply(c, row, rewrite)
             activity.log(c, by, "edit", memory_id, changed.get("content", row["content"]), history_id=hid)
+        elif rewrite:  # 只是把老数据存成规整的样子（日期补零、标签去空格）：顺手写回，不算一次改
+            sets = ", ".join(f"{k} = ?" for k in rewrite)
+            c.execute(f"UPDATE memories SET {sets} WHERE id = ?", [*rewrite.values(), memory_id])
     if conn is not None:
         return {"id": memory_id, "changed": list(changed)}
     return {"id": memory_id, "changed": list(changed), "memory": get_memory(memory_id)}
@@ -703,7 +726,7 @@ def restore_memory(memory_id: int, by: str = "xuan") -> dict | None:
     return {"id": memory_id, "restored": True, "memory": get_memory(memory_id)}
 
 
-def purge_expired() -> dict:
+def purge_expired(wait: bool = True) -> dict:
     """过了最近动静显示期限的：删掉的记忆真删（连同来源、连线、指纹、上一版），流水也清掉。
     被它压过（superseded_by）的旧记忆按剩下的活记忆重算压制。没有定时任务：网页列表 / 启动时顺手调。"""
     probe = get_conn()  # 先只读看一眼有没有要清的：大多数时候没有，不去抢写锁
@@ -719,7 +742,7 @@ def purge_expired() -> dict:
         probe.close()
     if not due:
         return {"purged": [], "activity_pruned": 0}
-    with _write_tx() as c:
+    with _write_tx(wait=wait) as c:
         cutoff = f"-{settings.get_settings(c)['activity_days']} days"
         ids = [
             r["id"] for r in c.execute(
