@@ -271,6 +271,82 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .brand img, .brand svg { display: block; width: auto; height: auto; max-width: 200px; max-height: 56px; }
 .brand-dot { display: inline-block; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
 
+/* 题头 logo：C「光点蒲公英」原版（定稿，不改花体）。字形是 SVG，颜色跟主题的 --accent / --accent-ink 走 */
+.lmt-logo{
+  --lmt-core:#fff;
+  --lmt-rim:color-mix(in srgb,var(--accent-ink) 72%,transparent);
+  --lmt-aura:color-mix(in srgb,var(--accent) 46%,transparent);
+  --lmt-aura-hi:color-mix(in srgb,var(--accent) 70%,transparent);
+  position:relative;display:inline-block;flex:none;
+  width:200px;height:52px;line-height:0;vertical-align:middle;
+  -webkit-user-select:none;user-select:none;
+}
+.lmt-mark{position:absolute;left:0;top:0;width:200px;height:52px;overflow:visible;
+  filter:drop-shadow(0 0 4px var(--lmt-aura));}
+.lmt-word{fill:var(--lmt-core);stroke:var(--accent-ink);stroke-width:1.9px;
+  stroke-linejoin:round;paint-order:stroke fill;}
+.lmt-rimline{fill:none;stroke:var(--lmt-rim);stroke-width:2.1px;
+  stroke-linecap:round;stroke-linejoin:round;}
+.lmt-coreline{fill:none;stroke:var(--lmt-core);stroke-width:1px;
+  stroke-linecap:round;stroke-linejoin:round;}
+.lmt-twig-dot{fill:var(--lmt-core);stroke:var(--lmt-rim);stroke-width:1px;}
+.lmt-motes{position:absolute;left:0;top:0;width:200px;height:52px;pointer-events:none;}
+.lmt-mote{position:absolute;display:block;opacity:0;will-change:transform,opacity;
+  animation:lmt-drift var(--lmt-t) cubic-bezier(.3,.08,.4,1) var(--lmt-d) infinite;}
+.lmt-mote::before{content:"";position:absolute;left:50%;top:50%;width:20px;height:20px;
+  margin:-10px 0 0 -10px;border-radius:50%;
+  background:radial-gradient(closest-side,var(--lmt-aura) 20%,45%,transparent);}
+.lmt-mote>svg{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;}
+.lmt-seed>svg{animation:lmt-sway var(--lmt-sw,3.6s) ease-in-out infinite alternate;transform-origin:56% 88%;}
+.lmt-m2{--lmt-sw:4.4s;}.lmt-m2>svg{animation-delay:-1.3s;}
+.lmt-m3{--lmt-sw:3.1s;}.lmt-m3>svg{animation-delay:-2.2s;}
+.lmt-fine{stroke-width:.6px;}
+.lmt-seed-rim{stroke-width:1.5px;stroke-opacity:.55;}
+.lmt-seed::before{top:40%;width:24px;height:24px;margin:-12px 0 0 -12px;}
+.lmt-achene,.lmt-heart{fill:var(--lmt-core);stroke:var(--lmt-rim);stroke-width:.6px;}
+.lmt-sparkle{fill:var(--lmt-core);stroke:var(--lmt-rim);stroke-width:.7px;stroke-linejoin:round;}
+.lmt-dot{border-radius:50%;background:var(--lmt-core);
+  box-shadow:0 0 0 .7px var(--lmt-rim),0 0 6px 2px var(--lmt-aura-hi);}
+.lmt-dot::before{display:none;}
+.lmt-glint{opacity:1;animation:lmt-twinkle var(--lmt-t) ease-in-out var(--lmt-d) infinite;}
+.lmt-glint::before{width:22px;height:22px;margin:-11px 0 0 -11px;
+  background:radial-gradient(closest-side,var(--lmt-aura-hi) 18%,42%,transparent);}
+@supports not (color:color-mix(in srgb,red 50%,blue)){
+  .lmt-logo{--lmt-rim:var(--accent-ink);--lmt-aura:var(--accent-soft);--lmt-aura-hi:var(--accent);}
+}
+@keyframes lmt-drift{
+  0%{opacity:0;transform:translate(var(--lmt-dx),var(--lmt-dy)) rotate(var(--lmt-r));}
+  22%{opacity:var(--lmt-o);}
+  72%{opacity:var(--lmt-o);}
+  100%{opacity:0;transform:translate(0,0) rotate(0deg);}
+}
+@keyframes lmt-sway{
+  from{transform:rotate(-9deg);}
+  to{transform:rotate(9deg);}
+}
+@keyframes lmt-twinkle{
+  0%,100%{opacity:.25;transform:scale(.55) rotate(0deg);}
+  45%{opacity:1;transform:scale(1) rotate(45deg);}
+  60%{opacity:.85;transform:scale(.9) rotate(55deg);}
+}
+@media (prefers-reduced-motion:reduce){
+  .lmt-mote,.lmt-mote>svg{animation:none;}
+  .lmt-mote{opacity:var(--lmt-o);transform:none;}
+  .lmt-glint{transform:scale(.85);}
+}
+.lmt-m1{left:121px;top:14.5px;width:16px;height:16px;margin:-8px 0 0 -8px;--lmt-dx:56px;--lmt-dy:2px;--lmt-r:-26deg;--lmt-t:11s;--lmt-d:-5.22s;--lmt-o:0.95}
+.lmt-m2{left:152px;top:31px;width:13px;height:13px;margin:-6.5px 0 0 -6.5px;--lmt-dx:40px;--lmt-dy:11px;--lmt-r:20deg;--lmt-t:13s;--lmt-d:-7.2s;--lmt-o:0.9}
+.lmt-m3{left:87px;top:5.5px;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;--lmt-dx:44px;--lmt-dy:0px;--lmt-r:-16deg;--lmt-t:14s;--lmt-d:-11.2s;--lmt-o:0.85}
+.lmt-m4{left:63px;top:6.2px;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;--lmt-dx:0px;--lmt-dy:0px;--lmt-r:0deg;--lmt-t:5.2s;--lmt-d:-1.2s;--lmt-o:1}
+.lmt-m5{left:147px;top:5px;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;--lmt-dx:38px;--lmt-dy:3px;--lmt-r:40deg;--lmt-t:10s;--lmt-d:-2.84s;--lmt-o:0.9}
+.lmt-m6{left:134px;top:24px;width:3px;height:3px;margin:-1.5px 0 0 -1.5px;--lmt-dx:50px;--lmt-dy:4px;--lmt-r:0deg;--lmt-t:11s;--lmt-d:-4.65s;--lmt-o:0.95}
+.lmt-m7{left:139px;top:45px;width:2.4px;height:2.4px;margin:-1.2px 0 0 -1.2px;--lmt-dx:46px;--lmt-dy:5px;--lmt-r:0deg;--lmt-t:13s;--lmt-d:-0.69s;--lmt-o:0.85}
+.lmt-m8{left:9px;top:23px;width:2.2px;height:2.2px;margin:-1.1px 0 0 -1.1px;--lmt-dx:6px;--lmt-dy:16px;--lmt-r:0deg;--lmt-t:12s;--lmt-d:-5.4s;--lmt-o:0.8}
+.lmt-m9{left:172px;top:21px;width:7px;height:7px;margin:-3.5px 0 0 -3.5px;--lmt-dx:18px;--lmt-dy:-8px;--lmt-r:30deg;--lmt-t:11s;--lmt-d:-3.22s;--lmt-o:0.8}
+/* 压过上面 .brand svg 的 auto 尺寸，不然光点会走形 */
+.brand .lmt-mark { width: 200px; height: 52px; max-width: none; max-height: none; }
+.brand .lmt-mote > svg { width: 100%; height: 100%; max-width: none; max-height: none; }
+
 
 .pagehead { padding: 6px 16px 12px; }
 .pagetitle { margin: 0; font-size: 34px; line-height: 1.15; font-weight: 700; letter-spacing: -0.025em; color: var(--ink); }
