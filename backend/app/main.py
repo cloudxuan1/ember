@@ -8,11 +8,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app import chat_api, oauth, review, words_api
+from app import chat_api, console, memories, oauth, words_api
 from app.db import init_db
 from app.mcp_server import mcp
 
-# 自托管静态资源（审核台字体）。路径相对本文件定位，不依赖 cwd。
+# 自托管静态资源（网页字体和网页本体）。路径相对本文件定位，不依赖 cwd。
 # backend/app/main.py → backend/static
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -23,14 +23,15 @@ MCP_PATH = os.environ.get("MCP_PATH", "mcp").strip("/")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    init_db()
+    init_db()  # 老库第一次启动时顺带做单库搬家（app/migrate_single_store.py）
+    memories.purge_expired()
     async with mcp.session_manager.run():
         yield
 
 
 app = FastAPI(title="ember", version="0.3.0", lifespan=lifespan)
 app.include_router(oauth.router)
-app.include_router(review.router)
+app.include_router(console.router)
 app.include_router(chat_api.router)
 app.include_router(words_api.router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

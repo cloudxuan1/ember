@@ -1,4 +1,4 @@
-"""ember 的 MCP 工具层：五个记忆操作工具 + memory_edit（改动等轩确认）+ memory_queue（审核台待办，只读）+ briefing（V6b）
+"""ember 的 MCP 工具层：存 / 搜 / 看 / 改 / 删 / 列 / 状态 + briefing（V6b）
 + chat-lite 思考彩蛋词库两个工具，少而清楚。纪律写进工具本身。"""
 
 import os
@@ -6,7 +6,7 @@ import os
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from app import briefing, drafts, memories, memory_edits, review_queue, thinking_words
+from app import briefing, memories, settings, thinking_words
 
 # FastMCP 默认只放行本机 Host 头（DNS-rebinding 防护），
 # 经 Cloudflare Tunnel 进来的请求带公网域名，必须显式加进白名单，否则 421。
@@ -34,9 +34,13 @@ mcp = FastMCP(
 
 @mcp.tool()
 def memory_search(
-    query: str, space: str | None = None, limit: int = 8, include_drafts: bool = False
+    query: str,
+    space: str | None = None,
+    limit: int = 8,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
-    """搜索记忆（语义 + 关键词 hybrid），返回目录（短结果 + ID），不含全文。
+    """搜索记忆（语义 + 关键词 hybrid），返回目录（编号 id + 发生日期 date + 短内容），不含全文。
 
     用户提到过去的事、人物、约定、偏好时先调用这个。
     V5 起带语义检索：查询词和记忆字面不同也能召回（搜"难过"能找到
@@ -45,14 +49,15 @@ def memory_search(
     space 语义（V6 空间隔离）：**不传 = 只搜 personal 核心层**（关系与个人）。
     聊项目/技术话题务必显式传对应空间（ember / vps / ...）；
     确实要跨全库找传 "all"。
-    include_drafts=true：把还没审的草稿也搜进来（只按关键词），排在正式记忆后面，
-    带 status「待审」和 draft_id（不是 memory_id，取全文用 memory_edit(draft_id=…)）。
-    待审草稿轩还没确认过，可能有错，引用时说明是待审的。
+    限定发生日期：date_from / date_to，可只写到月或年——"8 月发生的"传
+    date_from="2026-08", date_to="2026-08"；只记到月的记忆算在那个月里。
     """
-    limit = min(limit, 20)
-    results = memories.search_memories(query, space=space, limit=limit)
-    if include_drafts:
-        results += review_queue.search_drafts(query, space=space, limit=limit)
+    try:
+        results = memories.search_memories(
+            query, space=space, limit=min(limit, 20), date_from=date_from, date_to=date_to
+        )
+    except ValueError as err:
+        return {"error": str(err)}
     return {"count": len(results), "results": results}
 
 
@@ -65,7 +70,7 @@ def memory_recall(id: int) -> dict:
     """
     memory = memories.get_memory(id)
     if memory is None:
-        return {"error": f"记忆 {id} 不存在"}
+        return {"error": f"记忆 {id} 不存在（或已被删掉，轩能在网页「最近动静」里恢复）"}
     return memory
 
 
@@ -81,137 +86,124 @@ def memory_save(
     end_date: str | None = None,
     links: list[dict] | None = None,
 ) -> dict:
-    """保存一条待审记忆草稿，不会直接写入正式记忆库。
+    """存一条记忆，直接进库，马上就能搜到。返回它的编号 id。
 
-    date 填事件发生的真实日期（YYYY-MM-DD），不是今天（除非事情就发生在今天）。
-    content 写原话 + 一句上下文。tags 逗号分隔。
+    date（必填）= 事情真正发生的日子，不是今天（除非事情就发生在今天）：
+    写具体日期 YYYY-MM-DD（2026-10-18），只记得月份就写 YYYY-MM（2026-07）。
+    **不许写"最近""前几天""下周""昨天"这种相对说法**——先按今天的日期换算成具体日期再存。
+    content（必填）写原话 + 一句上下文。tags 逗号分隔。内容或日期缺一样都存不进去。
     tier：anchor（长期锚点，慎用）/ normal（默认）/ process（过程性，可清理）。
-    topic 填主题或实体名，方便日后去重合并。
-    区间型的事（一段状态/计划，非点事件）填 start_date / end_date（可只填一头：
+    topic 填主题或实体名，方便日后去重合并。存之前先 memory_search 一下，已有的就用 memory_edit 补，别存重复的。
+    区间型的事（一段状态/计划，非点事件）填 start_date / end_date（格式同 date，可只填一头：
     只有 start = 进行中的开放区间，只有 end = 截止型），状态读时按今天现算。
     links 连关系边：存之前你刚 memory_search 过，看到相关旧记忆就顺手连上——
     [{"id": 目标记忆id, "relation": "led_to/same_as/contradicts/supersedes/related",
       "dir": "out"(本条→目标，默认) 或 "in"(目标→本条)}]。
     led_to 方向 = 因 → 果；supersedes 会把被压过的旧记忆标记 superseded_by。
-    调用后返回 draft_id；草稿状态为 pending，等轩在审核台通过后才会正式入库。
     """
-    draft_links = None
-    if links is not None:
-        # MCP 对外一直用 id；草稿管线用 memory_id 表示已入库目标。
-        # 这里只改字段名，默认值和合法性仍全部交给 drafts._normalize_links。
-        draft_links = [
-            {("memory_id" if key == "id" else key): value for key, value in link.items()}
-            for link in links
-        ]
-    saved = drafts.save_draft(
-        date=date, content=content, tags=tags, tier=tier, topic=topic, space=space,
-        start_date=start_date, end_date=end_date, links=draft_links,
-        batch=f"mcp-{memories._today()}",
-    )
-    return {
-        "draft_id": saved["id"],
-        "status": "pending",
-        "message": "已存为待审草稿，等轩审核后入库。",
+    try:
+        saved = memories.save_memory(
+            date=date, content=content, tags=tags, tier=tier, topic=topic, space=space,
+            start_date=start_date, end_date=end_date, links=links, by="ke",
+        )
+    except ValueError as err:
+        return {"error": str(err)}
+    memory = memories.get_memory(saved["id"])
+    out = {
+        "id": saved["id"],
+        "date": memory["date"],
+        "status": "saved",
+        "message": f"存好了，编号 {saved['id']}，现在就能搜到。",
     }
+    if "edges_written" in saved:
+        out["edges_written"] = saved["edges_written"]
+    return out
 
 
 @mcp.tool()
 def memory_edit(
-    memory_id: int | None = None,
-    draft_id: int | None = None,
+    memory_id: int,
     content: str | None = None,
     tags: str | None = None,
     topic: str | None = None,
-    reason: str | None = None,
+    date: str | None = None,
 ) -> dict:
-    """改一条正式记忆或待审草稿的 content / tags / topic。memory_id 和 draft_id 只给一个：
-    memory_search / memory_recall / memory_list 给的是 memory_id；memory_save 返回的是 draft_id。
+    """改一条记忆的 content / tags / topic / date，直接改、立刻生效；改前的旧内容自动留作「上一版」，轩能回退。
 
-    先读后改：只给编号、不给内容 = 读出当前的 content / tags / topic
-    （正式记忆还带 pending_edit：已经在排队等轩确认的改动，在它的基础上改，别把它冲掉）。
+    先读后改：只给 memory_id、不给内容 = 读出当前的 content / tags / topic / date。
     - content 是整段替换：在末尾补一句，就传「原文 + 新增」的完整全文；不要顺手润色、压缩原话。
     - tags 也是整组替换（加标签要带上原有的）。tags / topic 不传或传空 = 不改，不能清空。
-    - 改正式记忆（memory_id）：不会直接改正式记忆，而是生成一条修改提议，等轩在审核台确认后才覆盖；
-      确认前 memory_recall / memory_search 查到的仍是旧内容。已有待确认的改动时合并进去，
-      replaced = 被这次冲掉的上一版待确认值。
-    - 改待审草稿（draft_id）：直接改草稿，草稿仍待审，轩在审核台通过后才入库。
-    - 只用来改错字、补原话、补标签 / 主题。事情本身变了（计划成了结果、想法变了），
+    - date 规矩同 memory_save：具体日期或只到月，不写相对说法。
+    - 只用来改错字、补原话、补标签 / 主题 / 日期。事情本身变了（计划成了结果、想法变了），
       用 memory_save 新存一条，links 连 supersedes 指向旧记忆，旧的留作历史。
-    reason 写一句为什么改，审核台上给轩看。返回里的 target 是改的那一条的日期和开头，核对一下没改错。
+    返回里的 target 是改的那一条的日期和开头，核对一下没改错。
     """
-    if (memory_id is None) == (draft_id is None):
-        return {"error": "memory_id 和 draft_id 要给且只给一个（memory_save 返回的是 draft_id）"}
-    try:
-        fields = memory_edits.normalize_fields(content, tags, topic)
-    except ValueError as err:
-        return {"error": str(err)}
-    if draft_id is not None:
-        return _edit_draft(draft_id, fields)
+    fields = {}
+    if content is not None:
+        if not str(content).strip():
+            return {"error": "content 不能改成空"}
+        fields["content"] = content
+    if tags is not None and memories.normalize_tags(str(tags)):
+        fields["tags"] = tags
+    if topic is not None and str(topic).strip():
+        fields["topic"] = topic
+    if date is not None and str(date).strip():
+        fields["date"] = date
+    memory = memories.get_memory(memory_id)
+    if memory is None:
+        return {"error": f"记忆 {memory_id} 不存在（或已被删掉）"}
     if not fields:  # 只给编号 = 读
-        memory = memories.get_memory(memory_id)
-        if memory is None:
-            return {"error": f"记忆 {memory_id} 不存在（草稿号请用 draft_id）"}
         return {
             "memory_id": memory_id,
             "date": memory["date"],
             "content": memory["content"],
             "tags": memory["tags"],
             "topic": memory["topic"],
-            "pending_edit": memory_edits.pending_for(memory_id),
         }
-    result = memory_edits.propose_edit(memory_id, reason=reason, by="mcp", **fields)
+    try:
+        result = memories.update_memory(memory_id, fields, by="ke")
+    except ValueError as err:
+        return {"error": str(err)}
     if result is None:
-        return {"error": f"记忆 {memory_id} 不存在（草稿号请用 draft_id）"}
-    if result["status"] == "unchanged":
-        withdrawn = "；之前排队的那版改动已撤回" if result["replaced"] else ""
-        return {
-            "memory_id": memory_id,
-            "target": result["target"],
-            "status": "unchanged",
-            "message": f"跟现在的内容一样，没有要改的{withdrawn}。",
-        }
-    out = {
-        "memory_id": memory_id,
-        "edit_id": result["edit_id"],
-        "target": result["target"],
-        "status": "pending_review",
-        "pending": result["pending"],
-        "message": "已提交修改，等轩在审核台确认后才覆盖；确认前查到的仍是旧内容。"
-        + ("已合并进这条记忆原有的待确认改动。" if result["merged"] else ""),
-    }
-    if result["replaced"]:
-        out["replaced"] = result["replaced"]
-    return out
-
-
-def _edit_draft(draft_id: int, fields: dict) -> dict:
-    """草稿本来就要等轩审，改了直接生效；只给 pending 的看和改（被拒的是审计记录，不外露）。"""
-    draft = drafts.get_draft(draft_id)
-    if draft is None or draft["status"] == "rejected":
-        return {"error": f"草稿 {draft_id} 不存在或已被轩删掉"}
-    if draft["status"] == "approved":
-        return {
-            "error": f"草稿 {draft_id} 已经入库成记忆 {draft['memory_id']}，请用 memory_id 改",
-            "memory_id": draft["memory_id"],
-        }
-    if not fields:  # 只给编号 = 读
-        return {
-            "draft_id": draft_id,
-            "status": "pending",
-            "date": draft["date"],
-            "content": draft["content"],
-            "tags": draft["tags"],
-            "topic": draft["topic"],
-        }
-    updated = drafts.update_draft(draft_id, fields)
-    if updated is None or updated["status"] != "pending":  # 读完到改之间被轩审掉了
-        return {"error": f"草稿 {draft_id} 刚被轩审核了，这次没改上；已入库的话请用 memory_id 改"}
+        return {"error": f"记忆 {memory_id} 刚被删掉了，这次没改上"}
+    after = result["memory"]
+    target = {"date": after["date"], "preview": _preview(after["content"])}
+    if not result["changed"]:
+        return {"memory_id": memory_id, "target": target, "status": "unchanged",
+                "message": "跟现在的内容一样，没有要改的。"}
     return {
-        "draft_id": draft_id,
-        "target": memory_edits.target_preview(updated),
-        "status": "pending",
-        "changed": [f for f in memory_edits.FIELDS if f in fields],
-        "message": "草稿已改，仍待轩在审核台通过后入库。",
+        "memory_id": memory_id,
+        "target": target,
+        "status": "updated",
+        "changed": result["changed"],
+        "message": "改好了，已经生效；改前的内容留作上一版，轩能在网页回退。",
+    }
+
+
+def _preview(content: str, n: int = 40) -> str:
+    return content[:n] + ("…" if len(content) > n else "")
+
+
+@mcp.tool()
+def memory_delete(memory_id: int) -> dict:
+    """删一条记忆（比如存重复了、存错了）。删了先藏起来：搜不到、recall 不到，
+    但轩在网页「最近动静」里还能恢复，过了显示期限（默认 30 天）才真删。
+    只删确定不要的；内容有错用 memory_edit 改，事情变了用 memory_save 新存一条。
+    轩可以在设置里关掉小克删除的权限，关着时这里会报错。
+    """
+    if not settings.get_settings()["ke_can_delete"]:
+        return {"error": "轩在设置里关掉了小克删除记忆的权限；要删请告诉轩，由轩在网页上删"}
+    memory = memories.get_memory(memory_id)
+    if memory is None:
+        return {"error": f"记忆 {memory_id} 不存在（或已经删掉了）"}
+    result = memories.delete_memory(memory_id, by="ke")
+    if result is None:
+        return {"error": f"记忆 {memory_id} 不存在（或已经删掉了）"}
+    return {
+        "memory_id": memory_id,
+        "target": {"date": memory["date"], "preview": _preview(memory["content"])},
+        "status": "deleted",
+        "message": f"删掉了。{result['restorable_days']} 天内轩能在网页「最近动静」里恢复。",
     }
 
 
@@ -224,26 +216,15 @@ def memory_list(
 ) -> dict:
     """分页浏览记忆目录，先返回统计概览（总数、按空间、按层级），再给当页短条目。
 
-    永远分页（每页 20 条），不会一次吐出全库。日期格式 YYYY-MM-DD。
+    永远分页（每页 20 条），不会一次吐出全库，按发生日期新的在前。
+    date_from / date_to 可只写到月或年：date_from="2026-08", date_to="2026-08" = 8 月发生的。
     space 语义与 memory_search 一致：不传 = 只看 personal 核心层；
     项目空间显式传（ember / vps / ...）；跨全库传 "all"。
     """
-    return memories.list_memories(
-        space=space, date_from=date_from, date_to=date_to, page=page
-    )
-
-
-@mcp.tool()
-def memory_queue(page: int = 1) -> dict:
-    """看审核台里还没审的东西（只读）：待审草稿 + 等轩确认的修改提议，合成一个队列，新的在前。
-
-    先给总数 stats（total / drafts / edits），再给当页条目，每页 20 条：
-    - kind=draft：draft_id、date、topic、tags、content（前 80 字）
-    - kind=edit：memory_id、target（改的是哪条：日期 + 开头）、changed（改了哪些字段）
-    要看全文：草稿用 memory_edit(draft_id=…)，提议用 memory_edit(memory_id=…)（只给编号 = 读）。
-    审核本身只能轩在审核台做，这里不能通过 / 驳回。
-    """
-    return review_queue.list_queue(page=page)
+    try:
+        return memories.list_memories(space=space, date_from=date_from, date_to=date_to, page=page)
+    except ValueError as err:
+        return {"error": str(err)}
 
 
 @mcp.tool()

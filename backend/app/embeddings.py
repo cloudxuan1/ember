@@ -76,8 +76,11 @@ def embed_memory(conn, memory_id: int, content: str, topic: str = "", tags: str 
         return False
 
 
-def vector_search(query: str, space: str | None = None, k: int = 40) -> list[int]:
-    """语义腿：返回按余弦距离升序的 memory_id 列表。
+def vector_search(
+    query: str, space: str | None = None, k: int = 40, where: tuple[list[str], list] = ([], [])
+) -> list[int]:
+    """语义腿：返回按余弦距离升序的 memory_id 列表。where = 额外条件（按发生日期筛），
+    先筛再取前 k 个，范围内的语义匹配不会被范围外的挤掉。
 
     API / 扩展不可用、或库里还没有当前模型的指纹 → 返回 []，
     调用方（search_memories）自动降级纯关键词。
@@ -91,11 +94,14 @@ def vector_search(query: str, space: str | None = None, k: int = 40) -> list[int
         return []
     sql = """SELECT e.memory_id
              FROM memory_embeddings e JOIN memories m ON m.id = e.memory_id
-             WHERE e.model = ? AND e.dim = ?"""
+             WHERE e.model = ? AND e.dim = ? AND m.deleted_at IS NULL"""
     params: list = [current_model(), len(qvec)]
     if space:
         sql += " AND m.space = ?"
         params.append(space)
+    conds, extra = where
+    sql += "".join(f" AND {c}" for c in conds)
+    params += extra
     sql += " ORDER BY vec_distance_cosine(e.embedding, ?) LIMIT ?"
     params += [_pack(qvec), k]
     with get_conn() as conn:
