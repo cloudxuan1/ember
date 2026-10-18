@@ -438,7 +438,9 @@
     if (!claimBtn(btn)) {
       return;
     }
-    api('POST', '/api/memories/' + a.memory_id + '/revert', { history_id: a.history_id }).then(function () {
+    api('POST', '/api/memories/' + a.memory_id + '/revert', {
+      history_id: a.history_id, expect_updated_at: a.updated_at
+    }).then(function () {
       toast('已回退 #' + a.memory_id);
       afterChange(a.memory_id);
     }, function (err) {

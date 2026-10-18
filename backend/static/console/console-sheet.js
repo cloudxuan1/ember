@@ -261,7 +261,9 @@
       return;
     }
     sh.busy = true;
-    api('POST', '/api/memories/' + sh.id + '/revert', { history_id: v.id }).then(function (data) {
+    api('POST', '/api/memories/' + sh.id + '/revert', {
+      history_id: v.id, expect_updated_at: sh.mem.updated_at
+    }).then(function (data) {
       sh.busy = false;
       toast('已回退到这一版');
       if (S.sheet === sh) {
