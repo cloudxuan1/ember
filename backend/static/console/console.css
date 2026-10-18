@@ -187,6 +187,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 
 /* ---------- 背后飘着的模糊色块 ---------- */
 .blobs { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+/* 顶端接缝：手机状态栏是 theme-color 纯色（= --bg），色块飘到顶会跟它切出一条线；顶上一小段从 --bg 渐到透明，状态栏像是长进页面里 */
+.blobs::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: calc(56px + env(safe-area-inset-top)); z-index: 1; background: linear-gradient(to bottom, var(--bg) 0%, var(--fade0) 100%); transition: background .5s ease; }
 .blob { position: absolute; border-radius: 50%; filter: blur(46px); opacity: var(--blob-op); transition: background-color .6s ease, opacity .6s ease; will-change: transform; }
 .b1 { width: 320px; height: 320px; left: -80px; top: -70px; background: var(--b1); animation: d1 26s ease-in-out infinite alternate; }
 .b2 { width: 280px; height: 280px; right: -100px; top: 180px; background: var(--b2); animation: d2 31s ease-in-out infinite alternate; }
