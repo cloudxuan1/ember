@@ -46,11 +46,27 @@
       layer.classList.remove('closing');
       L.clear($('sheet'));
       L.setInertForModal();
-      var op = sh.opener;
-      if (op && document.contains(op) && typeof op.focus === 'function') {
-        op.focus({ preventScroll: true });
-      }
+      returnFocus(sh);
     }, 230);
+  }
+
+  /** 关掉后焦点回到点开它的那张卡片 / 那一行；列表重画过就找同一条的新卡片，删掉了就找旁边那张 */
+  function returnFocus(sh) {
+    if (L.alertOpen()) {
+      return;
+    }
+    var op = sh.opener;
+    if (op && document.contains(op) && !op.disabled && typeof op.focus === 'function') {
+      op.focus({ preventScroll: true });
+      return;
+    }
+    if (L.focusByKeys(sh.focusKeys || [])) {
+      return;
+    }
+    var title = document.querySelector('.view:not([hidden]) .pagetitle');
+    if (title) {
+      title.focus({ preventScroll: true });
+    }
   }
 
   function editDirty(sh) {
@@ -79,7 +95,7 @@
   }
 
   function openDetail(id, listItem, opener) {
-    S.sheet = { mode: 'view', id: id, mem: listItem || null, full: false, prevOpen: false, opener: opener || null, req: 0, busy: false };
+    S.sheet = { mode: 'view', id: id, mem: listItem || null, full: false, prevOpen: false, opener: opener || null, focusKeys: L.focusKeys(opener), req: 0, busy: false };
     showSheet();
     renderSheet();
     fetchDetail();
@@ -134,6 +150,10 @@
     } else {
       $('sheet-dialog').setAttribute('aria-label', sh.mode === 'new' ? '写一条新的记忆' : '编辑记忆 #' + sh.id);
       renderEdit(el, sh);
+    }
+    // 点的按钮被重画掉了（编辑 / 保存 / 回退 / 清掉…）：焦点留在面板上，别掉回页面开头
+    if (L.focusLost()) {
+      $('sheet-dialog').focus({ preventScroll: true });
     }
   }
 
@@ -545,7 +565,9 @@
     }
     r.warn.textContent = warn;
     r.warn.hidden = !warn;
-    r.save.disabled = !!warn || ed.busy;
+    // 正在存：aria-disabled 变灰（saveEdit 自己挡重复点）；用 disabled 的话存失败后键盘焦点就丢了
+    r.save.disabled = !!warn;
+    r.save.setAttribute('aria-disabled', ed.busy ? 'true' : 'false');
     r.save.textContent = ed.busy ? '正在存……' : '保存';
   }
 

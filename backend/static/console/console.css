@@ -140,6 +140,8 @@
 [hidden] { display: none !important; }
 html, body { margin: 0; background: var(--bg); transition: background-color .5s ease; }
 html.locked, html.locked body { overflow: hidden; }
+/* 用键盘 Tab 时浏览器会把焦点滚进视野：上面让出贴顶的搜索栏，下面让出 tab 栏和 +，卡片不会躲在它们底下 */
+html { scroll-padding-top: calc(114px + max(8px, env(safe-area-inset-top))); scroll-padding-bottom: calc(164px + env(safe-area-inset-bottom)); }
 
 .app {
   --glass-blur: 22px;
@@ -244,6 +246,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .press:active { transform: scale(.94); transition: transform .08s ease-out; }
 .press:disabled { cursor: default; opacity: .35; }
 .press:disabled:active { transform: none; }
+/* 正在存的按钮：样子跟 disabled 一样，但不用 disabled（那样键盘焦点会丢） */
+.press[aria-disabled="true"] { cursor: default; opacity: .35; }
+.press[aria-disabled="true"]:active { transform: none; }
 
 /* 小按钮看着 36–40px，手指能点到的范围补到 44px */
 .swatch, .clearq, .btn-soft, .btn-ghost, .btn-danger, .segbtn, .stepbtn, .closebtn, .tagbtn { position: relative; }
@@ -277,6 +282,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .pagehead { padding: 10px 16px 14px; }
 .pagehead-lib { padding-bottom: 6px; }
 .pagetitle { margin: 0; font-size: 34px; line-height: 1.15; font-weight: 700; letter-spacing: -0.025em; color: var(--ink); }
+.pagetitle:focus { outline: none; } /* 删完一条找不到旁边的卡片时，焦点落在标题上（tabindex=-1），不画框 */
 .pagesub { display: block; margin-top: 4px; font-size: 14px; color: var(--ink2); }
 
 /* ---------- 搜索 + 月份 ---------- */
@@ -404,7 +410,7 @@ button.rowbody { margin: -6px 0 -6px -4px; padding: 6px 0 6px 4px; border-radius
 .seg2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 .switch { flex: none; display: flex; align-items: center; height: 44px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
-.switch:disabled { cursor: default; opacity: .5; }
+.switch:disabled, .switch[aria-disabled="true"] { cursor: default; opacity: .5; }
 .track { position: relative; display: block; width: 52px; height: 32px; border-radius: 999px; background: var(--off); transition: background-color .25s ease; }
 .track-on { background: var(--accent); }
 .knob { position: absolute; top: 2px; left: 2px; width: 28px; height: 28px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 2px 6px rgba(0, 0, 0, .22); transition: transform .4s cubic-bezier(.34, 1.45, .64, 1); }

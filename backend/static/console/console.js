@@ -217,6 +217,7 @@
     return h('button', {
       class: 'card press',
       type: 'button',
+      'data-key': 'm' + Number(m.id),
       onclick: function (e) { Sheet().openDetail(m.id, m, e.currentTarget); }
     },
     h('span', { class: 'cardtop' },
@@ -235,7 +236,17 @@
 
   function renderLibrary(errMsg) {
     renderLibSub();
-    var list = L.clear($('lib-list'));
+    var list = $('lib-list');
+    // 焦点在列表里（键盘用户）：重画后放回同一张卡片，不让它掉回页面开头
+    var keep = list.contains(document.activeElement) ? L.focusKeys(document.activeElement) : [];
+    L.clear(list);
+    fillLibrary(list, errMsg);
+    if (keep.length && L.focusLost()) {
+      L.focusByKeys(keep, list);
+    }
+  }
+
+  function fillLibrary(list, errMsg) {
     list.setAttribute('aria-busy', S.lib.loading ? 'true' : 'false');
     if (!S.lib.loaded) {
       list.appendChild(errMsg ? emptyState('没打开', errMsg) : h('span', { class: 'loading', text: '正在翻……' }));
@@ -263,12 +274,18 @@
       group.appendChild(memCard(m));
     });
     if (S.lib.page < S.lib.totalPages) {
+      // 加载中用 aria-disabled 不用 disabled：按钮变灰会把键盘焦点弄丢
       list.appendChild(h('button', {
         class: 'press btn-ghost wide',
         type: 'button',
+        'data-key': 'more',
         onclick: function (e) {
-          e.currentTarget.disabled = true;
-          e.currentTarget.textContent = '正在加载……';
+          var b = e.currentTarget;
+          if (b.getAttribute('aria-disabled') === 'true') {
+            return;
+          }
+          b.setAttribute('aria-disabled', 'true');
+          b.textContent = '正在加载……';
           loadLibrary(true);
         }
       }, '加载更多'));
@@ -364,18 +381,21 @@
         h('strong', { text: VERBS[a.action] || a.action }),
         ' #' + a.memory_id + ' ' + (a.title || ''))
     ];
+    var rowKey = 'a' + Number(a.id);
     var body = exists
-      ? h('button', { class: 'rowbody press', type: 'button', onclick: function (e) { Sheet().openDetail(a.memory_id, null, e.currentTarget); } }, kids)
+      ? h('button', { class: 'rowbody press', type: 'button', 'data-key': rowKey, onclick: function (e) { Sheet().openDetail(a.memory_id, null, e.currentTarget); } }, kids)
       : h('span', { class: 'rowbody' }, kids);
     var right = null;
     if (a.can === 'revert') {
       right = h('button', {
         class: 'press btn-soft', type: 'button', 'aria-label': '回退 #' + a.memory_id + ' 的这次改动',
+        'data-key': rowKey + '-b', 'data-row': rowKey,
         onclick: function (e) { actRevert(a, e.currentTarget); }
       }, '回退');
     } else if (a.can === 'restore') {
       right = h('button', {
         class: 'press btn-soft', type: 'button', 'aria-label': '恢复 #' + a.memory_id,
+        'data-key': rowKey + '-b', 'data-row': rowKey,
         onclick: function (e) { actRestore(a, e.currentTarget); }
       }, '恢复');
     } else if (a.status) {
@@ -385,7 +405,16 @@
   }
 
   function renderActivity(errMsg) {
-    var list = L.clear($('act-list'));
+    var list = $('act-list');
+    var keep = list.contains(document.activeElement) ? L.focusKeys(document.activeElement) : [];
+    L.clear(list);
+    fillActivity(list, errMsg);
+    if (keep.length && L.focusLost()) {
+      L.focusByKeys(keep, list);
+    }
+  }
+
+  function fillActivity(list, errMsg) {
     if (!S.acts) {
       $('act-sub').textContent = '删掉的在这里还能恢复';
       list.appendChild(errMsg ? emptyState('没打开', errMsg) : h('span', { class: 'loading', text: '正在翻……' }));
@@ -401,8 +430,19 @@
     });
   }
 
+  /** 动静行上的按钮：点过一次就先不理，等列表刷新（不用 disabled，免得键盘焦点丢掉） */
+  function claimBtn(btn) {
+    if (btn.getAttribute('aria-disabled') === 'true') {
+      return false;
+    }
+    btn.setAttribute('aria-disabled', 'true');
+    return true;
+  }
+
   function actRevert(a, btn) {
-    btn.disabled = true;
+    if (!claimBtn(btn)) {
+      return;
+    }
     api('POST', '/api/memories/' + a.memory_id + '/revert', { history_id: a.history_id }).then(function () {
       toast('已回退 #' + a.memory_id);
       afterChange(a.memory_id);
@@ -413,7 +453,9 @@
   }
 
   function actRestore(a, btn) {
-    btn.disabled = true;
+    if (!claimBtn(btn)) {
+      return;
+    }
     api('POST', '/api/memories/' + a.memory_id + '/restore').then(function () {
       toast('恢复了，回记忆库就能看到');
       afterChange(a.memory_id);
@@ -435,34 +477,57 @@
     });
   }
 
+  // 正在存设置时用 aria-disabled 变灰、不用 disabled：按钮一 disabled，键盘焦点就掉回页面开头
   function renderSettings() {
     var st = S.settings;
-    var busy = S.settingsBusy || !st;
+    var busy = S.settingsBusy ? 'true' : 'false';
     var keep = st ? st.history_keep : null;
     $('keep-val').textContent = (keep == null ? '–' : keep) + ' 版';
-    $('keep-minus').disabled = busy || keep <= 1;
-    $('keep-plus').disabled = busy || keep >= 2;
+    $('keep-minus').disabled = !st || keep <= 1;
+    $('keep-plus').disabled = !st || keep >= 2;
+    $('keep-minus').setAttribute('aria-disabled', busy);
+    $('keep-plus').setAttribute('aria-disabled', busy);
     document.querySelectorAll('#days-seg .segbtn').forEach(function (b) {
       var on = !!st && Number(b.getAttribute('data-days')) === st.activity_days;
       b.classList.toggle('seg-on', on);
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
-      b.disabled = busy;
+      b.disabled = !st;
+      b.setAttribute('aria-disabled', busy);
     });
     var ke = !!(st && st.ke_can_delete);
     var sw = $('ke-switch');
     sw.setAttribute('aria-checked', ke ? 'true' : 'false');
     sw.firstElementChild.classList.toggle('track-on', ke);
-    sw.disabled = busy;
+    sw.disabled = !st;
+    sw.setAttribute('aria-disabled', busy);
     renderThemeControls();
   }
 
+  function settingsReady() {
+    return !!S.settings && !S.settingsBusy;
+  }
+
+  /** 改完设置：焦点要是因为按钮到头变灰丢了（比如留 1 版后的 -），放到旁边那个按钮上 */
+  function keepFocus(from) {
+    if (!from || !L.focusLost()) {
+      return;
+    }
+    var alt = { 'keep-minus': 'keep-plus', 'keep-plus': 'keep-minus' }[from.id];
+    var el = from.disabled && alt ? $(alt) : from;
+    if (el && !el.disabled && document.contains(el)) {
+      el.focus({ preventScroll: true });
+    }
+  }
+
   function patchSettings(patch, okMsg) {
+    var from = document.activeElement;
     S.settingsBusy = true;
     renderSettings();
     return api('PATCH', '/api/settings', patch).then(function (data) {
       S.settings = data;
       S.settingsBusy = false;
       renderSettings();
+      keepFocus(from);
       toast(okMsg);
       if (S.acts) {
         loadActivity();
@@ -470,12 +535,13 @@
     }, function (err) {
       S.settingsBusy = false;
       renderSettings();
+      keepFocus(from);
       toast(err.message);
     });
   }
 
   function changeKeep(delta) {
-    if (!S.settings) {
+    if (!settingsReady()) {
       return;
     }
     var next = S.settings.history_keep + delta;
@@ -494,7 +560,7 @@
   }
 
   function changeDays(d) {
-    if (!S.settings || S.settings.activity_days === d) {
+    if (!settingsReady() || S.settings.activity_days === d) {
       return;
     }
     var msg = '最近动静改成显示 ' + d + ' 天';
@@ -514,7 +580,7 @@
   }
 
   function toggleKe() {
-    if (!S.settings) {
+    if (!settingsReady()) {
       return;
     }
     var next = !S.settings.ke_can_delete;

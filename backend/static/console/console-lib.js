@@ -122,6 +122,50 @@
     return el;
   }
 
+  // ---------- 焦点：列表重画 / 面板关掉以后，焦点放回「同一个东西」上 ----------
+  // 卡片、动静行带 data-key（只由编号拼成，如 m24 / a57）；行里的按钮另带 data-row = 这一行的 key。
+  /** 记下 el 的 key，再记它所在行、前后各一个：重画后先找自己，没了找这一行，再找后一个 / 前一个 */
+  function focusKeys(el) {
+    var key = el && el.getAttribute ? el.getAttribute('data-key') : null;
+    if (!key) {
+      return [];
+    }
+    var keys = [key];
+    if (el.getAttribute('data-row')) {
+      keys.push(el.getAttribute('data-row'));
+    }
+    var view = el.closest('.view');
+    var all = view ? Array.prototype.slice.call(view.querySelectorAll('[data-key]')) : [];
+    var i = all.indexOf(el);
+    if (i !== -1 && all[i + 1]) {
+      keys.push(all[i + 1].getAttribute('data-key'));
+    }
+    if (i > 0) {
+      keys.push(all[i - 1].getAttribute('data-key'));
+    }
+    return keys;
+  }
+
+  function focusByKeys(keys, scope) {
+    for (var i = 0; i < keys.length; i++) {
+      if (!/^[a-z0-9-]+$/.test(keys[i])) {
+        continue;
+      }
+      var el = (scope || document).querySelector('[data-key="' + keys[i] + '"]');
+      if (el && !el.disabled && el.getClientRects().length) {
+        el.focus({ preventScroll: true });
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** 焦点是不是丢了（被删掉 / 变灰的元素上的焦点会掉回 body） */
+  function focusLost() {
+    var a = document.activeElement;
+    return !a || a === document.body || a === document.documentElement;
+  }
+
   // ---------- 日期（库里的时间都是北京时间） ----------
   var WK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
@@ -396,6 +440,9 @@
     h: h,
     icon: icon,
     clear: clear,
+    focusKeys: focusKeys,
+    focusByKeys: focusByKeys,
+    focusLost: focusLost,
     bjDay: bjDay,
     curYear: curYear,
     pad2: pad2,
