@@ -2,49 +2,50 @@
    玻璃只用在浮在上面的东西：顶栏的配色圆点、搜索框、月份按钮、底部 tab、右下角 +、底部面板、弹窗、提示条。
    记忆卡片、动静行、设置分组是实心卡片。 */
 
-/* ---------- 三套配色（class 挂在 <html> 上） ---------- */
-.theme-warm {
+/* ---------- 四套配色（class 挂在 <html> 上） ---------- */
+.theme-matcha {
   color-scheme: light;
-  --bg: #F8F5F0;
-  --ink: #26211D;
-  --ink2: #685F58;
-  --ink3: #8E857E;
-  --accent: #D9775B;
-  --accent-ink: #A9502F;
-  --accent-soft: #FBE6DC;
-  --card: rgba(255, 255, 255, .80);
-  --card-edge: rgba(38, 33, 29, .07);
-  --card-shadow: 0 1px 2px rgba(70, 45, 30, .05), 0 10px 28px rgba(70, 45, 30, .07);
-  --glass: rgba(255, 255, 255, .40);
-  --glass-strong: rgba(253, 251, 248, .72);
-  --glass-solid: #FBF9F6;
-  --glass-edge: rgba(255, 255, 255, .55);
-  --glass-hi: rgba(255, 255, 255, .95);
-  --glass-lo: rgba(255, 255, 255, .10);
-  --glass-shadow: 0 12px 32px rgba(90, 55, 35, .14), 0 2px 8px rgba(90, 55, 35, .06);
-  --glass-sat: 185%;
-  --glass-bright: 1.05;
-  --bubble: rgba(255, 255, 255, .80);
-  --btn: #2B2622;
+  --bg: #F4F6EC;
+  --ink: #2F3A2A;
+  --ink2: #5E6B55;
+  --ink3: #7F8A75;
+  --accent: #5F7F32;
+  --accent-ink: #4F6B2E;
+  --accent-soft: #E6EDD6;
+  --card: #FBFCF7;
+  --card-edge: rgba(47, 58, 42, .07);
+  --card-shadow: 0 1px 2px rgba(50, 70, 30, .05), 0 10px 28px rgba(50, 70, 30, .07);
+  --glass: rgba(255, 255, 255, .42);
+  --glass-strong: rgba(251, 252, 247, .74);
+  --glass-solid: #FBFCF7;
+  --glass-edge: rgba(222, 236, 198, .7);
+  --glass-hi: rgba(248, 255, 236, .95);
+  --glass-lo: rgba(236, 246, 220, .14);
+  --glass-shadow: 0 12px 32px rgba(60, 80, 40, .14), 0 2px 8px rgba(60, 80, 40, .06);
+  --glass-sat: 170%;
+  --glass-bright: 1.04;
+  --bubble: rgba(255, 255, 255, .82);
+  --btn: #5F7F32;
   --btn-ink: #FFFFFF;
   --danger: #B3261E;
   --danger-soft: rgba(179, 38, 30, .09);
-  --scrim: rgba(40, 24, 14, .24);
-  --seg: rgba(38, 33, 29, .06);
+  --scrim: rgba(30, 40, 20, .22);
+  --seg: rgba(47, 58, 42, .06);
   --seg-on: #FFFFFF;
-  --old-bg: rgba(38, 33, 29, .07);
-  --ke: #FBE2D5;
-  --ke-ink: #86391C;
-  --xuan: #F7DDE8;
-  --xuan-ink: #7C2C51;
-  --fade: rgba(248, 245, 240, .78);
-  --fade0: rgba(248, 245, 240, 0);
-  --b1: #F6B091;
-  --b2: #F8D6A2;
-  --b3: #EE9FA6;
-  --b4: #CBBEF0;
+  --old-bg: rgba(47, 58, 42, .07);
+  --ke: #F0E7C3;
+  --ke-ink: #6B5A1E;
+  --xuan: #E6EDD6;
+  --xuan-ink: #4F6B2E;
+  --fade: rgba(244, 246, 236, .78);
+  --fade0: rgba(244, 246, 236, 0);
+  --top: #E5ECD5;  /* 状态栏颜色（theme-color），页面顶上从它渐变下来；改了要同步 console-lib.js 的 THEME_BAR */
+  --b1: #B9CC8F;
+  --b2: #D5E4BF;
+  --b3: #F0E7C3;
+  --b4: #B9CC8F;
   --blob-op: .8;
-  --off: rgba(120, 116, 112, .30);
+  --off: rgba(94, 107, 85, .30);
   --r-card: 22px;
 }
 .theme-pink {
@@ -83,13 +84,59 @@
   --xuan-ink: #8A2B53;
   --fade: rgba(255, 240, 243, .78);
   --fade0: rgba(255, 240, 243, 0);
-  --b1: #FFB3C8;
-  --b2: #FFD3B8;
-  --b3: #E2BDFF;
-  --b4: #BCE0FF;
+  --top: #FBDDE5;
+  --b1: #FFB8CC;
+  --b2: #FFD0DC;
+  --b3: #EDD0F2;
+  --b4: #F7C6D5;
   --blob-op: .85;
   --off: rgba(130, 80, 95, .28);
   --r-card: 28px;
+}
+.theme-blue {
+  color-scheme: light;
+  --bg: #EEF5FC;
+  --ink: #22344A;
+  --ink2: #56708C;
+  --ink3: #7F93A8;
+  --accent: #5B9BD5;
+  --accent-ink: #2F6BA3;
+  --accent-soft: #DCEBFA;
+  --card: rgba(255, 255, 255, .82);
+  --card-edge: rgba(47, 107, 163, .08);
+  --card-shadow: 0 1px 2px rgba(40, 80, 130, .05), 0 10px 28px rgba(40, 80, 130, .08);
+  --glass: rgba(255, 255, 255, .42);
+  --glass-strong: rgba(250, 252, 255, .74);
+  --glass-solid: #F7FAFE;
+  --glass-edge: rgba(255, 255, 255, .6);
+  --glass-hi: rgba(255, 255, 255, .95);
+  --glass-lo: rgba(255, 255, 255, .12);
+  --glass-shadow: 0 12px 32px rgba(50, 100, 160, .16), 0 2px 8px rgba(50, 100, 160, .07);
+  --glass-sat: 170%;
+  --glass-bright: 1.05;
+  --bubble: rgba(255, 255, 255, .84);
+  --btn: #A9CBEF;
+  --btn-ink: #1E3550;
+  --danger: #B3261E;
+  --danger-soft: rgba(179, 38, 30, .08);
+  --scrim: rgba(25, 45, 70, .22);
+  --seg: rgba(47, 107, 163, .08);
+  --seg-on: #FFFFFF;
+  --old-bg: rgba(34, 52, 74, .07);
+  --ke: #FFE6D6;
+  --ke-ink: #8A3B1E;
+  --xuan: #DCEBFA;
+  --xuan-ink: #2F5F92;
+  --fade: rgba(238, 245, 252, .78);
+  --fade0: rgba(238, 245, 252, 0);
+  --top: #DDEBF9;
+  --b1: #A9D0F5;
+  --b2: #BFE8E6;
+  --b3: #C3D9F2;
+  --b4: #BDE6F5;
+  --blob-op: .85;
+  --off: rgba(80, 105, 135, .28);
+  --r-card: 26px;
 }
 .theme-night {
   color-scheme: dark;
@@ -127,6 +174,7 @@
   --xuan-ink: #F3B0D3;
   --fade: rgba(20, 17, 27, .8);
   --fade0: rgba(20, 17, 27, 0);
+  --top: #14111B;
   --b1: #7A46BA;
   --b2: #C9663F;
   --b3: #A3407E;
@@ -187,6 +235,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 
 /* ---------- 背后飘着的模糊色块 ---------- */
 .blobs { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+/* 顶端接缝：手机状态栏是 theme-color 纯色（= --top），色块飘到顶会跟它切出一条线；顶上 140px 从 --top 渐到透明，状态栏像是长进页面里 */
+.blobs::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: calc(140px + env(safe-area-inset-top)); z-index: 1; background: linear-gradient(to bottom, var(--top) 0%, var(--fade0) 100%); transition: background .5s ease; }
 .blob { position: absolute; border-radius: 50%; filter: blur(46px); opacity: var(--blob-op); transition: background-color .6s ease, opacity .6s ease; will-change: transform; }
 .b1 { width: 320px; height: 320px; left: -80px; top: -70px; background: var(--b1); animation: d1 26s ease-in-out infinite alternate; }
 .b2 { width: 280px; height: 280px; right: -100px; top: 180px; background: var(--b2); animation: d2 31s ease-in-out infinite alternate; }
@@ -311,8 +361,12 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .lmt-glint{opacity:1;animation:lmt-twinkle var(--lmt-t) ease-in-out var(--lmt-d) infinite;}
 .lmt-glint::before{width:22px;height:22px;margin:-11px 0 0 -11px;
   background:radial-gradient(closest-side,var(--lmt-aura-hi) 18%,42%,transparent);}
+/* 抹茶的 logo 描边用 --accent 那个绿，--accent-ink 太深 */
+.theme-matcha .lmt-logo{--lmt-rim:color-mix(in srgb,#5F7F32 72%,transparent);}
+.theme-matcha .lmt-word{stroke:#5F7F32;}
 @supports not (color:color-mix(in srgb,red 50%,blue)){
   .lmt-logo{--lmt-rim:var(--accent-ink);--lmt-aura:var(--accent-soft);--lmt-aura-hi:var(--accent);}
+  .theme-matcha .lmt-logo{--lmt-rim:#5F7F32;}
 }
 @keyframes lmt-drift{
   0%{opacity:0;transform:translate(var(--lmt-dx),var(--lmt-dy)) rotate(var(--lmt-r));}
@@ -473,6 +527,7 @@ button.rowbody { margin: -6px 0 -6px -4px; padding: 6px 0 6px 4px; border-radius
 .stepval { min-width: 40px; text-align: center; font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
 
 .seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; border-radius: 14px; background: var(--seg); }
+.seg4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .segbtn { height: 40px; border-radius: 11px; font-size: 14px; font-weight: 600; color: var(--ink2); }
 .seg-on { background: var(--seg-on); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .08), 0 4px 10px rgba(0, 0, 0, .06); }
 .seg2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }

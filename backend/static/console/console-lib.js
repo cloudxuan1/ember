@@ -5,14 +5,18 @@
   'use strict';
 
   // ---------- 配色（每台设备自己记） ----------
-  var THEMES = ['warm', 'pink', 'night'];
-  var THEME_LABELS = { warm: '暖白橙', pink: '粉粉', night: '夜间' };
-  var THEME_BG = { warm: '#F8F5F0', pink: '#FFF0F3', night: '#14111B' };
+  var THEMES = ['matcha', 'pink', 'blue', 'night'];
+  var THEME_LABELS = { matcha: '抹茶', pink: '粉粉', blue: '淡蓝', night: '夜间' };
+  // 状态栏颜色（theme-color），跟 console.css 各主题的 --top 一致
+  var THEME_BAR = { matcha: '#E5ECD5', pink: '#FBDDE5', blue: '#DDEBF9', night: '#14111B' };
   var THEME_KEY = 'ember-console-theme';
 
   function storedTheme() {
     try {
       var t = window.localStorage.getItem(THEME_KEY);
+      if (t === 'warm') {
+        t = 'matcha'; // 暖白橙已换成抹茶，之前选了它的设备接着用抹茶
+      }
       return THEMES.indexOf(t) !== -1 ? t : null;
     } catch (e) {
       return null; // 无痕模式 / 禁了存储：用默认
@@ -25,19 +29,19 @@
         return 'night';
       }
     } catch (e) { /* 老浏览器 */ }
-    return 'warm';
+    return 'pink';
   }
 
   function applyTheme(t, persist) {
     if (THEMES.indexOf(t) === -1) {
-      t = 'warm';
+      t = 'pink';
     }
     var root = document.documentElement;
     THEMES.forEach(function (x) { root.classList.remove('theme-' + x); });
     root.classList.add('theme-' + t);
     var meta = document.querySelector('meta[name="theme-color"]');
     if (meta) {
-      meta.setAttribute('content', THEME_BG[t]);
+      meta.setAttribute('content', THEME_BAR[t]);
     }
     if (persist) {
       try {
