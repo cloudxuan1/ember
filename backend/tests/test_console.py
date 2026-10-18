@@ -452,3 +452,9 @@ def test_reads_skip_a_due_purge_instead_of_waiting(client):
     finally:
         writer.rollback()
         writer.close()
+
+
+def test_root_serves_the_page_without_caching(client):
+    resp = client.get("/")
+    assert resp.status_code == 200 and resp.headers["cache-control"] == "no-store"
+    assert "/static/console/console.js" in resp.text and 'id="brand"' in resp.text

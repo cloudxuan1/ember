@@ -51,11 +51,6 @@
   // =====================================================================
   function renderThemeControls() {
     var t = L.getTheme();
-    document.querySelectorAll('.swatch[data-theme]').forEach(function (b) {
-      var on = b.getAttribute('data-theme') === t;
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-      b.firstElementChild.classList.toggle('dot-on', on);
-    });
     document.querySelectorAll('#theme-seg .segbtn').forEach(function (b) {
       var on = b.getAttribute('data-theme') === t;
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
@@ -209,7 +204,7 @@
   }
 
   function renderLibSub() {
-    $('lib-sub').textContent = S.lib.all == null ? ' ' : ('共 ' + S.lib.all + ' 条 · 按发生的日子排');
+    $('q').placeholder = S.lib.all == null ? '搜内容或编号' : ('在 ' + S.lib.all + ' 条记忆里搜，编号也行');
   }
 
   function memCard(m) {
@@ -608,7 +603,7 @@
       b.addEventListener('click', function () { changeDays(Number(b.getAttribute('data-days'))); });
     });
     $('ke-switch').addEventListener('click', toggleKe);
-    document.querySelectorAll('#theme-seg .segbtn, .swatch[data-theme]').forEach(function (b) {
+    document.querySelectorAll('#theme-seg .segbtn').forEach(function (b) {
       b.addEventListener('click', function () { pickTheme(b.getAttribute('data-theme')); });
     });
     $('clear-all').addEventListener('click', askClearAll);

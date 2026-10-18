@@ -28,20 +28,13 @@
       <!-- BRAND:START -->
       <a class="brand" id="brand" href="/" aria-label="ember"><span class="brand-dot" aria-hidden="true"></span><span class="brand-word">ember</span></a>
       <!-- BRAND:END -->
-      <div class="glass swatches" role="group" aria-label="配色">
-        <button class="press swatch" type="button" data-theme="warm" aria-label="暖白橙" aria-pressed="false"><span class="dot dot-warm"></span></button>
-        <button class="press swatch" type="button" data-theme="pink" aria-label="粉粉" aria-pressed="false"><span class="dot dot-pink"></span></button>
-        <button class="press swatch" type="button" data-theme="night" aria-label="夜间" aria-pressed="false"><span class="dot dot-night"></span></button>
-      </div>
     </header>
 
     <main>
       <!-- 记忆库 -->
       <section class="view" id="view-library" aria-labelledby="h-library">
-        <div class="pagehead pagehead-lib">
-          <h1 class="pagetitle" id="h-library" tabindex="-1">记忆库</h1>
-          <span class="pagesub" id="lib-sub">&nbsp;</span>
-        </div>
+        <!-- 页面不放大标题（轩定）：标题只留给读屏和焦点兜底，条数放进搜索框的提示字 -->
+        <h1 class="pagetitle sr" id="h-library" tabindex="-1">记忆库</h1>
         <div class="stick-sentinel" id="stick-sentinel" aria-hidden="true"></div>
         <div class="sticky" id="sticky">
           <label class="glass searchwrap">
@@ -58,7 +51,7 @@
       <!-- 最近动静 -->
       <section class="view" id="view-activity" aria-labelledby="h-activity" hidden>
         <div class="pagehead">
-          <h1 class="pagetitle" id="h-activity" tabindex="-1">最近动静</h1>
+          <h1 class="pagetitle sr" id="h-activity" tabindex="-1">最近动静</h1>
           <span class="pagesub" id="act-sub">删掉的在这里还能恢复</span>
         </div>
         <div class="rows" id="act-list"></div>
@@ -66,9 +59,7 @@
 
       <!-- 设置 -->
       <section class="view" id="view-settings" aria-labelledby="h-settings" hidden>
-        <div class="pagehead">
-          <h1 class="pagetitle" id="h-settings" tabindex="-1">设置</h1>
-        </div>
+        <h1 class="pagetitle sr" id="h-settings" tabindex="-1">设置</h1>
         <div class="setlist">
           <section aria-labelledby="g-mem">
             <h2 class="grouph" id="g-mem">记忆</h2>
@@ -108,7 +99,7 @@
               <div class="setrow setcol">
                 <span class="setline">
                   <span class="pad"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.4 0 2-1 1.4-2.2-.6-1.2.2-2.3 1.6-2.3H17a3.5 3.5 0 0 0 3.5-3.5c0-5-3.8-9-8.5-9z"></path><circle cx="7.8" cy="11" r="1"></circle><circle cx="11" cy="7.5" r="1"></circle><circle cx="15.2" cy="8.8" r="1"></circle></svg></span>
-                  <span class="settext"><span class="sett" id="theme-label">配色</span><span class="sets">右上角的小圆点也能换</span></span>
+                  <span class="settext"><span class="sett" id="theme-label">配色</span><span class="sets">每台手机 / 电脑各记各的</span></span>
                 </span>
                 <div class="seg" id="theme-seg" role="group" aria-labelledby="theme-label">
                   <button class="press segbtn" type="button" data-theme="warm" aria-pressed="false">暖白橙</button>

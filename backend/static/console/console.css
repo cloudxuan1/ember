@@ -251,8 +251,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .press[aria-disabled="true"]:active { transform: none; }
 
 /* 小按钮看着 36–40px，手指能点到的范围补到 44px */
-.swatch, .clearq, .btn-soft, .btn-ghost, .btn-danger, .segbtn, .stepbtn, .closebtn, .tagbtn { position: relative; }
-.swatch::after, .clearq::after, .btn-soft::after, .btn-ghost::after, .btn-danger::after,
+.clearq, .btn-soft, .btn-ghost, .btn-danger, .segbtn, .stepbtn, .closebtn, .tagbtn { position: relative; }
+.clearq::after, .btn-soft::after, .btn-ghost::after, .btn-danger::after,
 .segbtn::after, .stepbtn::after, .closebtn::after, .tagbtn::after, .chip-t::after {
   content: "";
   position: absolute;
@@ -271,16 +271,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .brand img, .brand svg { display: block; width: auto; height: auto; max-width: 200px; max-height: 56px; }
 .brand-dot { display: inline-block; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
 
-.swatches { flex: none; display: flex; gap: 2px; padding: 4px; border-radius: 999px; }
-.swatch { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
-.dot { width: 24px; height: 24px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .1); transition: box-shadow .25s ease, transform .4s cubic-bezier(.34, 1.56, .64, 1); }
-.dot-warm { background: linear-gradient(135deg, #FBF7F1 0 48%, #D9775B 52% 100%); }
-.dot-pink { background: linear-gradient(135deg, #FFF0F3 0 48%, #F6AFC3 52% 100%); }
-.dot-night { background: linear-gradient(135deg, #2A2238 0 48%, #F2A07F 52% 100%); }
-.dot-on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ink); transform: scale(1.04); }
 
-.pagehead { padding: 10px 16px 14px; }
-.pagehead-lib { padding-bottom: 6px; }
+.pagehead { padding: 6px 16px 12px; }
 .pagetitle { margin: 0; font-size: 34px; line-height: 1.15; font-weight: 700; letter-spacing: -0.025em; color: var(--ink); }
 .pagetitle:focus { outline: none; } /* 删完一条找不到旁边的卡片时，焦点落在标题上（tabindex=-1），不画框 */
 .pagesub { display: block; margin-top: 4px; font-size: 14px; color: var(--ink2); }
@@ -493,7 +485,7 @@ button.rowbody { margin: -6px 0 -6px -4px; padding: 6px 0 6px 4px; border-radius
   .blob { animation: none; }
   .sheet, .alert, .toast { animation: fadeIn .2s ease both; }
   .layer.closing .sheet { animation: fadeOut .15s ease both; }
-  .press, .tab-bubble, .knob, .chev, .dot { transition: none; }
+  .press, .tab-bubble, .knob, .chev { transition: none; }
   .press:active { transform: none; opacity: .72; }
 }
 @media (prefers-reduced-transparency: reduce) {
