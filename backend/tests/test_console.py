@@ -364,15 +364,23 @@ def test_noop_save_of_legacy_row_is_not_an_edit(client):
     assert client.get(f"/api/memories/{mid}").json()["history"] == []
 
 
-def test_conflict_detected_within_the_same_second_and_on_revert(client):
+def test_conflict_detected_within_the_same_millisecond_and_on_revert(client, monkeypatch):
+    # 固定数据库时钟，保证两次写确实落在同一毫秒；不靠机器速度或 sleep。
+    monkeypatch.setattr(memories, "NOW_MS", "'2026-10-18 20:00:00.123'")
+    client.patch("/api/settings", json={"history_keep": 2})
     mid = _save("v1")
     first = client.patch(f"/api/memories/{mid}", json={"content": "v2"}).json()["memory"]
-    memories.update_memory(mid, {"content": "小克同一秒又改了"}, by="ke")
+    seen = _acts(client)[0]
+    assert seen["updated_at"] == first["updated_at"]
+    second = memories.update_memory(mid, {"content": "小克同一毫秒又改了"}, by="ke")["memory"]
+    assert second["updated_at"] > first["updated_at"]
     assert client.patch(f"/api/memories/{mid}", json={"content": "v3", "expect_updated_at": first["updated_at"]}).status_code == 409
-    hid = client.get(f"/api/memories/{mid}").json()["history"][0]["id"]
-    stale = client.post(f"/api/memories/{mid}/revert", json={"history_id": hid, "expect_updated_at": first["updated_at"]})
+    stale = client.post(f"/api/memories/{mid}/revert", json={"history_id": seen["history_id"], "expect_updated_at": seen["updated_at"]})
     assert stale.status_code == 409
-    assert memories.get_memory(mid)["content"] == "小克同一秒又改了"
+    assert memories.get_memory(mid)["content"] == "小克同一毫秒又改了"
+    fresh = client.post(f"/api/memories/{mid}/revert", json={"history_id": seen["history_id"], "expect_updated_at": second["updated_at"]})
+    assert fresh.status_code == 200 and fresh.json()["memory"]["content"] == "v1"
+    assert fresh.json()["memory"]["updated_at"] > second["updated_at"]
 
 
 def test_bad_inputs_are_4xx_not_500(client):

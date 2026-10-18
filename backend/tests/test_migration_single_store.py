@@ -201,6 +201,20 @@ def test_link_to_withdrawn_memory_is_not_rebound_to_a_moved_draft(tmp_path, monk
     assert report["links_skipped"] == [{"draft_id": 201, "link": {"memory_id": 3, "relation": "supersedes", "dir": "out"}}]
 
 
+def test_link_via_an_approved_snapshot_cannot_reuse_a_withdrawn_memory_id(tmp_path, monkeypatch):
+    link = {"draft_id": 100, "relation": "supersedes", "dir": "out"}
+    _old_db_with(tmp_path, monkeypatch, [(1, "2026-09-01", "留着的", "x")], [
+        (100, "2026-09-02", "已撤回记忆的旧快照", "approved", 2, "2026-09-02 09:00:00", ""),
+        (200, "2026-10-01", "新搬进来的 A", "pending", None, "2026-10-01 09:00:00", ""),
+        (201, "2026-10-02", "应该连向旧快照的 B", "pending", None, "2026-10-02 09:00:00", json.dumps([link])),
+    ], seq_bump=2)
+    report = init_db()
+    assert memories.get_memory(2)["content"] == "新搬进来的 A"
+    assert _edges() == set()
+    assert memories.get_memory(2)["superseded_by"] is None
+    assert report["links_skipped"] == [{"draft_id": 201, "link": link}]
+
+
 def test_links_from_approved_drafts_to_pending_ones_are_backfilled(tmp_path, monkeypatch):
     _old_db_with(tmp_path, monkeypatch, [(1, "2026-09-01", "因", "x"), (2, "2026-09-02", "旧计划", "x")], [
         (120, "2026-09-01", "因", "approved", 1, "2026-09-01 09:00:00",

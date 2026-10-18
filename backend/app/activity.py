@@ -73,6 +73,7 @@ def _status(row, mem, history_ids: set[int], later_change: bool) -> tuple[str, s
 def list_activity() -> dict:
     """最近 activity_days 天的流水，新的在前；每行带现在还能不能回退 / 恢复。"""
     with get_conn() as conn:
+        conn.execute("BEGIN")  # 动静、当前版本和可回退状态必须来自同一次读取。
         days = settings.get_settings(conn)["activity_days"]
         rows = conn.execute(
             """SELECT * FROM activity_log WHERE at >= datetime('now', '+8 hours', ?)
@@ -86,7 +87,7 @@ def list_activity() -> dict:
             mems = {
                 r["id"]: r
                 for r in conn.execute(
-                    f"SELECT id, content, deleted_at FROM memories WHERE id IN ({marks})", ids
+                    f"SELECT id, content, deleted_at, updated_at FROM memories WHERE id IN ({marks})", ids
                 ).fetchall()
             }
             history_ids = {
@@ -110,6 +111,7 @@ def list_activity() -> dict:
             "memory_id": r["memory_id"],
             "title": title_of(mem["content"]) if mem is not None else r["title"],
             "history_id": r["history_id"],
+            "updated_at": mem["updated_at"] if mem is not None else None,
             "can": can,
             "status": status,
         })
