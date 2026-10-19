@@ -82,7 +82,7 @@ def topic_counts(c) -> Counter:
 def from_legacy(c, row, counts: Counter, can_star: bool = True) -> dict:
     """老栏位换成新栏位（轩 2026-10-20 定；搬家和 PR3 之前照老参数存的新卡都按这一套）：
     - topic 只有这一张卡在用 → 变成标题（已有标题不动）；好几张共用 → 并进便利贴（已有就不加）；空的不管。
-      删掉的卡按「恢复回来」算：它自己也算一张。
+      施工时补的细则（#24）：只数还在的卡；删掉的卡按「恢复回来」算，它自己也算一张。
     - tier = anchor → ⭐（can_star=False 时不点：小克存的，轩又关了「小克能不能点⭐」）。
     topic、tier 两栏原样留着（PR5 才删）。返回这张卡改了什么。"""
     from app.memories import normalize_tags  # 同上，延迟导入
