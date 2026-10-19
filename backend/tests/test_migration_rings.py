@@ -179,7 +179,7 @@ def test_failure_halfway_rolls_back_everything(old_db, monkeypatch):
     assert _rows("SELECT COUNT(*) AS n FROM memory_rings") == [{"n": 6}]
 
 
-@pytest.mark.parametrize("bug", ["wrong_ring", "lost_tag", "changed_field", "extra_ring"])
+@pytest.mark.parametrize("bug", ["wrong_ring", "lost_tag", "changed_field", "extra_ring", "skipped_conversion"])
 def test_self_check_refuses_a_wrong_move(old_db, monkeypatch, bug):
     real_add, real_legacy = rings.add_first, rings.from_legacy
 
@@ -192,6 +192,8 @@ def test_self_check_refuses_a_wrong_move(old_db, monkeypatch, bug):
         return rid
 
     def from_legacy(conn, row, counts, can_star=True):
+        if bug == "skipped_conversion":  # 圈建好了，标题 / ⭐ / 便利贴一样没写
+            return {}
         done = real_legacy(conn, row, counts, can_star)
         if bug == "lost_tag" and row["id"] == 3:
             conn.execute("UPDATE memories SET tags = '' WHERE id = 3")
@@ -243,12 +245,13 @@ def test_cli_trial_run_on_copy_and_compare_with_original(old_db, capsys):
     assert {k: result[k] for k in (
         "memories_before", "memories_after", "same_ids", "rings", "cards_with_one_ring",
         "first_ring_same_as_original", "content_unchanged", "other_fields_unchanged", "tag_pairs_before",
-        "tag_pairs_after", "tags_lost", "anchors_before", "starred_after", "titles_after", "titles_not_from_topic",
+        "tag_pairs_after", "tags_lost", "anchors_before", "titles_expected", "titles_after", "title_mismatch",
+        "starred_expected", "starred_after", "starred_mismatch", "tags_mismatch",
     )} == {
         "memories_before": 6, "memories_after": 6, "same_ids": True, "rings": 6, "cards_with_one_ring": 6,
         "first_ring_same_as_original": 6, "content_unchanged": 6, "other_fields_unchanged": 6, "tag_pairs_before": 4,
-        "tag_pairs_after": 8, "tags_lost": 0, "anchors_before": 2, "starred_after": 2, "titles_after": 2,
-        "titles_not_from_topic": 0,
+        "tag_pairs_after": 8, "tags_lost": 0, "anchors_before": 2, "titles_expected": 2, "titles_after": 2,
+        "title_mismatch": [], "starred_expected": 2, "starred_after": 2, "starred_mismatch": [], "tags_mismatch": [],
     }
     assert all(result["tables_unchanged"].values()) and len(result["sample"]) == 5
     assert result["integrity_check"] == "ok" and result["foreign_key_problems"] == 0 and result["ok"] is True
@@ -259,6 +262,50 @@ def test_cli_trial_run_on_copy_and_compare_with_original(old_db, capsys):
     with get_conn() as conn:
         conn.execute("UPDATE memory_rings SET content = '编的：被改坏的' WHERE memory_id = 2")
     assert migrate_rings.compare(str(original), copy)["ok"] is False
+
+
+@pytest.mark.parametrize("tamper, field, ids", [
+    ("UPDATE memories SET title = NULL WHERE id = 1", "title_mismatch", [1]),        # 漏标题
+    ("UPDATE memories SET title = '编的标题' WHERE id = 2", "title_mismatch", [2]),  # 多出标题
+    ("UPDATE memories SET starred = 0 WHERE id = 6", "starred_mismatch", [6]),      # 漏⭐
+    ("UPDATE memories SET starred = 1 WHERE id = 2", "starred_mismatch", [2]),      # 错⭐
+    ("UPDATE memories SET tags = '家人' WHERE id = 3", "tags_mismatch", [3]),        # 漏主题便利贴（原有的没少）
+])
+def test_compare_catches_missing_or_wrong_new_fields(old_db, tamper, field, ids):
+    """Codex 审出的漏洞：新栏没搬完整也不能算核对通过。"""
+    original = old_db / "original.db"
+    shutil.copy(old_db / "old.db", original)
+    init_db()
+    with get_conn() as conn:
+        conn.execute(tamper)
+    result = migrate_rings.compare(str(original), str(old_db / "old.db"))
+    assert result[field] == ids and result["ok"] is False
+    assert result["tags_lost"] == 0 and result["content_unchanged"] == 6  # 老的几项照样全过
+
+
+def test_compare_after_old_program_came_back(old_db, capsys):
+    """原备份本身已经搬过一次，又有退回旧程序期间新存的卡：搬过的三样都该原样，只核新搬的。"""
+    init_db()
+    conn = sqlite3.connect(db_path())
+    conn.execute(
+        """INSERT INTO memories (id, date, content, tags, tier, topic) VALUES
+           (7, '2026-10-19', '编的：回退期间存的赏樱', '', 'anchor', '赏樱')"""
+    )
+    conn.commit()
+    conn.close()
+    original = old_db / "original.db"
+    shutil.copy(old_db / "old.db", original)
+    assert migrate_rings.main(["x", str(old_db / "old.db"), "--against", str(original)]) == 0
+    result = migrate_rings.compare(str(original), str(old_db / "old.db"))
+    assert result["ok"] is True and result["titles_expected"] == 2 and result["starred_expected"] == 3
+    assert _rows("SELECT title, tags, starred FROM memories WHERE id = 7") == [{"title": None, "tags": "赏樱", "starred": 1}]
+
+
+def test_cli_returns_1_when_self_check_fails(old_db, monkeypatch, capsys):
+    monkeypatch.setattr(rings, "from_legacy", lambda conn, row, counts, can_star=True: {})
+    assert migrate_rings.main(["x", str(old_db / "old.db")]) == 1
+    assert "没按规矩搬" in capsys.readouterr().err
+    assert _rows("SELECT COUNT(*) AS n FROM memory_rings") == [{"n": 0}]  # 整个回滚，一圈没写
 
 
 def test_cli_refuses_bad_arguments(old_db, capsys):

@@ -8,8 +8,8 @@ init_db() 每次启动都会调 migrate()。只加不删、可以重复跑：
 - 只有一圈的卡，圈跟卡对不上（只会发生在退回旧程序期间改过内容 / 日期）：让这一圈跟上卡，编号写进报告。
 - 来源、上一版、最近动静、连线、语义指纹都不碰；不改 updated_at、不刷屏最近动静、不重算指纹（按圈算是 PR2）。
 - 整个一个事务。提交前先自检：每张卡都有圈、只有一圈的和卡逐字一样、原有各栏没变、标签只多不少、
-  搬过的卡没被动、圈数 = 原有 + 新搬、来源 / 上一版 / 动静 / 连线 / 指纹 / 浮现冷却的条数没变；
-  不对就整个回滚并报错（程序起不来，自动部署会退回上一版）。
+  每张卡的标题 / ⭐ / 便利贴跟按规矩另算的一份对得上、搬过的卡没被动、圈数 = 原有 + 新搬、
+  来源 / 上一版 / 动静 / 连线 / 指纹 / 浮现冷却的条数没变；不对就整个回滚并报错（程序起不来，自动部署会退回上一版）。
 
 试跑（只在备份拷贝上跑）：python -m app.migrate_rings /path/to/copy.db --against /path/to/original.db
 先搬拷贝、打印报告，再拿只读打开的原备份逐条核对，打印要核对的数字。
@@ -20,7 +20,7 @@ import os
 import random
 import sqlite3
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from app import memories, rings
@@ -60,13 +60,48 @@ def _tag_set(tags: str | None) -> set[str]:
     return {t for t in memories.normalize_tags(tags or "").split(",") if t}
 
 
+def _col(row, key):
+    return row[key] if key in row.keys() else None  # 很老的备份里没有这一栏
+
+
+def _card_now(row) -> tuple:
+    """一张卡的（标题, ⭐, 便利贴）：空标题一律算 None，便利贴按集合比。"""
+    return (_col(row, "title") or None, _col(row, "starred") or 0, _tag_set(row["tags"]))
+
+
+def _expected(rows: dict, moved_before: set[int]) -> dict:
+    """照方案规矩，从搬之前的样子独立算出每张卡搬完该有的（标题, ⭐, 便利贴）。
+    不调 rings.from_legacy：搬家自检和试跑核对都拿这一份去对它的结果。搬之前就有圈的卡算搬过，三样都该原样不动。"""
+    live: Counter = Counter()
+    for r in rows.values():
+        topic = (r["topic"] or "").strip()
+        if topic and not _col(r, "deleted_at"):
+            live[topic] += 1
+    out = {}
+    for i, r in rows.items():
+        title, starred, tags = _card_now(r)
+        topic = (r["topic"] or "").strip()
+        if i not in moved_before:
+            if topic and live[topic] + (1 if _col(r, "deleted_at") else 0) == 1:
+                title = title or topic
+            elif topic:
+                tags = tags | _tag_set(topic)
+            if r["tier"] == "anchor":
+                starred = 1
+        out[i] = (title, starred, tags)
+    return out
+
+
 def _state(conn) -> dict:
     rows = conn.execute("SELECT * FROM memories").fetchall()
     return {
+        "rows": {r["id"]: r for r in rows},
         "fields": {r["id"]: tuple(r[k] for k in KEPT_FIELDS) for r in rows},
         "tags": {r["id"]: _tag_set(r["tags"]) for r in rows},
         "card": {r["id"]: (r["title"], r["starred"], r["tags"]) for r in rows},  # 只有这次新搬的卡能变
+        "now": {r["id"]: _card_now(r) for r in rows},
         "rings": conn.execute("SELECT COUNT(*) FROM memory_rings").fetchone()[0],
+        "moved_before": {r[0] for r in conn.execute("SELECT DISTINCT memory_id FROM memory_rings")},
         "tables": {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in KEPT_TABLES},
     }
 
@@ -88,6 +123,10 @@ def _check(conn, before: dict, moved: list[int]) -> None:
         problems.append(f"搬过的卡又被动了：{again}")
     if after["rings"] != before["rings"] + len(moved):
         problems.append(f"圈数不对：原有 {before['rings']} + 新搬 {len(moved)} ≠ {after['rings']}")
+    expected = _expected(before["rows"], before["moved_before"])
+    wrong = sorted(i for i, want in expected.items() if after["now"].get(i) != want)
+    if wrong:
+        problems.append(f"标题 / ⭐ / 便利贴没按规矩搬：{wrong}")
     tables = [t for t in KEPT_TABLES if after["tables"][t] != before["tables"][t]]
     if tables:
         problems.append(f"这些表的条数变了：{tables}")
@@ -187,6 +226,14 @@ def compare(original: str, migrated: str, sample: int = 5) -> dict:
         for r in b.execute("SELECT * FROM memory_rings ORDER BY id"):
             by_card[r["memory_id"]].append(r)
         both = sorted(set(old) & set(new))
+        had_rings = a.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_rings'").fetchone()
+        moved_before = {r[0] for r in a.execute("SELECT DISTINCT memory_id FROM memory_rings")} if had_rings else set()
+        expected = _expected(old, moved_before)
+        mismatch = {"title": [], "starred": [], "tags": []}
+        for i in both:
+            for name, got, want in zip(mismatch, _card_now(new[i]), expected[i]):
+                if got != want:
+                    mismatch[name].append(i)
 
         def first_same(i: int) -> bool:
             rs = by_card.get(i)
@@ -207,11 +254,13 @@ def compare(original: str, migrated: str, sample: int = 5) -> dict:
             "tag_pairs_after": sum(len(_tag_set(new[i]["tags"])) for i in new),
             "tags_lost": sum(len(_tag_set(old[i]["tags"]) - _tag_set(new[i]["tags"])) for i in both),
             "anchors_before": sum(1 for i in old if old[i]["tier"] == "anchor"),
-            "starred_after": sum(1 for i in new if new[i]["starred"]),
+            "titles_expected": sum(1 for v in expected.values() if v[0]),
             "titles_after": sum(1 for i in new if new[i]["title"]),
-            "titles_not_from_topic": sum(
-                1 for i in both if new[i]["title"] and new[i]["title"] != (old[i]["topic"] or "").strip()
-            ),
+            "title_mismatch": mismatch["title"],
+            "starred_expected": sum(v[1] for v in expected.values()),
+            "starred_after": sum(1 for i in new if new[i]["starred"]),
+            "starred_mismatch": mismatch["starred"],
+            "tags_mismatch": mismatch["tags"],
             "tables_unchanged": {
                 t: [tuple(r) for r in a.execute(f"SELECT * FROM {t} ORDER BY rowid")]
                 == [tuple(r) for r in b.execute(f"SELECT * FROM {t} ORDER BY rowid")]
@@ -229,7 +278,7 @@ def compare(original: str, migrated: str, sample: int = 5) -> dict:
         out["same_ids"] and out["memories_after"] == n and out["cards_with_one_ring"] == n
         and out["first_ring_same_as_original"] == n and out["content_unchanged"] == n
         and out["other_fields_unchanged"] == n and out["tags_lost"] == 0
-        and out["tag_pairs_after"] >= out["tag_pairs_before"] and out["titles_not_from_topic"] == 0
+        and out["tag_pairs_after"] >= out["tag_pairs_before"] and not any(mismatch.values())
         and all(out["tables_unchanged"].values()) and all(s["first_ring_same"] for s in out["sample"])
         and out["integrity_check"] == "ok" and out["foreign_key_problems"] == 0
     )
@@ -260,6 +309,9 @@ def main(argv: list[str]) -> int:
     conn = get_conn()
     try:
         report = migrate_all(conn)[1]  # 跟启动时一模一样：先补表补列、单库搬家（早就搬过的会跳过），再年轮卡
+    except RuntimeError as err:  # 自检没过：搬家整个回滚了（建表补列已经做了，数据没动）
+        print(str(err), file=sys.stderr)
+        return 1
     finally:
         conn.close()
     if report is None:
