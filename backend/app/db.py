@@ -56,12 +56,29 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at  TEXT DEFAULT (datetime('now','+8 hours')),  -- 存的时间（系统记，平时不显示）
     updated_at  TEXT,                    -- 最后改的时间；没改过为空
     deleted_at  TEXT,                    -- 删了先藏起来：非空 = 已删，过了恢复期限才真删
-    deleted_by  TEXT                     -- xuan / ke
+    deleted_by  TEXT,                    -- xuan / ke
+    title       TEXT,                    -- 卡的标题（年轮卡，2026-10）；空 = 网页显示正文开头
+    starred     INTEGER NOT NULL DEFAULT 0  -- ⭐收藏
 );
 CREATE INDEX IF NOT EXISTS idx_mem_date  ON memories(date);
 CREATE INDEX IF NOT EXISTS idx_mem_tier  ON memories(tier);
 CREATE INDEX IF NOT EXISTS idx_mem_topic ON memories(topic);
 CREATE INDEX IF NOT EXISTS idx_mem_space ON memories(space);
+
+-- 年轮（app/rings.py）：一件事一张卡（memories 一行），下面一圈一圈是哪天、发生了什么。
+-- 卡片日期 = 最新一圈的日期。deleted_at 是删掉某一圈（整张卡删除仍看 memories.deleted_at）；
+-- 卡真删时圈跟着级联删。
+CREATE TABLE IF NOT EXISTS memory_rings (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id  INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    date       TEXT NOT NULL,          -- 这一圈的事发生（或说出口）的那天，不写未来的日子
+    content    TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','+8 hours')),
+    updated_at TEXT,
+    deleted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rings_mem  ON memory_rings(memory_id, id);
+CREATE INDEX IF NOT EXISTS idx_rings_date ON memory_rings(date);
 
 CREATE TABLE IF NOT EXISTS memory_sources (
     memory_id  INTEGER NOT NULL REFERENCES memories(id),
@@ -185,26 +202,41 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE memory_drafts ADD COLUMN links TEXT DEFAULT ''")
 
 
-MEMORY_NEW_COLUMNS = ("updated_at", "deleted_at", "deleted_by")  # 单库改造（2026-10）加的列
+MEMORY_NEW_COLUMNS = {  # 后来加的列 → 补列时的类型
+    "updated_at": "TEXT", "deleted_at": "TEXT", "deleted_by": "TEXT",  # 单库改造（2026-10）
+    "title": "TEXT", "starred": "INTEGER NOT NULL DEFAULT 0",          # 年轮卡（2026-10）
+}
 
 
 def _add_memory_columns(conn: sqlite3.Connection) -> None:
-    """老库的 memories 补单库改造的三列（CREATE TABLE IF NOT EXISTS 不会给已有表加列）。"""
+    """老库的 memories 补后来加的列（CREATE TABLE IF NOT EXISTS 不会给已有表加列）。"""
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
-    for col in MEMORY_NEW_COLUMNS:
+    for col, decl in MEMORY_NEW_COLUMNS.items():
         if cols and col not in cols:
-            conn.execute(f"ALTER TABLE memories ADD COLUMN {col} TEXT")
+            conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {decl}")
+
+
+def upgrade(conn: sqlite3.Connection) -> None:
+    """建表 + 就地补列，不搬数据。"""
+    _migrate(conn)
+    _add_memory_columns(conn)
+    conn.executescript(SCHEMA + EDGES_DDL)
+
+
+def migrate_all(conn: sqlite3.Connection) -> tuple[dict | None, dict | None]:
+    """启动时的全套：建表补列 → 单库搬家 → 年轮卡搬家，返回两份搬家报告（不用搬的是 None）。
+    两次搬家都只在还有没搬的东西时才动手，所以每次启动都跑一遍没关系。"""
+    from app import migrate_rings, migrate_single_store  # 搬家要用 memories 的工具函数，延迟导入免循环
+
+    upgrade(conn)
+    return migrate_single_store.migrate(conn), migrate_rings.migrate(conn)
 
 
 def init_db() -> dict | None:
-    """建表 + 就地升级；老库第一次跑到这里时顺带做单库搬家，返回搬家报告（不用搬返回 None）。"""
-    from app import migrate_single_store  # 搬家要用 memories 的工具函数，延迟导入免循环
-
+    """建表 + 就地升级 + 搬家（见 migrate_all）。返回单库搬家的报告（老库第一次才有，平时 None）；
+    年轮卡搬家的报告自己打日志、写文件。"""
     conn = get_conn()
     try:
-        _migrate(conn)
-        _add_memory_columns(conn)
-        conn.executescript(SCHEMA + EDGES_DDL)
-        return migrate_single_store.migrate(conn)
+        return migrate_all(conn)[0]
     finally:
         conn.close()

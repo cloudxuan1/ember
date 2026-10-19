@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from datetime import date as _date
 from datetime import datetime, timedelta, timezone
 
-from app import activity, embeddings, history, settings
+from app import activity, embeddings, history, rings, settings
 from app.db import get_conn
 
 SUMMARY_LEN = 120  # search/list 返回的目录条目里 content 的截断长度
@@ -167,6 +167,13 @@ def _short(row) -> dict:
     return item
 
 
+# 三个抽屉（年轮卡，2026-10）：键名 → 网页上叫什么。personal 键名不变（老数据和工具都认它）；
+# 其余空间（ember / vps / …）都归「项目」抽屉。默认搜索带上长期是 PR2，网页切抽屉是 PR4。
+LONGTERM = "longterm"
+DRAWER_LABELS = {LONGTERM: "长期", "personal": "日常"}
+PROJECT_LABEL = "项目"
+
+
 def resolve_space(space: str | None) -> str | None:
     """检索空间语义（V6 空间隔离）：personal 是核心底色，不该被项目记忆稀释。
 
@@ -313,6 +320,7 @@ def save_memory(
             fields,
         )
         memory_id = cur.lastrowid
+        rings.start_card(c, memory_id, by)  # 第一圈 + 老参数 topic / tier 换成标题 / 便利贴 / ⭐
         if source_ref or quote:
             c.execute(
                 "INSERT INTO memory_sources (memory_id, source_ref, quote) VALUES (?, ?, ?)",
@@ -620,6 +628,8 @@ def _apply(c, row, fields: dict) -> None:
         [*fields.values(), row["id"]],
     )
     _touch(c, row["id"])
+    if "content" in fields or "date" in fields:
+        rings.follow_card(c, row["id"])
     if any(k in fields and fields[k] != row[k] for k in ("content", "topic", "tags")):
         merged = {**dict(row), **fields}
         if not embeddings.embed_memory(c, row["id"], merged["content"], topic=merged["topic"], tags=merged["tags"]):
@@ -664,6 +674,8 @@ def update_memory(
         elif rewrite:  # 只是把老数据存成规整的样子（日期补零、标签去空格）：顺手写回，不算一次改
             sets = ", ".join(f"{k} = ?" for k in rewrite)
             c.execute(f"UPDATE memories SET {sets} WHERE id = ?", [*rewrite.values(), memory_id])
+            if "content" in rewrite or "date" in rewrite:
+                rings.follow_card(c, memory_id)
     if conn is not None:
         return {"id": memory_id, "changed": list(changed)}
     return {"id": memory_id, "changed": list(changed), "memory": get_memory(memory_id)}
