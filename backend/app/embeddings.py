@@ -76,7 +76,10 @@ def embed_texts(texts: list[str], timeout: float = EMBED_TIMEOUT) -> list[list[f
                 raise ValueError("向量格式或维度不一致")
             if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in vector):
                 raise ValueError("向量必须是有限数值")
-            _pack(vector)  # float32 溢出也算坏回包，别等存到一半才发现
+            # 有些 Python / C Runtime 溢出时转成 inf 而不抛错，打包后也要查一次。
+            packed = _pack(vector)
+            if not all(math.isfinite(v) for v in struct.unpack(f"{len(vector)}f", packed)):
+                raise ValueError("向量超出 float32 范围")
             dim = len(vector)
     except (TypeError, ValueError, OverflowError, struct.error) as err:
         raise RuntimeError("embedding 返回了无效向量，整批未写入") from err

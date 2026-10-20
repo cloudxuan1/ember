@@ -778,3 +778,20 @@ def test_invalid_vector_response_does_not_roll_back_edit(monkeypatch):
     assert _ring_rows(mid) == []
     with get_conn() as c:
         assert c.execute("SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (mid,)).fetchone()[0] == 0
+
+
+def test_float32_overflow_packed_as_infinity_is_still_a_soft_failure(monkeypatch):
+    real_pack = embeddings._pack
+
+    def pack_as_native_cast(vector):  # 模拟 Python 3.12 的 native float 转换：溢出为 inf，不抛异常
+        return real_pack([float("inf") if v == 1e100 else v for v in vector])
+
+    monkeypatch.setattr(embeddings, "_pack", pack_as_native_cast)
+    monkeypatch.setattr(embeddings, "embed_texts", REAL_EMBED_TEXTS)
+    monkeypatch.setattr(embeddings.httpx, "post",
+                        lambda url, json, **kw: _InvalidVectorResponse(len(json["input"]), [1e100, 0.0, 0.0, 1e-6]))
+    saved = memories.save_memory(date="2026-10-01", content="编的：不同运行环境下也要保存成功")
+    assert saved["saved"] is True and saved["embedded"] is False
+    assert memories.get_memory(saved["id"]) is not None and _ring_rows() == []
+    with get_conn() as c:
+        assert c.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()[0] == 0
