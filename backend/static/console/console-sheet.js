@@ -374,8 +374,9 @@
       if (!ok || S.sheet !== sh) {
         return;
       }
-      api('DELETE', '/api/memories/' + sh.id).then(function () {
-        toast('删掉了，最近动静里还能恢复');
+      var id = sh.id;
+      api('DELETE', '/api/memories/' + id).then(function () {
+        toast('删掉了整张卡', { label: '撤回', run: function () { undoDeleteCard(id); } });
         if (S.sheet === sh) {
           closeSheet();
         }
@@ -387,6 +388,17 @@
           afterChange(null);
         }
       });
+    });
+  }
+
+  /** 防手滑：删整张卡后提示条上的「撤回」，跟最近动静里的「恢复」是同一件事 */
+  function undoDeleteCard(id) {
+    api('POST', '/api/memories/' + id + '/restore').then(function () {
+      toast('撤回了，#' + id + ' 回来了');
+      afterChange(null);
+    }, function (err) {
+      toast(err.message);
+      afterChange(null);
     });
   }
 

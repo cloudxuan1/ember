@@ -558,6 +558,10 @@ def test_ring_endpoints(client, today):
     assert last.status_code == 400 and "最后一圈" in last.json()["error_description"]
     act = _acts(client)[0]
     assert (act["action"], act["can"], act["title"]) == ("edit", "revert", "去海边住一晚")
+    undo = client.post(f"/api/memories/{mid}/revert", json={  # 提示条上的「撤回」
+        "history_id": gone.json()["history_id"], "expect_updated_at": gone.json()["memory"]["updated_at"]})
+    assert undo.status_code == 200
+    assert [r["content"] for r in undo.json()["memory"]["rings"]] == ["编的：约好等天凉了去海边", "编的：十月存了两家"]
 
 
 def test_ring_and_star_endpoints_need_the_browser_login(gated):

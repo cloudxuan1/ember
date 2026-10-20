@@ -256,16 +256,43 @@
       return;
     }
     setBusy(e, true);
-    api('DELETE', '/api/memories/' + sh.id + '/rings/' + e.id, { expect_updated_at: sh.mem.updated_at || null }).then(function (data) {
-      done(sh, e, data, null, '删掉了这一圈，最近动静里能回退');
+    var ringId = e.id;
+    api('DELETE', '/api/memories/' + sh.id + '/rings/' + ringId, { expect_updated_at: sh.mem.updated_at || null }).then(function (data) {
+      // 防手滑：提示条上带「撤回」，点了就退回删之前那一版（这一圈连同日子、内容原样回来）
+      done(sh, e, data, null, '删掉了这一圈', { label: '撤回', run: function () { undoDelete(sh.id, ringId, data); } });
     }, function (err) {
       failed(sh, e, err);
     });
   }
 
+  function undoDelete(id, ringId, data) {
+    api('POST', '/api/memories/' + id + '/revert', {
+      history_id: data.history_id, expect_updated_at: data.memory.updated_at
+    }).then(function (back) {
+      toast('撤回了，这一圈回来了');
+      var sh = S.sheet;
+      if (sh && sh.id === id && sh.mode === 'view') {
+        sh.mem = back.memory;
+        sh.full = true;
+        sh.req++;
+        sh.flash = ringId;
+        Sheet().renderSheet();
+        setTimeout(function () {
+          if (sh.flash === ringId) {
+            sh.flash = null;
+          }
+        }, FLASH_MS);
+      }
+      App.afterChange(false);
+    }, function (err) {
+      toast(err.status === 409 ? '这张卡后来又改过，撤回不了；最近动静里还能回退' : err.message);
+      App.afterChange(null);
+    });
+  }
+
   /** 存好 / 删好：面板换成新的，那一圈闪一下，后面的列表跟着变（卡的日子 = 最新一圈，混着来的位置也重排） */
-  function done(sh, e, data, flashId, msg) {
-    toast(msg);
+  function done(sh, e, data, flashId, msg, action) {
+    toast(msg, action);
     if (S.sheet === sh && sh.ring === e) {
       sh.mem = data.memory;
       sh.full = true;

@@ -392,7 +392,9 @@
 
   // ---------- 提示条 ----------
   var toastTimer = null;
-  function toast(msg) {
+  var UNDO_MS = 6000; // 带「撤回」的多留一会儿，手滑了来得及点
+  /** toast('删掉了这一圈', {label: '撤回', run: fn})：第二个参数可选，给了就在提示条右边放一个按钮，点一次就收起 */
+  function toast(msg, action) {
     var wrap = document.getElementById('toastwrap');
     if (!wrap || !msg) {
       return;
@@ -401,11 +403,23 @@
       clearTimeout(toastTimer);
     }
     clear(wrap);
-    wrap.appendChild(h('span', { class: 'glass toast', text: msg }));
-    toastTimer = setTimeout(function () {
+    var done = function () {
       clear(wrap);
-      toastTimer = null;
-    }, Math.min(4000, 1900 + String(msg).length * 40));
+      if (toastTimer) {
+        clearTimeout(toastTimer);
+        toastTimer = null;
+      }
+    };
+    wrap.appendChild(h('span', { class: action ? 'glass toast toast-act' : 'glass toast' },
+      h('span', { text: msg }),
+      action ? h('button', {
+        class: 'press toast-undo', type: 'button',
+        onclick: function () {
+          done();
+          action.run();
+        }
+      }, action.label) : null));
+    toastTimer = setTimeout(done, action ? UNDO_MS : Math.min(4000, 1900 + String(msg).length * 40));
   }
 
   // ---------- 确认弹窗 ----------

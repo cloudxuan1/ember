@@ -114,6 +114,12 @@
 /* 「存」看着 38px，手指能点到的补到 44px（console.css 没给 .btn-primary 这一条） */
 .edbtns .btn-primary::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: 44px; transform: translate(-50%, -50%); }
 
+/* ---------- 提示条带「撤回」（防手滑：删一圈 / 删整张卡以后） ---------- */
+.toast-act { display: inline-flex; align-items: center; gap: 14px; padding-right: 10px; pointer-events: auto; }
+.toast-undo { position: relative; flex: none; height: 30px; padding: 0 12px; border-radius: 999px; font-size: 14px; font-weight: 700; background: var(--accent-soft); color: var(--accent-ink); }
+/* 看着 30px，手指能点到的补到 44px */
+.toast-undo::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: 44px; transform: translate(-50%, -50%); }
+
 /* ---------- 面板往上推：展开到顶（顶上只留状态栏 + 8px）；拖着 / 弹着的时候高度由 JS 一帧一帧给 ---------- */
 .sheet.sheet-full { height: calc(100vh - env(safe-area-inset-top, 0px) - 8px); height: calc(100dvh - env(safe-area-inset-top, 0px) - 8px); max-height: none; }
 .sheet.sheet-dragging { max-height: none; }

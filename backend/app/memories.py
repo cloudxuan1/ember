@@ -813,8 +813,8 @@ def edit_ring(memory_id: int, ring_id: int, date, content, by: str = "xuan", exp
 
 
 def delete_ring(memory_id: int, ring_id: int, by: str = "xuan", expect_updated_at=_UNSET) -> dict | None:
-    """删某一圈：先藏起来，进上一版、记动静，回退能找回来。最后一圈不让单独删（那等于删整张卡）。
-    卡或这一圈不在了返回 None。"""
+    """删某一圈：先藏起来，进上一版、记动静，回退能找回来（返回的 history_id 就是网页提示条上「撤回」退回去的那一版）。
+    最后一圈不让单独删（那等于删整张卡）。卡或这一圈不在了返回 None。"""
     with _write_tx() as c:
         row = _live_row(c, memory_id, expect_updated_at)
         ring = rings.find(c, memory_id, ring_id) if row is not None else None
@@ -826,7 +826,7 @@ def delete_ring(memory_id: int, ring_id: int, by: str = "xuan", expect_updated_a
         rings.drop(c, ring_id)
         _follow_rings(c, row)
         activity.log(c, by, "edit", memory_id, row["title"] or ring["content"], history_id=hid)
-    return {"id": memory_id, "ring_id": ring_id, "deleted": True, "memory": get_memory(memory_id)}
+    return {"id": memory_id, "ring_id": ring_id, "deleted": True, "history_id": hid, "memory": get_memory(memory_id)}
 
 
 def set_star(memory_id: int, starred, by: str = "xuan") -> dict | None:
