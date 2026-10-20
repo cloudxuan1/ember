@@ -6,11 +6,12 @@
 
 import json
 
-from app import settings
+from app import rings, settings
 from app.db import get_conn
 
-# 一版里存哪些字段 = 网页 / 小克能改的字段（编号、存的时间、删除状态不算内容，不进历史）
-SNAPSHOT_FIELDS = ("date", "content", "tags", "tier", "topic", "space", "start_date", "end_date")
+# 一版里存哪些字段 = 网页 / 小克能改的字段（编号、存的时间、删除状态不算内容，不进历史；
+# ⭐ 是书签，点来点去不挤掉真正的上一版）。另外连那时还在的圈一起存（年轮卡 PR4），回退时圈也回去。
+SNAPSHOT_FIELDS = ("date", "content", "tags", "tier", "topic", "space", "start_date", "end_date", "title")
 
 
 def snapshot(row) -> dict:
@@ -18,10 +19,11 @@ def snapshot(row) -> dict:
 
 
 def push(conn, row, by: str, action: str = "edit") -> int:
-    """把 row（改前的记忆整行）存成一版，按设置只留最近 N 版，返回这一版的编号。"""
+    """把 row（改前的记忆整行）连同那时的圈存成一版，按设置只留最近 N 版，返回这一版的编号。"""
+    snap = snapshot(row) | {"rings": rings.snapshot_rings(conn, row["id"])}
     cur = conn.execute(
         "INSERT INTO memory_history (memory_id, snapshot, replaced_by, action) VALUES (?, ?, ?, ?)",
-        (row["id"], json.dumps(snapshot(row), ensure_ascii=False), by, action),
+        (row["id"], json.dumps(snap, ensure_ascii=False), by, action),
     )
     trim(conn, row["id"], settings.get_settings(conn)["history_keep"])
     return cur.lastrowid

@@ -172,6 +172,12 @@ def _short(row) -> dict:
 LONGTERM = "longterm"
 DRAWER_LABELS = {LONGTERM: "长期", "personal": "日常"}
 PROJECT_LABEL = "项目"
+# 四张饼便利贴（方案第二节）：网页的「饼」按钮 = 贴了其中任意一张；整张比，正文里写着「南瓜饼」不算
+PIE_TAGS = ("筑巢饼", "连理饼", "养成饼", "远方饼")
+
+
+def drawer_of(space: str | None) -> str:
+    return DRAWER_LABELS.get(space or "personal", PROJECT_LABEL)
 
 
 def resolve_space(space: str | None) -> str | None:
@@ -277,6 +283,8 @@ def _clean_fields(edits: dict) -> dict:
         fields["tags"] = normalize_tags(str(fields["tags"] or ""))
     if "topic" in fields:
         fields["topic"] = str(fields["topic"] or "").strip()
+    if "title" in fields:  # 空 = 没写标题（网页显示正文开头）
+        fields["title"] = str(fields["title"] or "").strip() or None
     if "space" in fields:
         fields["space"] = str(fields["space"] or "").strip() or "personal"
     for k in ("start_date", "end_date"):  # 表单送来的空串 = 清掉区间端点
@@ -300,13 +308,14 @@ def save_memory(
     links_by: str = "mcp",
     by: str = "ke",
     conn=None,
+    title: str | None = None,
 ) -> dict:
-    """存一条，直接进库、马上能搜到。内容和发生日期缺一样存不进去（ValueError）。
+    """存一张卡，直接进库、马上能搜到；content / date 是第一圈。内容和发生日期缺一样存不进去（ValueError）。
     conn 给定时借用调用方的连接和事务（不提交，commit 归调用方管）——批量存用它保证整批原子。"""
     fields = _clean_fields({
         "date": date, "content": content, "tags": tags or "", "tier": tier or "normal",
         "topic": topic or "", "space": space or "personal",
-        "start_date": start_date, "end_date": end_date,
+        "start_date": start_date, "end_date": end_date, "title": title,
     })
     links = _validate_links(links)  # 先校验后落库，坏 links 不留半条记忆
     for name, v in (("source_ref", source_ref), ("quote", quote)):
@@ -315,8 +324,8 @@ def save_memory(
 
     with _write_tx(conn) as c:
         cur = c.execute(
-            """INSERT INTO memories (date, content, tags, tier, topic, space, start_date, end_date)
-               VALUES (:date, :content, :tags, :tier, :topic, :space, :start_date, :end_date)""",
+            """INSERT INTO memories (date, content, tags, tier, topic, space, start_date, end_date, title)
+               VALUES (:date, :content, :tags, :tier, :topic, :space, :start_date, :end_date, :title)""",
             fields,
         )
         memory_id = cur.lastrowid
@@ -359,12 +368,14 @@ def save_many(items: list[dict], by: str = "ke") -> list[int]:
 
 
 def get_memory(memory_id: int, include_deleted: bool = False) -> dict | None:
-    """一条记忆的全文 + 来源 + 关系边。删了的（藏起来的）默认当不存在。"""
+    """一条记忆的全文 + 年轮（还在的圈，从早到晚）+ 来源 + 关系边。删了的（藏起来的）默认当不存在。"""
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row is None or (row["deleted_at"] and not include_deleted):
             return None
         memory = dict(row)
+        memory["drawer"] = drawer_of(row["space"])
+        memory["rings"] = rings.live(conn, memory_id)
         memory["sources"] = [
             dict(s)
             for s in conn.execute(
@@ -533,10 +544,15 @@ def browse_memories(
     date_from: str | None = None,
     date_to: str | None = None,
     tag: str | None = None,
+    starred: bool = False,
+    pie: bool = False,
 ) -> dict:
-    """网页"记忆库"：默认跨全库（管理视角，与检索的 personal 默认不同），content 不截断。
-    q 是关键词筛选（content/tags/topic 子串）；q 写成 "#123" 或纯数字时也按编号找。
-    tag 只看带这个标签的。按发生日期新的在前，同一天编号大的在前。"""
+    """网页"记忆库"：默认跨全库（管理视角，与检索的 personal 默认不同），content 不截断，
+    每张卡带上还在的圈（从早到晚）。
+    q 是关键词筛选（标题 / content（含每一圈）/ tags / topic 子串）；q 写成 "#123" 或纯数字时也按编号找。
+    tag 只看带这个标签的；starred 只看⭐；pie 只看贴了四张饼便利贴之一的（整张比）。
+    按日期筛看圈（「混着来」）：任意一圈落在范围里这张卡就在，按范围里最新那一圈的日子排；
+    不筛日期按卡片日期（= 最新一圈）排。都是新的在前，同一天编号大的在前。"""
     conds, params = [LIVE], []
     if space and space != "all":
         conds.append("space = ?")
@@ -544,19 +560,29 @@ def browse_memories(
     if q and q.strip():
         q = q.strip()
         number = q.lstrip("#")
-        like_cond = "(content LIKE ? OR tags LIKE ? OR topic LIKE ?)"
+        like_cond = "(content LIKE ? OR tags LIKE ? OR topic LIKE ? OR title LIKE ?)"
         if re.fullmatch(r"[0-9]{1,19}", number) and int(number) <= MAX_ID:
             conds.append(f"(id = ? OR {like_cond})")
-            params += [int(number)] + [f"%{q}%"] * 3
+            params += [int(number)] + [f"%{q}%"] * 4
         else:
             conds.append(like_cond)
-            params += [f"%{q}%"] * 3
+            params += [f"%{q}%"] * 4
     if tag:
         conds.append("(',' || tags || ',') LIKE ?")
         params.append(f"%,{tag.strip()},%")
-    date_conds, date_params = date_conditions(date_from, date_to)
-    conds += date_conds
-    params += date_params
+    if starred:
+        conds.append("starred = 1")
+    if pie:
+        conds.append("(" + " OR ".join(["(',' || tags || ',') LIKE ?"] * len(PIE_TAGS)) + ")")
+        params += [f"%,{t},%" for t in PIE_TAGS]
+    ring_conds, ring_params = date_conditions(date_from, date_to, col="r.date")
+    order, order_params = "date DESC, id DESC", []
+    if ring_conds:
+        in_range = "r.memory_id = memories.id AND r.deleted_at IS NULL AND " + " AND ".join(ring_conds)
+        conds.append(f"EXISTS (SELECT 1 FROM memory_rings r WHERE {in_range})")
+        params += ring_params
+        order = f"(SELECT MAX(r.date) FROM memory_rings r WHERE {in_range}) DESC, id DESC"
+        order_params = ring_params
     where = "WHERE " + " AND ".join(conds)
     page = max(page, 1)
     page_size = min(max(page_size, 1), BROWSE_PAGE_MAX)
@@ -564,18 +590,22 @@ def browse_memories(
         total = conn.execute(f"SELECT COUNT(*) FROM memories {where}", params).fetchone()[0]
         live_total = conn.execute(f"SELECT COUNT(*) FROM memories WHERE {LIVE}").fetchone()[0]
         rows = conn.execute(
-            f"SELECT * FROM memories {where} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?",
-            params + [page_size, (page - 1) * page_size],
+            f"SELECT * FROM memories {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            params + order_params + [page_size, (page - 1) * page_size],
         ).fetchall()
+        ring_map = rings.live_many(conn, [r["id"] for r in rows])
         with_history = {
             r["memory_id"]: r["n"]
             for r in conn.execute(
                 "SELECT memory_id, COUNT(*) n FROM memory_history GROUP BY memory_id"
             ).fetchall()
         }
-        # 月份按钮看全库；第一页可能全是同一个月，不能从分页条目里推断。
+        # 月份按钮看全库的圈（有过一圈的月都算）；第一页可能全是同一个月，不能从分页条目里推断。
         months = set()
-        for r in conn.execute(f"SELECT DISTINCT date FROM memories WHERE {LIVE}"):
+        for r in conn.execute(
+            """SELECT DISTINCT r.date FROM memory_rings r JOIN memories m ON m.id = r.memory_id
+               WHERE r.deleted_at IS NULL AND m.deleted_at IS NULL"""
+        ):
             try:
                 months.add(normalize_date(r["date"])[:7])
             except ValueError:
@@ -583,12 +613,14 @@ def browse_memories(
     items = []
     for r in rows:
         item = dict(r)
+        item["drawer"] = drawer_of(r["space"])
+        item["rings"] = ring_map[r["id"]]
         item["interval_status"] = interval_status(r["start_date"], r["end_date"])
         item["history_count"] = with_history.get(r["id"], 0)
         items.append(item)
     return {
         "stats": {"total": total, "all": live_total},
-        "months": sorted(months, reverse=True)[:4],  # 最近三个有记忆的月 + 是否还有更早。
+        "months": sorted(months, reverse=True)[:4],  # 最近三个有圈的月 + 是否还有更早。
         "page": page,
         "page_size": page_size,
         "total_pages": max((total + page_size - 1) // page_size, 1),
@@ -667,6 +699,10 @@ def update_memory(
             raise Conflict
         rewrite = {k: v for k, v in fields.items() if v != row[k]}
         changed = {k: v for k, v in rewrite.items() if v != _stored_norm(k, row[k])}
+        if "content" in changed or "date" in changed:
+            n = len(rings.live(c, memory_id))
+            if n > 1:  # 好几圈的卡 content 是按圈拼出来的，整条改了圈就对不上了
+                raise ValueError(f"这张卡有 {n} 圈了，内容和日子要一圈一圈改（补一圈 / 改某一圈）")
         if changed:
             hid = history.push(c, row, by, "edit")
             _apply(c, row, rewrite)
@@ -683,7 +719,8 @@ def update_memory(
 
 def revert_memory(memory_id: int, history_id: int, by: str = "xuan", expect_updated_at=_UNSET) -> dict | None:
     """退回到留着的某一版（留 2 版时能选退到哪一版）。回退也算一次改：
-    现在的内容挤进上一版，退回去的那一版从上一版里拿走。版本不存在 / 记忆已删返回 None。"""
+    现在的内容挤进上一版，退回去的那一版从上一版里拿走。圈也回到那一版的样子（rings.restore），
+    卡的 content / date 再按圈重算。版本不存在 / 记忆已删返回 None。"""
     with _write_tx() as c:
         row = c.execute(f"SELECT * FROM memories WHERE id = ? AND {LIVE}", (memory_id,)).fetchone()
         target = history.get(c, memory_id, history_id) if row is not None else None
@@ -691,10 +728,15 @@ def revert_memory(memory_id: int, history_id: int, by: str = "xuan", expect_upda
             return None
         if expect_updated_at is not _UNSET and (expect_updated_at or None) != row["updated_at"]:
             raise Conflict  # 页面打开后又被改过：退回去会连那次改动一起抹掉，先刷新看一眼
-        snap = {k: v for k, v in json.loads(target["snapshot"]).items() if k in MEMORY_EDITABLE}
+        snap_all = json.loads(target["snapshot"])
+        snap = {k: v for k, v in snap_all.items() if k in MEMORY_EDITABLE}
+        snap_rings = rings.from_snapshot(c, memory_id, snap_all)
         c.execute("DELETE FROM memory_history WHERE id = ?", (history_id,))
         activity.mark_undone(c, memory_id, history_id=history_id)
-        hid = history.push(c, row, by, "revert")
+        hid = history.push(c, row, by, "revert")  # 先存现在的（连圈），再动圈
+        if snap_rings:
+            rings.restore(c, memory_id, snap_rings)
+            snap |= rings.card_fields(c, memory_id)
         changed = {k: v for k, v in snap.items() if v != row[k]}
         if changed:
             _apply(c, row, changed)
@@ -702,6 +744,104 @@ def revert_memory(memory_id: int, history_id: int, by: str = "xuan", expect_upda
             _touch(c, memory_id)
         activity.log(c, by, "revert", memory_id, snap.get("content", row["content"]), history_id=hid)
     return {"id": memory_id, "reverted_to": history_id, "memory": get_memory(memory_id)}
+
+
+# ---------- 年轮：补一圈 / 改某一圈 / 删某一圈（网页 PR4；MCP 工具 PR3 也走这里） ----------
+
+
+def _ring_input(date, content, empty_msg: str) -> tuple[str, str]:
+    """这一圈的日子和内容：日子写具体的日子或只到月，不能写以后的（打算哪天做写进内容里）；内容不能空。"""
+    if not isinstance(date, str) or not isinstance(content, str):
+        raise ValueError("这一圈的日子和内容要是文字")
+    content = content.strip()
+    if not content:
+        raise ValueError(empty_msg)
+    date = normalize_date(date)
+    today = _today()
+    if date > (today if len(date) == 10 else today[:7]):
+        raise ValueError("不能写以后的日子；打算哪天做，写进内容里")
+    return date, content
+
+
+def _live_row(c, memory_id: int, expect_updated_at):
+    row = c.execute(f"SELECT * FROM memories WHERE id = ? AND {LIVE}", (memory_id,)).fetchone()
+    if row is not None and expect_updated_at is not _UNSET and (expect_updated_at or None) != row["updated_at"]:
+        raise Conflict
+    return row
+
+
+def _follow_rings(c, row) -> None:
+    """圈变了：卡的 content / date 按圈重算（content 变了顺手重算语义指纹），修改时间往前走。"""
+    fields = {k: v for k, v in rings.card_fields(c, row["id"]).items() if v != row[k]}
+    if fields:
+        _apply(c, row, fields)
+    else:
+        _touch(c, row["id"])
+
+
+def add_ring(memory_id: int, date, content, by: str = "xuan", expect_updated_at=_UNSET) -> dict | None:
+    """补一圈：同一件事有了新进展。改前的整张卡（连圈）进上一版，最近动静记一行「改了」，能回退。
+    返回 {"id", "ring_id", "memory"}；卡不存在 / 已删返回 None。"""
+    date, content = _ring_input(date, content, "这一圈写点什么再存")
+    with _write_tx() as c:
+        row = _live_row(c, memory_id, expect_updated_at)
+        if row is None:
+            return None
+        hid = history.push(c, row, by, "edit")
+        ring_id = rings.add(c, memory_id, date, content)
+        _follow_rings(c, row)
+        activity.log(c, by, "edit", memory_id, row["title"] or content, history_id=hid)
+    return {"id": memory_id, "ring_id": ring_id, "memory": get_memory(memory_id)}
+
+
+def edit_ring(memory_id: int, ring_id: int, date, content, by: str = "xuan", expect_updated_at=_UNSET) -> dict | None:
+    """改某一圈的日子 / 内容，跟补一圈一样进上一版、记动静。没变化就什么都不记（changed=False）。
+    卡或这一圈不在了返回 None。"""
+    date, content = _ring_input(date, content, "这一圈不能改成空的；不要了就删掉它")
+    with _write_tx() as c:
+        row = _live_row(c, memory_id, expect_updated_at)
+        ring = rings.find(c, memory_id, ring_id) if row is not None else None
+        if ring is None:
+            return None
+        changed = (ring["date"], ring["content"]) != (date, content)
+        if changed:
+            hid = history.push(c, row, by, "edit")
+            rings.change(c, ring_id, date, content)
+            _follow_rings(c, row)
+            activity.log(c, by, "edit", memory_id, row["title"] or content, history_id=hid)
+    return {"id": memory_id, "ring_id": ring_id, "changed": changed, "memory": get_memory(memory_id)}
+
+
+def delete_ring(memory_id: int, ring_id: int, by: str = "xuan", expect_updated_at=_UNSET) -> dict | None:
+    """删某一圈：先藏起来，进上一版、记动静，回退能找回来。最后一圈不让单独删（那等于删整张卡）。
+    卡或这一圈不在了返回 None。"""
+    with _write_tx() as c:
+        row = _live_row(c, memory_id, expect_updated_at)
+        ring = rings.find(c, memory_id, ring_id) if row is not None else None
+        if ring is None:
+            return None
+        if len(rings.live(c, memory_id)) <= 1:
+            raise ValueError("这是最后一圈了，要删就删整张卡")
+        hid = history.push(c, row, by, "edit")
+        rings.drop(c, ring_id)
+        _follow_rings(c, row)
+        activity.log(c, by, "edit", memory_id, row["title"] or ring["content"], history_id=hid)
+    return {"id": memory_id, "ring_id": ring_id, "deleted": True, "memory": get_memory(memory_id)}
+
+
+def set_star(memory_id: int, starred, by: str = "xuan") -> dict | None:
+    """点⭐ / 取消⭐：像书签，不进上一版（不挤掉真正的上一版）、不记动静、不动修改时间
+    （正开着的编辑不会因为点了颗星就撞上「刚被改过」）。小克点要看设置「小克能不能点⭐」。
+    不存在 / 已删返回 None。"""
+    if not isinstance(starred, bool):
+        raise ValueError("starred 要是 true / false")
+    with _write_tx() as c:
+        if by != "xuan" and not settings.get_settings(c)["ke_can_star"]:
+            raise ValueError("轩关掉了「小克能不能点⭐」，这次没点上")
+        cur = c.execute(f"UPDATE memories SET starred = ? WHERE id = ? AND {LIVE}", (int(starred), memory_id))
+        if not cur.rowcount:
+            return None
+    return {"id": memory_id, "starred": starred}
 
 
 def _resync_superseded(c, memory_id: int) -> None:

@@ -87,7 +87,7 @@ def list_activity() -> dict:
             mems = {
                 r["id"]: r
                 for r in conn.execute(
-                    f"SELECT id, content, deleted_at, updated_at FROM memories WHERE id IN ({marks})", ids
+                    f"SELECT id, title, content, deleted_at, updated_at FROM memories WHERE id IN ({marks})", ids
                 ).fetchall()
             }
             history_ids = {
@@ -109,7 +109,7 @@ def list_activity() -> dict:
             "actor": r["actor"],
             "action": r["action"],
             "memory_id": r["memory_id"],
-            "title": title_of(mem["content"]) if mem is not None else r["title"],
+            "title": title_of(mem["title"] or mem["content"]) if mem is not None else r["title"],
             "history_id": r["history_id"],
             "updated_at": mem["updated_at"] if mem is not None else None,
             "can": can,
