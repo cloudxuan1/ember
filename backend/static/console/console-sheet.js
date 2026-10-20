@@ -125,7 +125,7 @@
       return;
     }
     var req = ++sh.req;
-    api('GET', '/api/memories/' + sh.id).then(function (mem) {
+    return api('GET', '/api/memories/' + sh.id).then(function (mem) {
       if (S.sheet !== sh || req !== sh.req) {
         return;
       }
@@ -135,11 +135,20 @@
       if (sh.mode === 'view') {
         renderSheet();
       }
+      return mem;
     }, function (err) {
       if (S.sheet !== sh || req !== sh.req) {
         return;
       }
       toast(err.message);
+      if (err.status === 404 && editDirty(sh)) {
+        if (sh.ring) {
+          sh.ring.err = '这张卡已被删掉了；你写的内容还在，请先复制再关闭';
+        }
+        renderSheet();
+        afterChange(false);
+        return;
+      }
       if (err.status === 404 || !sh.mem) {
         closeSheet();
         if (err.status === 404) {

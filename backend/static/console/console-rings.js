@@ -40,9 +40,11 @@
   function timeline(sh) {
     var rs = ringsOf(sh);
     var ed = sh.ring;
+    var editingFound = false;
     var ol = h('ol', { class: 'rail', 'aria-label': '年轮，从早到晚，共 ' + rs.length + ' 圈' });
     rs.forEach(function (r, i) {
       var editing = !!ed && ed.id != null && ed.id === r.id;
+      editingFound = editingFound || editing;
       var cls = 'ring' + (i === rs.length - 1 ? ' ring-new' : '') +
         (sh.spotOn && sh.spot === r.id ? ' ring-spot' : '') + (sh.flash === r.id ? ' ring-flash' : '');
       ol.appendChild(h('li', { class: cls, 'data-ring': String(r.id) },
@@ -57,7 +59,11 @@
             }, icon('edit', 16)) : null),
           h('p', { class: 'rtext', text: r.content }))));
     });
-    var adding = !!ed && ed.id == null;
+    var detached = !!ed && ed.id != null && !editingFound;
+    if (detached) {
+      setErr(ed, '这一圈已不在了；你写的内容还在，请先复制再关闭');
+    }
+    var adding = !!ed && (ed.id == null || detached);
     var add = h('div', { class: 'addrow' }, adding
       ? [h('span', { class: 'adddot adddot-live', 'aria-hidden': 'true' }), editor(sh)]
       : h('button', {
@@ -86,6 +92,7 @@
 
   /** 开一个编辑框；另一个正写着、有改动，先问一句 */
   function openEditor(sh, ed) {
+    ed.expect = sh.mem.updated_at || null; // 绑定开始编辑时的版本，后台刷新不能替草稿认领新版本
     var go = function () {
       if (S.sheet !== sh) {
         return;
@@ -234,11 +241,27 @@
       return;
     }
     setBusy(e, true);
-    var body = { date: c.date, content: e.text.trim(), expect_updated_at: sh.mem.updated_at || null };
+    var body = { date: c.date, content: e.text.trim(), expect_updated_at: e.expect };
     var req = e.id == null
       ? api('POST', '/api/memories/' + sh.id + '/rings', body)
       : api('PATCH', '/api/memories/' + sh.id + '/rings/' + e.id, body);
     req.then(function (data) {
+      if (S.sheet === sh && sh.ring === e &&
+          (e.text.trim() !== body.content || L.normalizeInputDate(e.prec, e.date) !== body.date)) {
+        // 等回包时又写了字：这一版已经存好，新写的仍留在同一圈里，不关编辑框、不重复补圈
+        sh.mem = data.memory;
+        sh.full = true;
+        sh.req++;
+        e.id = data.ring_id;
+        e.orig = { date: body.date, text: body.content };
+        e.expect = data.memory.updated_at || null;
+        setBusy(e, false);
+        setErr(e, '这一版存好了，刚补写的还没存');
+        Sheet().renderSheet();
+        toast('这一版存好了，刚补写的还在框里');
+        App.afterChange(false);
+        return;
+      }
       var msg = e.id == null ? '补好了一圈' : (data.changed === false ? '没有改动' : '这一圈改好了');
       done(sh, e, data, data.ring_id, msg);
     }, function (err) {
@@ -257,7 +280,7 @@
     }
     setBusy(e, true);
     var ringId = e.id;
-    api('DELETE', '/api/memories/' + sh.id + '/rings/' + ringId, { expect_updated_at: sh.mem.updated_at || null }).then(function (data) {
+    api('DELETE', '/api/memories/' + sh.id + '/rings/' + ringId, { expect_updated_at: e.expect }).then(function (data) {
       // 防手滑：提示条上带「撤回」，点了就退回删之前那一版（这一圈连同日子、内容原样回来）
       done(sh, e, data, null, '删掉了这一圈', { label: '撤回', run: function () { undoDelete(sh.id, ringId, data); } });
     }, function (err) {
@@ -321,15 +344,20 @@
     }
     if (err.status === 409) {
       // 等的时候有人改了（多半是小克）：不覆盖。写的字留着，面板拿最新的，再点一次存就好
-      setErr(e, '这张卡刚被改过，已刷新；你写的还在，再存一次就好');
-      Sheet().fetchDetail();
+      setErr(e, '这张卡刚被改过，正在刷新；你写的还在');
+      setBusy(e, true);
+      Sheet().fetchDetail().then(function (mem) {
+        setBusy(e, false);
+        if (S.sheet === sh && sh.ring === e && mem) {
+          e.expect = mem.updated_at || null; // 只有收到冲突、拉到新版本后，才允许手动再存
+          setErr(e, '已刷新，你写的还在；再存会用这份内容更新这一圈');
+        }
+      });
       App.afterChange(false);
       return;
     }
     if (err.status === 404) {
-      toast(err.message);
-      sh.ring = null;
-      Sheet().fetchDetail();
+      setErr(e, '这张卡或这一圈已不在了；你写的内容还在，请先复制再关闭');
       App.afterChange(false);
       return;
     }
