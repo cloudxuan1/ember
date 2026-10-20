@@ -140,9 +140,37 @@ def test_no_punctuation_falls_back_to_hard_cut_with_overlap():
 
 
 def test_crlf_and_fullwidth_space_blank_lines_split_paragraphs():
-    text = ("甲" * 300) + "\r\n　\r\n" + ("乙" * 300)
+    for blank in ("\r\n　\r\n", "\n\xa0\n", "\n \t\n"):
+        text = ("甲" * 300) + blank + ("乙" * 300)
+        spans = embeddings.chunk_spans(text)
+        assert [text[s:e] for s, e in spans] == ["甲" * 300, "乙" * 300], repr(blank)
+    p1, p2 = "编" * 200 + "。" + "短" * 40 + "。", "长" * 300 + "。"
+    text = p1 + "\n\xa0\n" + p2  # 重叠的那一句不越过空行
+    assert [text[s:e] for s, e in embeddings.chunk_spans(text)] == [p1, p2]
+
+
+def test_overlap_never_leaves_a_chunk_inside_the_next():
+    text = "编" * 239 + "。" + "短" * 39 + "。" + "长" * 219 + "。"
     spans = embeddings.chunk_spans(text)
-    assert [text[s:e] for s, e in spans] == ["甲" * 300, "乙" * 300]
+    assert spans == [(0, 240), (240, 500)]
+    _check_spans(text, spans)
+
+
+def test_ascii_closing_quote_stays_with_its_sentence():
+    text = '他说"' + "编" * 240 + '。"然后' + "长" * 220 + "。"
+    pieces = [text[s:e] for s, e in embeddings.chunk_spans(text)]
+    assert pieces[0].endswith('。"') and pieces[1].startswith("然后")
+    text = '她说："' + "编" * 240 + '。""那' + "长" * 220 + "。"  # 后面紧跟下一句的开引号：只带走一个
+    pieces = [text[s:e] for s, e in embeddings.chunk_spans(text)]
+    assert pieces[0].endswith('。"') and pieces[1].startswith('"那')
+
+
+def test_realistic_sentence_runs_keep_chunk_invariants():
+    rnd = random.Random(1020)
+    for _ in range(2000):
+        sentences = ["编" * rnd.randint(10, 300) + rnd.choice("。！？；") for _ in range(rnd.randint(2, 8))]
+        text = rnd.choice(["", "\n\n"]).join(sentences)
+        _check_spans(text, embeddings.chunk_spans(text))
 
 
 def test_random_texts_keep_chunk_invariants():
@@ -248,7 +276,10 @@ def test_buried_mood_found_by_paraphrase_via_ring_chunks():
     assert hit["ring"]["id"] == ring_id and hit["ring"]["date"] == "2026-09-12"
     with get_conn() as c:
         content = c.execute("SELECT content FROM memory_rings WHERE id = ?", (ring_id,)).fetchone()[0]
-    assert hit["ring"]["excerpt"].strip("…")[:30] in content  # 摘录是命中那一段的开头
+    [(s, e)] = [(s, e) for s, e in embeddings.chunk_spans(content) if "眼泪" in content[s:e]]
+    [vec] = [v for v in embeddings.vector_search("伤心") if v["id"] == mid]
+    assert (vec["ring_id"], vec["char_from"], vec["char_to"]) == (ring_id, s, e)  # 对上的就是埋着心情的那一段
+    assert hit["ring"]["excerpt"] == memories._excerpt(content, s, e)  # 摘录是那一段的开头
 
     with get_conn() as c:  # 对照：只有整条指纹时，这句心情被整段工作流水冲淡了
         c.execute("DELETE FROM ring_embeddings")
@@ -321,7 +352,7 @@ def test_date_filter_month_only_ring_and_semantic_leg():
     assert memories.search_memories("伤心", date_from="2026-09", date_to="2026-09") == []
 
 
-def test_tag_filter_is_exact_and_pie_alias():
+def test_tag_filter_is_exact_and_pie_alias(monkeypatch):
     """方案第七节：贴了「连理饼」的卡 vs 正文带「南瓜饼」的；按便利贴搜「饼」只出前者，自由搜「南瓜饼」能出后者。"""
     pie = _save("编的：说好明年一起去看极光", tags="连理饼")
     pumpkin = _save("编的：晚饭做了南瓜饼，有点甜")
@@ -330,8 +361,10 @@ def test_tag_filter_is_exact_and_pie_alias():
     lookalike = _save("编的：买了一盒饼干", tags="连理饼干")
     assert set(_ids(memories.list_memories(tags="饼")["items"])) == {pie, eaten}
     assert set(_ids(memories.search_memories("饼", tags="饼"))) == {pie, eaten}
-    assert pumpkin in _ids(memories.search_memories("南瓜饼"))
-    assert pumpkin not in _ids(memories.search_memories("南瓜饼", tags="饼"))
+    with monkeypatch.context() as m:  # 只看关键词腿（假指纹里没有这些词，语义腿会把所有卡都排进来）
+        m.delenv("EMBEDDING_API_KEY")
+        assert _ids(memories.search_memories("南瓜饼")) == [pumpkin]
+        assert memories.search_memories("南瓜饼", tags="饼") == []
     unfulfilled = memories.list_memories(tags="饼", exclude_tags="吃到了")["items"]
     assert _ids(unfulfilled) == [pie]  # 还没兑现的饼；面团不算饼
     assert set(_ids(memories.list_memories(tags="面团,饼")["items"])) == set()
@@ -446,9 +479,9 @@ def test_rebuild_resumes_after_failure_mid_way(monkeypatch):
     assert stats["rings_up_to_date"] == 5 and {r["memory_id"] for r in _ring_rows()} == set(ids)
 
 
-def test_rebuild_refreshes_stale_hash_and_model_switch(monkeypatch):
+def test_rebuild_fills_rows_dropped_by_header_change_and_model_switch(monkeypatch):
     mid = _save("编的：去看了一场雨", tags="散心")
-    with get_conn() as c:  # 便利贴被别的路改了（没走写入时重算）：分段指纹的文本对不上了
+    with get_conn() as c:  # 便利贴被别的路改了（没走写入时重算）：触发器删掉了分段指纹
         c.execute("UPDATE memories SET tags = '散心,开心' WHERE id = ?", (mid,))
     assert embeddings.rebuild_embeddings()["rings_embedded_now"] == 1
     monkeypatch.setenv("EMBEDDING_MODEL", "test-model-b")
@@ -583,3 +616,89 @@ def test_rebuild_survives_a_card_purged_meanwhile(monkeypatch):
     stats = embeddings.rebuild_embeddings()
     assert stats["skipped_changed_meanwhile"] == 1 and stats["rings_embedded_now"] == 1
     assert {r["memory_id"] for r in _ring_rows()} == {keep}
+
+
+def test_outdated_text_hash_is_found_by_rebuild_and_dropped_on_failure(monkeypatch):
+    """行还在、但文本摘要对不上（比如以后改了拼法或分段参数）：补算要认出来重算；算不了时删掉。"""
+    mid = _save("编的：那晚眼泪在眼眶里打转")
+    before = _ring_rows(mid)
+    with get_conn() as c:
+        c.execute("UPDATE ring_embeddings SET text_hash = 'outdated' WHERE memory_id = ?", (mid,))
+    assert embeddings.rebuild_embeddings(dry_run=True)["rings_to_embed"] == 1
+    assert embeddings.rebuild_embeddings()["rings_embedded_now"] == 1
+    assert _ring_rows(mid) == before
+    with get_conn() as c:
+        c.execute("UPDATE ring_embeddings SET text_hash = 'outdated' WHERE memory_id = ?", (mid,))
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    with get_conn() as c:
+        assert embeddings.embed_card(c, mid, whole=False) is False
+    assert _ring_rows(mid) == []
+
+
+def test_tidying_old_tags_on_save_keeps_ring_fingerprints():
+    mid = _save("编的：去海边走了走", tags="周末")
+    with get_conn() as c:  # 老数据里的标签带空格、中文逗号
+        c.execute("UPDATE memories SET tags = ' 周末 ， 开心 ' WHERE id = ?", (mid,))
+    embeddings.rebuild_embeddings()
+    CALLS.clear()
+    result = memories.update_memory(mid, {"tags": "周末,开心"}, by="xuan")  # 网页存的时候原样送回来
+    assert result["changed"] == []
+    assert len(_ring_rows(mid)) == 1  # 规整写回删掉了分段指纹，当场补上
+    assert len(CALLS) == 1 and CALLS[0] == ["周末,开心\n编的：去海边走了走"]
+
+
+def test_exclude_only_tag_filter_keeps_the_rest():
+    plain = _save("编的：没有便利贴")
+    happy = _save("编的：开心的一天", tags="开心")
+    pie = _save("编的：想一起去看海", tags="远方饼")
+    eaten = _save("编的：做成了蛋糕", tags="筑巢饼,吃到了")
+    assert set(_ids(memories.list_memories(exclude_tags="饼")["items"])) == {plain, happy}
+    assert set(_ids(memories.list_memories(exclude_tags="吃到了")["items"])) == {plain, happy, pie}
+    assert eaten not in _ids(memories.list_memories(exclude_tags="吃到了")["items"])
+
+
+def test_cards_without_live_rings_filter_by_card_date():
+    ringless = _save("编的：退回旧程序期间存的", date="2026-08-03")
+    hidden = _save("编的：圈都删掉了", date="2026-07-05")
+    with get_conn() as c:
+        c.execute("DELETE FROM memory_rings WHERE memory_id = ?", (ringless,))
+        c.execute("UPDATE memory_rings SET deleted_at = datetime('now') WHERE memory_id = ?", (hidden,))
+    assert _ids(memories.list_memories(date_from="2026-08", date_to="2026-08")["items"]) == [ringless]
+    assert _ids(memories.list_memories(date_from="2026-07", date_to="2026-07")["items"]) == [hidden]
+    assert memories.list_memories(date_from="2026-09")["items"] == []
+
+
+def test_semantic_leg_ignores_deleted_rings():
+    card = _save("编的：那天很开心", date="2026-10-01")
+    sad = _add_ring(card, "2026-10-08", "编的：哭了很久，眼泪止不住")
+    other = _save("编的：有一点难过", date="2026-09-01")
+    [top] = memories.search_memories("伤心", limit=1)
+    assert top["id"] == card and top["ring"]["id"] == sad
+    with get_conn() as c:
+        c.execute("UPDATE memory_rings SET deleted_at = datetime('now') WHERE id = ?", (sad,))
+    hits = memories.search_memories("伤心")
+    assert hits[0]["id"] == other  # 删掉的那一圈不再拿来比
+    assert all(h.get("ring", {}).get("id") != sad for h in hits)
+    with get_conn() as c:  # 还在的那一圈也没有指纹了（删掉那圈的还留着）：退回整条指纹，不报哪一圈
+        c.execute("DELETE FROM ring_embeddings WHERE memory_id = ? AND ring_id != ?", (card, sad))
+    hit = next(h for h in memories.search_memories("伤心") if h["id"] == card)
+    assert "ring" not in hit
+
+
+def test_rebuild_whole_pass_skips_a_card_edited_meanwhile(monkeypatch):
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    mid = _save("编的：那晚眼泪在眼眶里打转")
+    calls = {"n": 0}
+
+    def edit_during_whole_call(texts, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:  # 第 1 次是整条指纹：这会儿轩在网页上改了它
+            memories.update_memory(mid, {"content": "编的：今天很开心"}, by="xuan")
+        return fake_embed(texts)
+
+    monkeypatch.setattr(embeddings, "embed_texts", edit_during_whole_call)
+    stats = embeddings.rebuild_embeddings()
+    assert stats["embedded_now"] == 0 and stats["skipped_changed_meanwhile"] >= 1
+    with get_conn() as c:
+        blob = c.execute("SELECT embedding FROM memory_embeddings WHERE memory_id = ?", (mid,)).fetchone()[0]
+    assert blob == embeddings._pack(fake_embed(["编的：今天很开心"])[0])  # 是改之后的，没被旧的盖掉

@@ -37,8 +37,8 @@ CHUNK_MIN = 30
 HARD_OVERLAP = 30  # 连逗号都没有、只能硬切时的重叠
 
 _LEVELS = (  # 断点从粗到细：空行 → 句末（带后引号）/ 换行 → 逗号
-    re.compile(r"\n[ \t\r\u3000]*\n\s*"),
-    re.compile(r"[。！？!?…；;]+[”’」』）)\]]*|\n"),
+    re.compile(r"\n[^\S\n]*\n\s*"),  # 中间那一行只有空白（含全角空格、不换行空格）也算空行
+    re.compile(r"[。！？!?…；;]+[”’」』）)\]】》]*\"?|\n"),  # 半角引号只带一个：后面紧跟的可能是下一句的开引号
     re.compile(r"[，、,：:]+[”’」』）)\]]*"),
 )
 
@@ -153,7 +153,10 @@ def chunk_spans(text: str) -> list[tuple[int, int]]:
             if (last is not None and last[2] == para and not last[3] and not hard
                     and last[1] - last[0] <= CHUNK_OVERLAP and e - last[0] <= CHUNK_MAX):
                 start = last[0]  # 同一段里切开的：带上上一块最后一句
-            chunks.append([start, e])
+            if chunks and start <= chunks[-1][0]:  # 上一块就只有那一句：直接接上，别留一块被下一块整个盖住的
+                chunks[-1][1] = e
+            else:
+                chunks.append([start, e])
         last = atom
     merged: list[list[int]] = []
     for c in chunks:  # 碎块并进前一块；第一块太碎就并进后一块（中间隔着一大片空白的不并）
