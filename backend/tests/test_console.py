@@ -487,6 +487,19 @@ def test_root_serves_the_page_without_caching(client):
     assert "/static/console/console.js" in resp.text and 'id="brand"' in resp.text
 
 
+def test_page_stamps_every_css_and_js_with_its_content_version(client):
+    """部署后 Cloudflare / 手机存着的旧文件不能跟新文件拼在一起：地址带上文件内容的指纹，变了就是新地址。"""
+    import hashlib
+    import re
+
+    page = client.get("/").text
+    refs = re.findall(r'"(/static/[^"?]+\.(?:css|js))(\?v=[0-9a-f]+)?"', page)
+    assert {path for path, _ in refs} >= {"/static/console/console.js", "/static/console/console-rings.css"}
+    for path, version in refs:
+        body = (console.STATIC_DIR / path.removeprefix("/static/")).read_bytes()
+        assert version == "?v=" + hashlib.sha256(body).hexdigest()[:10], path
+
+
 # ---------- 年轮卡（PR4）：混着来的月份、⭐ / 饼、补圈 / 改圈 / 删圈 ----------
 
 

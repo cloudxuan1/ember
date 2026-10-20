@@ -15,6 +15,7 @@
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import sqlite3
 import tempfile
@@ -38,7 +39,10 @@ LOCK_AFTER_FAILS = 5
 LOCK_SECONDS = 60
 
 # 网页本体（第二步）：backend/static/console/index.html；还没有时给个占位页
-PAGE_FILE = Path(__file__).resolve().parent.parent / "static" / "console" / "index.html"
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+PAGE_FILE = STATIC_DIR / "console" / "index.html"
+# 网页里引用的 css / js（/static/… 开头）
+_ASSET_RE = re.compile(r'"(/static/[\w./-]+\.(?:css|js))"')
 
 _login_guard = {"fails": 0, "locked_until": 0.0}
 
@@ -189,11 +193,26 @@ def _login_page(error: str = "") -> HTMLResponse:
     )
 
 
+def _with_versions(page: str) -> str:
+    """css / js 地址后面带上「文件内容的指纹」当版本号（?v=前 10 位）：文件一变地址就变，
+    Cloudflare 和手机存着的旧版对不上，只能去拿新的；没变的文件地址不变，照样用存着的。
+    不然部署后会拼出一半新一半旧的网页（新加的文件是新的，原来就有的还是旧版）。"""
+    def stamp(m: re.Match) -> str:
+        path = STATIC_DIR / m.group(1).removeprefix("/static/")
+        try:
+            v = hashlib.sha256(path.read_bytes()).hexdigest()[:10]
+        except OSError:
+            return m.group(0)  # 文件不在就原样留着，跟以前一样
+        return f'"{m.group(1)}?v={v}"'
+
+    return _ASSET_RE.sub(stamp, page)
+
+
 @router.get("/")
 def console_page(request: Request):
     if not _is_xuan(request):
         return _login_page()
-    page = PAGE_FILE.read_text(encoding="utf-8") if PAGE_FILE.exists() else PLACEHOLDER_PAGE
+    page = _with_versions(PAGE_FILE.read_text(encoding="utf-8")) if PAGE_FILE.exists() else PLACEHOLDER_PAGE
     return HTMLResponse(page, headers={"Cache-Control": "no-store"})
 
 
