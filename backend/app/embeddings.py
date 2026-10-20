@@ -197,16 +197,16 @@ def _ring_plans(conn, where: str = "1", params: tuple = ()) -> list[dict]:
 
 
 def _stale(conn, plans: list[dict], memory_id: int | None = None) -> list[dict]:
-    """当前模型下指纹缺了 / 过时了（文本对不上）的圈。给了 memory_id 只看这张卡的。"""
-    sql = "SELECT ring_id, chunk, text_hash FROM ring_embeddings WHERE model = ?"
+    """当前模型下指纹缺了 / 过时了（文本或摘录坐标对不上）的圈。给了 memory_id 只看这张卡的。"""
+    sql = "SELECT ring_id, chunk, char_from, char_to, text_hash FROM ring_embeddings WHERE model = ?"
     params: list = [current_model()]
     if memory_id is not None:
         sql += " AND memory_id = ?"
         params.append(memory_id)
     have: dict[int, list] = {}
     for r in conn.execute(sql + " ORDER BY ring_id, chunk", params):
-        have.setdefault(r["ring_id"], []).append((r["chunk"], r["text_hash"]))
-    return [p for p in plans if [(c[0], c[4]) for c in p["chunks"]] != have.get(p["ring_id"], [])]
+        have.setdefault(r["ring_id"], []).append((r["chunk"], r["char_from"], r["char_to"], r["text_hash"]))
+    return [p for p in plans if [(c[0], c[1], c[2], c[4]) for c in p["chunks"]] != have.get(p["ring_id"], [])]
 
 
 def _store_ring(conn, plan: dict, vectors: list[list[float]]) -> None:
@@ -391,7 +391,7 @@ def rebuild_embeddings(batch_size: int = REBUILD_BATCH, dry_run: bool = False) -
             vectors = embed_texts(texts, timeout=REBUILD_TIMEOUT) if texts else []
             conn.execute("BEGIN IMMEDIATE")
             now = {
-                p["ring_id"]: [c[4] for c in p["chunks"]]
+                p["ring_id"]: p["chunks"]
                 for p in _ring_plans(
                     conn, "r.id IN (SELECT value FROM json_each(?))", (json.dumps([p["ring_id"] for p in pending]),)
                 )
@@ -399,7 +399,7 @@ def rebuild_embeddings(batch_size: int = REBUILD_BATCH, dry_run: bool = False) -
             for p in pending:
                 k = len(p["chunks"])
                 part, vectors = vectors[:k], vectors[k:]
-                if now.get(p["ring_id"]) != [c[4] for c in p["chunks"]]:  # 算的这会儿被改了 / 删了
+                if now.get(p["ring_id"]) != p["chunks"]:  # 文本或坐标变了都跳过，不能盖回旧摘录位置
                     skipped += 1
                     continue
                 _store_ring(conn, p, part)

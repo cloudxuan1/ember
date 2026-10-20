@@ -702,3 +702,38 @@ def test_rebuild_whole_pass_skips_a_card_edited_meanwhile(monkeypatch):
     with get_conn() as c:
         blob = c.execute("SELECT embedding FROM memory_embeddings WHERE memory_id = ?", (mid,)).fetchone()[0]
     assert blob == embeddings._pack(fake_embed(["编的：今天很开心"])[0])  # 是改之后的，没被旧的盖掉
+
+
+def test_rebuild_does_not_overwrite_chunk_offsets_after_whitespace_edit(monkeypatch):
+    content = "编" * 299 + "。\n\n" + "写" * 299 + "。"
+    edited = content.replace("\n\n", "\n\n\n")
+    mid = _save(content)
+    with get_conn() as c:
+        c.execute("DELETE FROM ring_embeddings WHERE memory_id = ?", (mid,))
+    state = {"edited": False}
+
+    def edit_during_call(texts, timeout=None):
+        if not state["edited"]:
+            state["edited"] = True
+            memories.update_memory(mid, {"content": edited}, by="xuan")
+        return fake_embed(texts)
+
+    monkeypatch.setattr(embeddings, "embed_texts", edit_during_call)
+    stats = embeddings.rebuild_embeddings()
+    assert [(r["char_from"], r["char_to"]) for r in _ring_rows(mid)] == embeddings.chunk_spans(edited)
+    assert stats["skipped_changed_meanwhile"] == 1 and stats["rings_embedded_now"] == 0
+    assert embeddings.rebuild_embeddings(dry_run=True)["rings_to_embed"] == 0
+
+
+def test_rebuild_repairs_stale_chunk_offsets():
+    content = "编" * 299 + "。\n\n\n" + "写" * 299 + "。"
+    mid = _save(content)
+    with get_conn() as c:  # 模拟先前补算曾留下的错位坐标；段文本摘要仍然正确
+        c.execute(
+            "UPDATE ring_embeddings SET char_from = char_from - 1, char_to = char_to - 1 "
+            "WHERE memory_id = ? AND chunk = 1", (mid,),
+        )
+    assert embeddings.rebuild_embeddings(dry_run=True)["rings_to_embed"] == 1
+    assert embeddings.rebuild_embeddings()["rings_embedded_now"] == 1
+    assert [(r["char_from"], r["char_to"]) for r in _ring_rows(mid)] == embeddings.chunk_spans(content)
+    assert embeddings.rebuild_embeddings(dry_run=True)["rings_to_embed"] == 0
