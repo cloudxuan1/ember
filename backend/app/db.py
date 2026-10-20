@@ -124,6 +124,12 @@ WHEN NEW.content IS NOT OLD.content
 BEGIN
     DELETE FROM ring_embeddings WHERE ring_id = NEW.id;
 END;
+-- 卡的标题 / 便利贴也拼在每一段前面：一变，这张卡所有圈的分段指纹一起作废（同上，谁改的都一样）。
+CREATE TRIGGER IF NOT EXISTS card_header_changed AFTER UPDATE OF title, tags ON memories
+WHEN NEW.title IS NOT OLD.title OR NEW.tags IS NOT OLD.tags
+BEGIN
+    DELETE FROM ring_embeddings WHERE memory_id = NEW.id;
+END;
 
 -- 浮现日志（V6b）：①③ 层的冷却依据——同一条记忆 3 天内不重复递。
 -- ② 话题共振层不记也不查这张表（相关记忆永远该到场）。

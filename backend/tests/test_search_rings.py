@@ -17,6 +17,7 @@ AXES = {
     "部署": 2, "服务器": 2,
 }
 CALLS: list[list[str]] = []
+REAL_EMBED_TEXTS = embeddings.embed_texts  # fixture 会换成假的；测接口回包时要用真的
 
 
 def fake_embed(texts, timeout=None):
@@ -477,3 +478,108 @@ def test_ring_resync_on_startup_drops_stale_fingerprints():
     assert report["rings_resynced"] == [mid]
     assert _ring_rows(mid) == []  # 圈跟上了，按旧内容算的指纹作废，补算会补
     assert embeddings.rebuild_embeddings()["rings_embedded_now"] == 1
+
+
+# ---------- 审查补的几条 ----------
+
+
+def test_topic_edited_before_pr3_is_still_searchable(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_API_KEY")
+    mid = _save("编的：一段普通的正文")
+    memories.update_memory(mid, {"topic": "萤火虫计划"}, by="ke")  # PR3 之前 memory_edit 还能改主题
+    assert _ids(memories.search_memories("萤火虫计划")) == [mid]
+
+
+def test_hit_ring_prefers_rings_inside_date_range(monkeypatch):
+    card = _save("编的：十月说想去看海", date="2026-10-05")
+    _add_ring(card, "2026-11-20", "编的：十一月终于去看海了")
+    with monkeypatch.context() as m:
+        m.delenv("EMBEDDING_API_KEY")
+        [hit] = memories.search_memories("看海", date_from="2026-10", date_to="2026-10")
+        assert hit["ring"]["date"] == "2026-10-05"
+        [hit] = memories.search_memories("看海")
+        assert hit["ring"]["date"] == "2026-11-20"  # 不带日期：一样多看新的
+    sad = _save("编的：那天很开心", date="2026-10-06")
+    _add_ring(sad, "2026-11-21", "编的：哭了很久，眼泪止不住")
+    hits = {h["id"]: h for h in memories.search_memories("伤心", date_from="2026-10", date_to="2026-10")}
+    assert hits[sad]["ring"]["date"] == "2026-10-06"  # 语义也只拿范围里的圈去比
+    hits = {h["id"]: h for h in memories.search_memories("伤心")}
+    assert hits[sad]["ring"]["date"] == "2026-11-21"
+
+
+def test_card_header_change_from_any_path_drops_ring_fingerprints():
+    mid = _save("编的：去看了一场雨", tags="散心")
+    assert _ring_rows(mid)
+    with get_conn() as c:  # 比如退回旧程序期间改了便利贴（旧程序只管整条指纹）
+        c.execute("UPDATE memories SET tags = '散心,难过' WHERE id = ?", (mid,))
+    assert _ring_rows(mid) == []
+    [hit] = memories.search_memories("伤心")  # 退回整条指纹，不按旧的便利贴命中
+    assert hit["id"] == mid and "ring" not in hit
+
+
+class _ShortResponse:
+    """少给一条的接口回包（中间那条丢了）。"""
+
+    def __init__(self, n):
+        self.n = n
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"data": [{"index": i, "embedding": [1.0, 0.0, 0.0, 1e-6]} for i in range(self.n) if i != 1]}
+
+
+def test_short_api_response_counts_as_failure(monkeypatch):
+    monkeypatch.setattr(embeddings, "embed_texts", REAL_EMBED_TEXTS)
+    monkeypatch.setattr(embeddings.httpx, "post", lambda url, json, **kw: _ShortResponse(len(json["input"])))
+    with pytest.raises(RuntimeError):
+        embeddings.embed_texts(["a", "b", "c"])
+    saved = memories.save_memory(date="2026-10-01", content="\n\n".join(["编的一段话。" * 40] * 4))
+    assert saved["embedded"] is False and _ring_rows() == []  # 不会只存一半、也不会把指纹配错段
+
+
+def test_rebuild_does_not_overwrite_an_edit_made_meanwhile(monkeypatch):
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    mid = _save("编的：那晚眼泪在眼眶里打转，一个人哭")
+    other = _save("编的：另一条，也有点难过")
+    calls = {"n": 0}
+
+    def edit_during_ring_call(texts, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 2:  # 第 1 次是整条指纹，第 2 次是按圈：这会儿小克改了第一张卡
+            memories.update_memory(mid, {"content": "编的：今天很开心"}, by="ke")
+        return fake_embed(texts)
+
+    monkeypatch.setattr(embeddings, "embed_texts", edit_during_ring_call)
+    stats = embeddings.rebuild_embeddings()
+    assert stats["skipped_changed_meanwhile"] == 1 and stats["rings_embedded_now"] == 1
+    assert stats["rings_up_to_date"] == stats["rings_total"] == 2  # 改的那一下自己算过了
+    [row] = _ring_rows(mid)
+    with get_conn() as c:
+        plan = embeddings._ring_plans(c, "r.memory_id = ?", (mid,))[0]
+    assert row["text_hash"] == plan["chunks"][0][4]  # 是改之后的文本，没被旧的盖掉
+    assert _ids(memories.search_memories("伤心"))[0] == other
+
+
+def test_rebuild_survives_a_card_purged_meanwhile(monkeypatch):
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    gone = _save("编的：马上要被真删的一条")
+    keep = _save("编的：留着的一条")
+    with get_conn() as c:  # 整条指纹先补齐，只剩圈要算
+        for mid in (gone, keep):
+            c.execute("INSERT INTO memory_embeddings (memory_id, model, dim, embedding) VALUES (?, 'test-model-a', 4, ?)",
+                      (mid, embeddings._pack([0.0, 0.0, 0.0, 1.0])))
+    state = {"done": False}
+
+    def purge_during_call(texts, timeout=None):
+        if not state["done"]:
+            state["done"] = True
+            with get_conn() as c:
+                c.execute("DELETE FROM memories WHERE id = ?", (gone,))
+        return fake_embed(texts)
+
+    monkeypatch.setattr(embeddings, "embed_texts", purge_during_call)
+    stats = embeddings.rebuild_embeddings()
+    assert stats["skipped_changed_meanwhile"] == 1 and stats["rings_embedded_now"] == 1
+    assert {r["memory_id"] for r in _ring_rows()} == {keep}

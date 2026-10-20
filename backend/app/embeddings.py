@@ -65,6 +65,8 @@ def embed_texts(texts: list[str], timeout: float = EMBED_TIMEOUT) -> list[list[f
     )
     resp.raise_for_status()
     data = sorted(resp.json()["data"], key=lambda d: d["index"])
+    if [d["index"] for d in data] != list(range(len(texts))):  # 少给 / 错位：当失败处理，别把指纹配错段
+        raise RuntimeError(f"embedding 返回了 {len(data)} 条，要的是 {len(texts)} 条")
     return [d["embedding"] for d in data]
 
 
@@ -264,11 +266,17 @@ def embed_card(conn, memory_id: int, whole: bool = True) -> bool:
 # ---------- 搜索 ----------
 
 
-def vector_search(query: str, k: int = 40, where: tuple[list[str], list] = ([], [])) -> list[dict]:
+def vector_search(
+    query: str,
+    k: int = 40,
+    where: tuple[list[str], list] = ([], []),
+    rings_where: tuple[list[str], list] = ([], []),
+) -> list[dict]:
     """语义腿：按距离从近到远返回至多 k 张卡 [{"id", "ring_id", "char_from", "char_to"}]。
     一张卡的距离 = 它最像的那一段（ring_id / char_from / char_to 就是那一段）；
     还没有当前模型分段指纹的卡退回整条指纹，这时 ring_id 为 None。
-    where = 卡的筛选条件（SQL 里卡的别名是 m），先筛再取前 k 张，范围内的不会被范围外的挤掉。
+    where = 卡的筛选条件（SQL 里卡的别名是 m），先筛再取前 k 张，范围内的不会被范围外的挤掉；
+    rings_where = 只拿哪些圈去比（别名 r，按日期筛时 = 范围里的圈）。
 
     API / 扩展不可用、或库里还没有当前模型的指纹 → 返回 []，
     调用方（search_memories）自动降级纯关键词。
@@ -282,6 +290,8 @@ def vector_search(query: str, k: int = 40, where: tuple[list[str], list] = ([], 
         return []
     conds, extra = where
     card = "".join(f" AND {c}" for c in conds)
+    ring_conds, ring_extra = rings_where
+    ring = "".join(f" AND {c}" for c in ring_conds)
     model, dim, packed = current_model(), len(qvec), _pack(qvec)
     # MIN() 聚合时，同一行里的其他列取的就是距离最小的那一段（SQLite 的规矩）
     by_ring = f"""SELECT e.memory_id, e.ring_id, e.char_from, e.char_to,
@@ -289,7 +299,7 @@ def vector_search(query: str, k: int = 40, where: tuple[list[str], list] = ([], 
                   FROM ring_embeddings e
                   JOIN memory_rings r ON r.id = e.ring_id
                   JOIN memories m ON m.id = e.memory_id
-                  WHERE e.model = ? AND e.dim = ? AND r.deleted_at IS NULL AND m.deleted_at IS NULL{card}
+                  WHERE e.model = ? AND e.dim = ? AND r.deleted_at IS NULL AND m.deleted_at IS NULL{ring}{card}
                   GROUP BY e.memory_id ORDER BY d LIMIT ?"""
     by_whole = f"""SELECT m.id AS memory_id, NULL AS ring_id, NULL AS char_from, NULL AS char_to,
                           vec_distance_cosine(w.embedding, ?) AS d
@@ -300,7 +310,7 @@ def vector_search(query: str, k: int = 40, where: tuple[list[str], list] = ([], 
                                        AND r.deleted_at IS NULL)
                    ORDER BY d LIMIT ?"""
     with get_conn() as conn:
-        rows = conn.execute(by_ring, [packed, model, dim, *extra, k]).fetchall()
+        rows = conn.execute(by_ring, [packed, model, dim, *ring_extra, *extra, k]).fetchall()
         rows += conn.execute(by_whole, [packed, model, dim, *extra, model, dim, k]).fetchall()
     rows.sort(key=lambda r: (r["d"], r["memory_id"]))
     return [
@@ -316,6 +326,8 @@ def rebuild_embeddings(batch_size: int = REBUILD_BATCH, dry_run: bool = False) -
     """给缺席或过时（≠当前模型）的记忆补算整条指纹，再给缺了 / 过时了的圈补算分段指纹。
 
     逐批提交——中断重跑不漏不重（锚点推进的老规矩）；一圈的几段总在同一批里，不会只算一半。
+    服务开着也能跑：调 API 时不占写锁，回来写之前拿写锁重读一遍，这期间被改过 / 删掉的卡和圈跳过
+    （改的那一下已经自己算过了；没算上的下次再跑会补），不会拿旧文本的指纹盖掉新的。
     换模型的完整流程：改 .env 的 EMBEDDING_MODEL → 重启 → 跑本函数（或 python -m app.embeddings）。
     dry_run=True 只数要算多少（条数、段数、字数），不调 API、不写库。
     """
@@ -345,17 +357,26 @@ def rebuild_embeddings(batch_size: int = REBUILD_BATCH, dry_run: bool = False) -
                 "ring_chunks_to_embed": len(ring_texts),
                 "chars_to_embed": sum(map(len, whole_texts + ring_texts)),
             }
-        total_missing, embedded = len(rows), 0
+        total_missing, embedded, skipped = len(rows), 0, 0
         for i in range(0, total_missing, batch_size):
             batch = rows[i : i + batch_size]
-            vectors = embed_texts(
-                [memory_text(r["content"], r["topic"], r["tags"]) for r in batch],
-                timeout=REBUILD_TIMEOUT,
-            )
-            for row, vector in zip(batch, vectors):
+            texts = [memory_text(r["content"], r["topic"], r["tags"]) for r in batch]
+            vectors = embed_texts(texts, timeout=REBUILD_TIMEOUT)
+            conn.execute("BEGIN IMMEDIATE")
+            now = {
+                r["id"]: memory_text(r["content"], r["topic"], r["tags"])
+                for r in conn.execute(
+                    "SELECT id, content, topic, tags FROM memories WHERE id IN (SELECT value FROM json_each(?))",
+                    (json.dumps([r["id"] for r in batch]),),
+                )
+            }
+            for row, text, vector in zip(batch, texts, vectors):
+                if now.get(row["id"]) != text:  # 算的这会儿被改了 / 删了
+                    skipped += 1
+                    continue
                 _store(conn, row["id"], vector)
+                embedded += 1
             conn.commit()  # 逐批落盘，断点续跑的锚点
-            embedded += len(batch)
         rings_now = chunks_now = 0
         pending: list[dict] = []
         for n, plan in enumerate(stale, start=1):
@@ -365,13 +386,23 @@ def rebuild_embeddings(batch_size: int = REBUILD_BATCH, dry_run: bool = False) -
                 continue
             texts = [c[3] for p in pending for c in p["chunks"]]
             vectors = embed_texts(texts, timeout=REBUILD_TIMEOUT) if texts else []
+            conn.execute("BEGIN IMMEDIATE")
+            now = {
+                p["ring_id"]: [c[4] for c in p["chunks"]]
+                for p in _ring_plans(
+                    conn, "r.id IN (SELECT value FROM json_each(?))", (json.dumps([p["ring_id"] for p in pending]),)
+                )
+            }
             for p in pending:
                 k = len(p["chunks"])
-                _store_ring(conn, p, vectors[:k])
-                vectors = vectors[k:]
+                part, vectors = vectors[:k], vectors[k:]
+                if now.get(p["ring_id"]) != [c[4] for c in p["chunks"]]:  # 算的这会儿被改了 / 删了
+                    skipped += 1
+                    continue
+                _store_ring(conn, p, part)
+                rings_now += 1
+                chunks_now += k
             conn.commit()
-            rings_now += len(pending)
-            chunks_now += size
             pending = []
         up_to_date = conn.execute(
             "SELECT COUNT(*) FROM memory_embeddings WHERE model = ?", (current_model(),)
@@ -385,6 +416,7 @@ def rebuild_embeddings(batch_size: int = REBUILD_BATCH, dry_run: bool = False) -
         "ring_chunks_now": chunks_now,
         "rings_total": len(plans),
         "rings_up_to_date": len(plans) - rings_left,
+        "skipped_changed_meanwhile": skipped,
     }
 
 

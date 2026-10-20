@@ -498,13 +498,30 @@ def _excerpt(content: str, start: int = 0, end: int | None = None, lead: int = 0
     return before + piece[:SUMMARY_LEN] + after
 
 
-def _keyword_ring(rings_of_card: list, tokens: list[str]) -> dict | None:
-    """关键词命中的是哪一圈：对上的词最多的那圈，一样多看新的（跟卡片日期同一个比法）。"""
+def _ring_in_range(date_from: str | None, date_to: str | None):
+    """给 ring 日期用的「落没落在范围里」判断（跟 date_conditions 同一个算法：只到月的按整月算，有重叠就算）。"""
+    if not date_from and not date_to:
+        return lambda _date: True
+    lo = _period(normalize_date(date_from, allow_year=True))[0] if date_from else ""
+    hi = _period(normalize_date(date_to, allow_year=True))[1] if date_to else "9999"
+
+    def inside(date: str) -> bool:
+        try:
+            start, end = _period(normalize_date(date))
+        except ValueError:
+            start = end = date  # 老数据里认不出的格式照原样比
+        return start <= hi and end >= lo
+
+    return inside
+
+
+def _keyword_ring(rings_of_card: list, tokens: list[str], in_range=lambda _date: True) -> dict | None:
+    """关键词命中的是哪一圈：先挑日期范围里的，再挑对上的词最多的，一样多看新的（跟卡片日期同一个比法）。"""
     best = None
     for ring in rings_of_card:
         hits = [ring["content"].find(t) for t in tokens if t in ring["content"]]
         if hits:
-            key = (len(hits), rings._date_key(ring["date"]), ring["id"])
+            key = (in_range(ring["date"]), len(hits), rings._date_key(ring["date"]), ring["id"])
             if best is None or key > best[0]:
                 best = (key, ring, min(hits))
     if best is None:
@@ -513,16 +530,17 @@ def _keyword_ring(rings_of_card: list, tokens: list[str]) -> dict | None:
     return {"id": ring["id"], "date": ring["date"], "excerpt": _excerpt(ring["content"], pos, lead=EXCERPT_LEAD)}
 
 
-def _keyword_hits(query: str, where: tuple[list[str], list]) -> list[tuple]:
+def _keyword_hits(query: str, where: tuple[list[str], list], in_range=lambda _date: True) -> list[tuple]:
     """关键词腿：标题、便利贴、每一圈的正文做 LIKE 子串匹配 + 简单加权，中文子串直接好使
-    （不上 FTS5，分词坑不值得踩）。返回 [(卡, 命中的那一圈或 None)]，分高的在前。"""
+    （不上 FTS5，分词坑不值得踩）。返回 [(卡, 命中的那一圈或 None)]，分高的在前。
+    topic 也照样搜：PR3 之前 memory_edit 还能改它，PR5 删这一栏时一起去掉。"""
     tokens = query.split() or [query]
     in_rings = "EXISTS (SELECT 1 FROM memory_rings r WHERE r.memory_id = m.id AND r.deleted_at IS NULL AND r.content LIKE ?)"
-    match = " OR ".join([f"(m.title LIKE ? OR m.tags LIKE ? OR {in_rings})"] * len(tokens))
+    match = " OR ".join([f"(m.title LIKE ? OR m.tags LIKE ? OR m.topic LIKE ? OR {in_rings})"] * len(tokens))
     params: list = []
     for t in tokens:
         like = f"%{t}%"
-        params += [like, like, like]
+        params += [like, like, like, like]
     conds, extra = where
     sql = f"SELECT m.* FROM memories m WHERE ({match})" + "".join(f" AND {c}" for c in conds)
     sql += " ORDER BY m.date DESC LIMIT 200"
@@ -536,14 +554,14 @@ def _keyword_hits(query: str, where: tuple[list[str], list]) -> list[tuple]:
         for t in tokens:
             if any(t in text for text in texts):
                 s += 2
-            if t in (row["title"] or "") or t in (row["tags"] or ""):
+            if t in (row["title"] or "") or t in (row["tags"] or "") or t in (row["topic"] or ""):
                 s += 3
         if row["starred"]:  # 沿用老规矩里 anchor 的那 1 分（搬家时 anchor 全变成了⭐）
             s += 1
         return s
 
     ranked = sorted(rows, key=lambda r: (score(r), r["date"]), reverse=True)
-    return [(r, _keyword_ring(by_card.get(r["id"], []), tokens)) for r in ranked]
+    return [(r, _keyword_ring(by_card.get(r["id"], []), tokens, in_range)) for r in ranked]
 
 
 def search_memories(
@@ -562,11 +580,14 @@ def search_memories(
     年轮卡 PR2：关键词搜标题、便利贴和每一圈的正文；语义按圈（长的圈按段）比，哪一段对上整张卡就算命中。
     结果里的 ring = 命中的那一圈（编号、日期，跟卡的开头不一样时带一小段摘录）。
     space / 日期 / 便利贴怎么筛见 card_filter（不传 space = 日常 + 长期；"all" = 跨全库）。
+    带日期范围时，卡里有一圈在范围里就算；命中的那一圈优先报范围里的，语义也只拿范围里的几圈去比。
     """
     with get_conn() as conn:
         where = card_filter(conn, space, date_from, date_to, tags, exclude_tags)
-    kw = _keyword_hits(query, where)
-    vec = embeddings.vector_search(query, k=VEC_TOP_K, where=where)
+    kw = _keyword_hits(query, where, _ring_in_range(date_from, date_to))
+    vec = embeddings.vector_search(
+        query, k=VEC_TOP_K, where=where, rings_where=date_conditions(date_from, date_to, col="r.date")
+    )
     if not vec:
         return [_short(row, ring) for row, ring in kw[:limit]]
 
@@ -796,7 +817,7 @@ def update_memory(
             c.execute(f"UPDATE memories SET {sets} WHERE id = ?", [*rewrite.values(), memory_id])
             if "content" in rewrite or "date" in rewrite:
                 rings.follow_card(c, memory_id)
-            if "content" in rewrite:  # 圈的正文动了（哪怕只是去掉首尾空白），分段指纹已作废，补上
+            if "content" in rewrite or "tags" in rewrite:  # 圈的正文 / 便利贴动了（哪怕只是规整），分段指纹已作废，补上
                 embeddings.embed_card(c, memory_id, whole=False)
     if conn is not None:
         return {"id": memory_id, "changed": list(changed)}
