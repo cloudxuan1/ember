@@ -5,9 +5,16 @@
 - 指纹存普通表（不用 vec0 虚拟表——维度是数据不是表结构），每行带 model 列：
   搜索只用与当前配置同模型的行，换模型后旧指纹自动失效，安全降级纯关键词。
 - 软失败：API 挂了保存照常入库（指纹缺席，rebuild 补）；查询挂了降级关键词。
+
+年轮卡 PR2 起按圈算（ring_embeddings）：每一圈一份，太长的圈切成几段、一段一份（chunk_spans）；
+搜的时候一张卡取最像的那一段，结果里带上是哪一圈。整条指纹（memory_embeddings）照常维护当退路：
+还没有按圈指纹的卡（上线后补算之前）用它；PR5 再删。
 """
 
+import hashlib
+import json
 import os
+import re
 import struct
 import sys
 
@@ -18,6 +25,22 @@ from app.db import get_conn, vec_available
 EMBED_TIMEOUT = 15.0  # 单条/查询；保存在写事务里调 API，超时要短
 REBUILD_TIMEOUT = 60.0
 REBUILD_BATCH = 32
+
+# 分段（2026-10 调研：中文检索 200–400 token 一段最稳，段越小一句心情越不容易被冲淡）：
+# 不超过 CHUNK_MAX 字的圈整圈一段；更长的按空行分段，相邻短段合起来不超过 CHUNK_TARGET；
+# 单段太长按句号这类断句处切，再不行按逗号，最后才硬切；同一段里切开的，下一块开头带上
+# 上一块的最后一句（不超过 CHUNK_OVERLAP 字），免得一句话被切在中间；不到 CHUNK_MIN 字的碎块并进邻块。
+CHUNK_TARGET = 250
+CHUNK_MAX = 400
+CHUNK_OVERLAP = 60
+CHUNK_MIN = 30
+HARD_OVERLAP = 30  # 连逗号都没有、只能硬切时的重叠
+
+_LEVELS = (  # 断点从粗到细：空行 → 句末（带后引号）/ 换行 → 逗号
+    re.compile(r"\n[ \t\r\u3000]*\n\s*"),
+    re.compile(r"[。！？!?…；;]+[”’」』）)\]]*|\n"),
+    re.compile(r"[，、,：:]+[”’」』）)\]]*"),
+)
 
 
 def api_base() -> str:
@@ -46,7 +69,7 @@ def embed_texts(texts: list[str], timeout: float = EMBED_TIMEOUT) -> list[list[f
 
 
 def memory_text(content: str, topic: str = "", tags: str = "") -> str:
-    """拼给模型算指纹的文本：主题和标签是语义的一部分，一起进指纹。"""
+    """拼给模型算整条指纹的文本：主题和标签是语义的一部分，一起进指纹。"""
     return "\n".join(p for p in (topic, tags, content) if p)
 
 
@@ -62,25 +85,190 @@ def _store(conn, memory_id: int, vector: list[float]) -> None:
     )
 
 
-def embed_memory(conn, memory_id: int, content: str, topic: str = "", tags: str = "") -> bool:
-    """在调用方事务里写指纹（不提交）。任何失败都吞掉——记忆本体照常入库，
-    缺席的指纹由 rebuild_embeddings() 事后补。"""
-    if not (enabled() and vec_available()):
-        return False
-    try:
-        vector = embed_texts([memory_text(content, topic, tags)])[0]
-        _store(conn, memory_id, vector)
-        return True
-    except Exception as e:
-        print(f"[embed] memory {memory_id} 指纹生成失败（记忆已保存，rebuild 可补）: {e}", flush=True)
-        return False
+# ---------- 按圈分段 ----------
 
 
-def vector_search(
-    query: str, space: str | None = None, k: int = 40, where: tuple[list[str], list] = ([], [])
-) -> list[int]:
-    """语义腿：返回按余弦距离升序的 memory_id 列表。where = 额外条件（按发生日期筛），
-    先筛再取前 k 个，范围内的语义匹配不会被范围外的挤掉。
+def _strip(text: str, s: int, e: int) -> tuple[int, int] | None:
+    """[s, e) 去掉两头空白；全是空白返回 None。"""
+    while s < e and text[s].isspace():
+        s += 1
+    while e > s and text[e - 1].isspace():
+        e -= 1
+    return (s, e) if s < e else None
+
+
+def _cut(text: str, s: int, e: int, pattern: re.Pattern) -> list[tuple[int, int]]:
+    """按一级断点把 [s, e) 切成小块，断点（标点）留在前一块末尾。"""
+    out, pos = [], s
+    for m in pattern.finditer(text, s, e):
+        piece = _strip(text, pos, m.end())
+        if piece:
+            out.append(piece)
+        pos = m.end()
+    piece = _strip(text, pos, e)
+    if piece:
+        out.append(piece)
+    return out
+
+
+def _atoms(text: str, s: int, e: int, level: int, para: int) -> list[tuple[int, int, int, bool]]:
+    """把一段切成不超过 CHUNK_MAX 的小块：(起, 止, 第几个空行段, 是不是硬切的)。"""
+    if e - s <= CHUNK_MAX:
+        return [(s, e, para, False)]
+    if level == len(_LEVELS):  # 连逗号都没有：每 CHUNK_TARGET 字硬切一刀，前后重叠一点
+        out, pos = [], s
+        while True:
+            end = min(pos + CHUNK_TARGET, e)
+            if e - end < CHUNK_MIN:
+                end = e
+            piece = _strip(text, pos, end)
+            if piece:
+                out.append((*piece, para, True))
+            if end == e:
+                return out
+            pos = end - HARD_OVERLAP
+    out = []
+    for i, (ps, pe) in enumerate(_cut(text, s, e, _LEVELS[level])):
+        out += _atoms(text, ps, pe, level + 1, i if level == 0 else para)
+    return out
+
+
+def chunk_spans(text: str) -> list[tuple[int, int]]:
+    """一圈正文切成几段，返回每段在正文里的起止（左闭右开，下标是字符位置）。规矩见文件头的分段常量。"""
+    whole = _strip(text, 0, len(text))
+    if whole is None:
+        return []
+    if whole[1] - whole[0] <= CHUNK_MAX:
+        return [whole]
+    chunks: list[list[int]] = []
+    last = None  # 上一个装进去的小块
+    for atom in _atoms(text, whole[0], whole[1], 0, 0):
+        s, e, para, hard = atom
+        if chunks and e - chunks[-1][0] <= CHUNK_TARGET:
+            chunks[-1][1] = e
+        else:
+            start = s
+            if (last is not None and last[2] == para and not last[3] and not hard
+                    and last[1] - last[0] <= CHUNK_OVERLAP and e - last[0] <= CHUNK_MAX):
+                start = last[0]  # 同一段里切开的：带上上一块最后一句
+            chunks.append([start, e])
+        last = atom
+    merged: list[list[int]] = []
+    for c in chunks:  # 碎块并进前一块；第一块太碎就并进后一块（中间隔着一大片空白的不并）
+        tiny = c[1] - c[0] < CHUNK_MIN or (merged and merged[-1][1] - merged[-1][0] < CHUNK_MIN)
+        if merged and tiny and max(c[1], merged[-1][1]) - merged[-1][0] <= CHUNK_MAX + CHUNK_MIN:
+            merged[-1][1] = max(merged[-1][1], c[1])
+        else:
+            merged.append(c)
+    return [(s, e) for s, e in merged]
+
+
+def ring_text(title: str | None, tags: str | None, piece: str) -> str:
+    """拼给模型算这一段指纹的文本：标题和便利贴放在每段前面当上下文（心情便利贴也是意思的一部分）。"""
+    from app.memories import normalize_tags  # memories 引用本模块，延迟导入免循环
+
+    return "\n".join(p for p in ((title or "").strip(), normalize_tags(tags or ""), piece) if p)
+
+
+def _hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _ring_plans(conn, where: str = "1", params: tuple = ()) -> list[dict]:
+    """还在的圈（删掉的圈不算）各自该有哪几段：[{ring_id, memory_id, chunks: [(段号, 起, 止, 文本, 摘要)]}]。"""
+    plans = []
+    for r in conn.execute(
+        f"""SELECT r.id, r.memory_id, r.content, m.title, m.tags
+            FROM memory_rings r JOIN memories m ON m.id = r.memory_id
+            WHERE r.deleted_at IS NULL AND {where} ORDER BY r.id""",
+        params,
+    ).fetchall():
+        chunks = []
+        for i, (s, e) in enumerate(chunk_spans(r["content"] or "")):
+            text = ring_text(r["title"], r["tags"], r["content"][s:e])
+            chunks.append((i, s, e, text, _hash(text)))
+        plans.append({"ring_id": r["id"], "memory_id": r["memory_id"], "chunks": chunks})
+    return plans
+
+
+def _stale(conn, plans: list[dict], memory_id: int | None = None) -> list[dict]:
+    """当前模型下指纹缺了 / 过时了（文本对不上）的圈。给了 memory_id 只看这张卡的。"""
+    sql = "SELECT ring_id, chunk, text_hash FROM ring_embeddings WHERE model = ?"
+    params: list = [current_model()]
+    if memory_id is not None:
+        sql += " AND memory_id = ?"
+        params.append(memory_id)
+    have: dict[int, list] = {}
+    for r in conn.execute(sql + " ORDER BY ring_id, chunk", params):
+        have.setdefault(r["ring_id"], []).append((r["chunk"], r["text_hash"]))
+    return [p for p in plans if [(c[0], c[4]) for c in p["chunks"]] != have.get(p["ring_id"], [])]
+
+
+def _store_ring(conn, plan: dict, vectors: list[list[float]]) -> None:
+    conn.execute("DELETE FROM ring_embeddings WHERE ring_id = ?", (plan["ring_id"],))
+    conn.executemany(
+        """INSERT INTO ring_embeddings
+           (ring_id, memory_id, chunk, char_from, char_to, text_hash, model, dim, embedding)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            (plan["ring_id"], plan["memory_id"], i, s, e, h, current_model(), len(v), _pack(v))
+            for (i, s, e, _, h), v in zip(plan["chunks"], vectors)
+        ],
+    )
+
+
+def _drop_outdated(conn, memory_id: int, plans: list[dict]) -> None:
+    """算不出新指纹时：这张卡还在的圈上、跟现在的文本对不上的分段指纹删掉（不管哪个模型算的），
+    留着它搜索会按旧意思命中；删了就是缺席，关键词照常、补算能补。删掉的圈不管（搜不到它，恢复了照旧能用）。"""
+    live = {p["ring_id"] for p in plans}
+    keep = {(p["ring_id"], c[0], c[4]) for p in plans for c in p["chunks"]}
+    for r in conn.execute(
+        "SELECT ring_id, chunk, text_hash FROM ring_embeddings WHERE memory_id = ?", (memory_id,)
+    ).fetchall():
+        if r["ring_id"] in live and (r["ring_id"], r["chunk"], r["text_hash"]) not in keep:
+            conn.execute("DELETE FROM ring_embeddings WHERE ring_id = ? AND chunk = ?", (r["ring_id"], r["chunk"]))
+
+
+def embed_card(conn, memory_id: int, whole: bool = True) -> bool:
+    """在调用方事务里给一张卡补齐指纹（不提交）：whole=True 时重算整条指纹（内容 / 主题 / 标签变了）；
+    各圈的分段指纹缺了或过时了的重算，没变的不动。一次 API 调用全算完。
+
+    任何失败都吞掉——卡照常入库：重算不了的整条指纹和过时的分段指纹删掉（留着会按旧意思被召回，
+    而 rebuild 只补缺席的），缺席的由 rebuild_embeddings() 事后补。全部补齐返回 True。"""
+    plans = _ring_plans(conn, "r.memory_id = ?", (memory_id,))
+    if enabled() and vec_available():
+        stale = _stale(conn, plans, memory_id)
+        row = conn.execute("SELECT content, topic, tags FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        texts = [memory_text(row["content"], row["topic"], row["tags"])] if whole else []
+        texts += [c[3] for p in stale for c in p["chunks"]]
+        if not texts:
+            return True
+        try:
+            vectors = embed_texts(texts)
+        except Exception as e:
+            print(f"[embed] memory {memory_id} 指纹生成失败（记忆已保存，rebuild 可补）: {e}", flush=True)
+        else:
+            if whole:
+                _store(conn, memory_id, vectors.pop(0))
+            for p in stale:
+                n = len(p["chunks"])
+                _store_ring(conn, p, vectors[:n])
+                vectors = vectors[n:]
+            return True
+    if whole:
+        conn.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,))
+    _drop_outdated(conn, memory_id, plans)
+    return False
+
+
+# ---------- 搜索 ----------
+
+
+def vector_search(query: str, k: int = 40, where: tuple[list[str], list] = ([], [])) -> list[dict]:
+    """语义腿：按距离从近到远返回至多 k 张卡 [{"id", "ring_id", "char_from", "char_to"}]。
+    一张卡的距离 = 它最像的那一段（ring_id / char_from / char_to 就是那一段）；
+    还没有当前模型分段指纹的卡退回整条指纹，这时 ring_id 为 None。
+    where = 卡的筛选条件（SQL 里卡的别名是 m），先筛再取前 k 张，范围内的不会被范围外的挤掉。
 
     API / 扩展不可用、或库里还没有当前模型的指纹 → 返回 []，
     调用方（search_memories）自动降级纯关键词。
@@ -92,27 +280,44 @@ def vector_search(
     except Exception as e:
         print(f"[embed] 查询指纹失败，本次降级纯关键词: {e}", flush=True)
         return []
-    sql = """SELECT e.memory_id
-             FROM memory_embeddings e JOIN memories m ON m.id = e.memory_id
-             WHERE e.model = ? AND e.dim = ? AND m.deleted_at IS NULL"""
-    params: list = [current_model(), len(qvec)]
-    if space:
-        sql += " AND m.space = ?"
-        params.append(space)
     conds, extra = where
-    sql += "".join(f" AND {c}" for c in conds)
-    params += extra
-    sql += " ORDER BY vec_distance_cosine(e.embedding, ?) LIMIT ?"
-    params += [_pack(qvec), k]
+    card = "".join(f" AND {c}" for c in conds)
+    model, dim, packed = current_model(), len(qvec), _pack(qvec)
+    # MIN() 聚合时，同一行里的其他列取的就是距离最小的那一段（SQLite 的规矩）
+    by_ring = f"""SELECT e.memory_id, e.ring_id, e.char_from, e.char_to,
+                         MIN(vec_distance_cosine(e.embedding, ?)) AS d
+                  FROM ring_embeddings e
+                  JOIN memory_rings r ON r.id = e.ring_id
+                  JOIN memories m ON m.id = e.memory_id
+                  WHERE e.model = ? AND e.dim = ? AND r.deleted_at IS NULL AND m.deleted_at IS NULL{card}
+                  GROUP BY e.memory_id ORDER BY d LIMIT ?"""
+    by_whole = f"""SELECT m.id AS memory_id, NULL AS ring_id, NULL AS char_from, NULL AS char_to,
+                          vec_distance_cosine(w.embedding, ?) AS d
+                   FROM memory_embeddings w JOIN memories m ON m.id = w.memory_id
+                   WHERE w.model = ? AND w.dim = ? AND m.deleted_at IS NULL{card}
+                     AND NOT EXISTS (SELECT 1 FROM ring_embeddings e JOIN memory_rings r ON r.id = e.ring_id
+                                     WHERE e.memory_id = m.id AND e.model = ? AND e.dim = ?
+                                       AND r.deleted_at IS NULL)
+                   ORDER BY d LIMIT ?"""
     with get_conn() as conn:
-        return [r["memory_id"] for r in conn.execute(sql, params).fetchall()]
+        rows = conn.execute(by_ring, [packed, model, dim, *extra, k]).fetchall()
+        rows += conn.execute(by_whole, [packed, model, dim, *extra, model, dim, k]).fetchall()
+    rows.sort(key=lambda r: (r["d"], r["memory_id"]))
+    return [
+        {"id": r["memory_id"], "ring_id": r["ring_id"], "char_from": r["char_from"], "char_to": r["char_to"]}
+        for r in rows[:k]
+    ]
 
 
-def rebuild_embeddings(batch_size: int = REBUILD_BATCH) -> dict:
-    """给缺席或过时（≠当前模型）的记忆补算指纹。
+# ---------- 补算 ----------
 
-    逐批提交——中断重跑不漏不重（锚点推进的老规矩）。换模型的完整流程：
-    改 .env 的 EMBEDDING_MODEL → 重启 → 跑本函数（或 python -m app.embeddings）。
+
+def rebuild_embeddings(batch_size: int = REBUILD_BATCH, dry_run: bool = False) -> dict:
+    """给缺席或过时（≠当前模型）的记忆补算整条指纹，再给缺了 / 过时了的圈补算分段指纹。
+
+    逐批提交——中断重跑不漏不重（锚点推进的老规矩）；一圈的几段总在同一批里，不会只算一半。
+    换模型的完整流程：改 .env 的 EMBEDDING_MODEL → 重启 → 跑本函数（或 python -m app.embeddings）。
+    dry_run=True 只数要算多少（条数、段数、字数），不调 API、不写库。
     """
     if not enabled():
         raise RuntimeError("EMBEDDING_API_KEY / EMBEDDING_MODEL 没配，语义检索未启用")
@@ -126,6 +331,20 @@ def rebuild_embeddings(batch_size: int = REBUILD_BATCH) -> dict:
                ORDER BY m.id""",
             (current_model(),),
         ).fetchall()
+        plans = _ring_plans(conn)
+        stale = _stale(conn, plans)
+        if dry_run:
+            whole_texts = [memory_text(r["content"], r["topic"], r["tags"]) for r in rows]
+            ring_texts = [c[3] for p in stale for c in p["chunks"]]
+            return {
+                "model": current_model(),
+                "dry_run": True,
+                "memories_to_embed": len(rows),
+                "rings_total": len(plans),
+                "rings_to_embed": len(stale),
+                "ring_chunks_to_embed": len(ring_texts),
+                "chars_to_embed": sum(map(len, whole_texts + ring_texts)),
+            }
         total_missing, embedded = len(rows), 0
         for i in range(0, total_missing, batch_size):
             batch = rows[i : i + batch_size]
@@ -137,15 +356,49 @@ def rebuild_embeddings(batch_size: int = REBUILD_BATCH) -> dict:
                 _store(conn, row["id"], vector)
             conn.commit()  # 逐批落盘，断点续跑的锚点
             embedded += len(batch)
+        rings_now = chunks_now = 0
+        pending: list[dict] = []
+        for n, plan in enumerate(stale, start=1):
+            pending.append(plan)
+            size = sum(len(p["chunks"]) for p in pending)
+            if size < batch_size and n < len(stale):
+                continue
+            texts = [c[3] for p in pending for c in p["chunks"]]
+            vectors = embed_texts(texts, timeout=REBUILD_TIMEOUT) if texts else []
+            for p in pending:
+                k = len(p["chunks"])
+                _store_ring(conn, p, vectors[:k])
+                vectors = vectors[k:]
+            conn.commit()
+            rings_now += len(pending)
+            chunks_now += size
+            pending = []
         up_to_date = conn.execute(
             "SELECT COUNT(*) FROM memory_embeddings WHERE model = ?", (current_model(),)
         ).fetchone()[0]
+        rings_left = len(_stale(conn, _ring_plans(conn)))
     return {
         "model": current_model(),
         "embedded_now": embedded,
         "total_with_current_model": up_to_date,
+        "rings_embedded_now": rings_now,
+        "ring_chunks_now": chunks_now,
+        "rings_total": len(plans),
+        "rings_up_to_date": len(plans) - rings_left,
     }
 
 
-if __name__ == "__main__":  # VPS 上：docker exec ember python -m app.embeddings
-    print(rebuild_embeddings(), file=sys.stdout)
+USAGE = "用法：python -m app.embeddings [--dry-run]（--dry-run 只数要算多少，不调 API、不写库）"
+
+
+def main(argv: list[str]) -> int:
+    args = argv[1:]
+    if args not in ([], ["--dry-run"]):
+        print(USAGE, file=sys.stderr)
+        return 2
+    print(json.dumps(rebuild_embeddings(dry_run=bool(args)), ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":  # VPS 上：docker exec ember python -m app.embeddings [--dry-run]
+    raise SystemExit(main(sys.argv))

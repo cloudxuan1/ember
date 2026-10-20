@@ -39,22 +39,30 @@ def memory_search(
     limit: int = 8,
     date_from: str | None = None,
     date_to: str | None = None,
+    tags: str | None = None,
+    exclude_tags: str | None = None,
 ) -> dict:
     """搜索记忆（语义 + 关键词 hybrid），返回目录（编号 id + 发生日期 date + 短内容），不含全文。
 
     用户提到过去的事、人物、约定、偏好时先调用这个。
     V5 起带语义检索：查询词和记忆字面不同也能召回（搜"难过"能找到
     "眼泪在眼眶里打转"），所以用自然的词直接搜就好，不用猜原文用词。
+    一张卡下面有好几圈（哪天、发生了什么）：哪一圈对上整张卡就算，结果里的 ring 是命中的那一圈
+    （编号、日期，跟卡的开头不一样时带一小段摘录）。
     需要某条的完整内容和来源时，再用 memory_recall(id) 取详情。
-    space 语义（V6 空间隔离）：**不传 = 只搜 personal 核心层**（关系与个人）。
+    space：**不传 = 日常（personal）+ 长期（longterm）**。
     聊项目/技术话题务必显式传对应空间（ember / vps / ...）；
     确实要跨全库找传 "all"。
     限定发生日期：date_from / date_to，可只写到月或年——"8 月发生的"传
-    date_from="2026-08", date_to="2026-08"；只记到月的记忆算在那个月里。
+    date_from="2026-08", date_to="2026-08"；卡里任意一圈在范围里就算，只记到月的算在那个月里。
+    按便利贴筛：tags 逗号分隔，每一张都要贴着；整张比，搜"饼"不会碰到"南瓜饼"。
+    tags="饼" = 四张饼便利贴（筑巢饼 / 连理饼 / 养成饼 / 远方饼）任一；
+    exclude_tags 里的一张都不能贴——还没兑现的饼：tags="饼", exclude_tags="吃到了"。
     """
     try:
         results = memories.search_memories(
-            query, space=space, limit=min(limit, 20), date_from=date_from, date_to=date_to
+            query, space=space, limit=min(limit, 20), date_from=date_from, date_to=date_to,
+            tags=tags, exclude_tags=exclude_tags,
         )
     except ValueError as err:
         return {"error": str(err)}
@@ -214,16 +222,22 @@ def memory_list(
     date_from: str | None = None,
     date_to: str | None = None,
     page: int = 1,
+    tags: str | None = None,
+    exclude_tags: str | None = None,
 ) -> dict:
     """分页浏览记忆目录，先返回统计概览（总数、按空间、按层级），再给当页短条目。
 
     永远分页（每页 20 条），不会一次吐出全库，按发生日期新的在前。
-    date_from / date_to 可只写到月或年：date_from="2026-08", date_to="2026-08" = 8 月发生的。
-    space 语义与 memory_search 一致：不传 = 只看 personal 核心层；
+    date_from / date_to 可只写到月或年：date_from="2026-08", date_to="2026-08" = 8 月发生的
+    （卡里任意一圈在范围里就算）。
+    space、tags / exclude_tags 与 memory_search 一致：不传 space = 日常 + 长期；
     项目空间显式传（ember / vps / ...）；跨全库传 "all"。
+    列出还没兑现的饼：tags="饼", exclude_tags="吃到了"。
     """
     try:
-        return memories.list_memories(space=space, date_from=date_from, date_to=date_to, page=page)
+        return memories.list_memories(
+            space=space, date_from=date_from, date_to=date_to, page=page, tags=tags, exclude_tags=exclude_tags
+        )
     except ValueError as err:
         return {"error": str(err)}
 

@@ -17,6 +17,7 @@ from app import activity, embeddings, history, rings, settings
 from app.db import get_conn
 
 SUMMARY_LEN = 120  # search/list 返回的目录条目里 content 的截断长度
+EXCERPT_LEAD = 20  # 搜索命中那一圈的摘录：从命中的词往前留几个字
 
 RRF_K = 60      # RRF 融合常数（业界惯用值）：越大头部排名的权重差越平缓
 VEC_TOP_K = 40  # 语义腿取多少候选进融合
@@ -146,7 +147,8 @@ def _bound(value: str, end: int) -> str:
         return value  # 老数据里认不出的格式照原样比
 
 
-def _short(row) -> dict:
+def _short(row, ring: dict | None = None) -> dict:
+    """目录条目。ring = 搜索时命中的那一圈 {"id", "date", "excerpt"}：摘录跟卡的开头一样时不重复给。"""
     content = row["content"]
     item = {
         "id": row["id"],
@@ -157,6 +159,12 @@ def _short(row) -> dict:
         "topic": row["topic"],
         "space": row["space"],
     }
+    if row["title"]:
+        item["title"] = row["title"]
+    if ring is not None:
+        item["ring"] = {"id": ring["id"], "date": ring["date"]}
+        if ring["excerpt"] != item["content"]:
+            item["ring"]["excerpt"] = ring["excerpt"]
     status = interval_status(row["start_date"], row["end_date"])
     if status:  # 目录保持精瘦：点事件不带区间字段
         item["start_date"] = row["start_date"]
@@ -168,23 +176,87 @@ def _short(row) -> dict:
 
 
 # 三个抽屉（年轮卡，2026-10）：键名 → 网页上叫什么。personal 键名不变（老数据和工具都认它）；
-# 其余空间（ember / vps / …）都归「项目」抽屉。默认搜索带上长期是 PR2，网页切抽屉是 PR4。
+# 其余空间（ember / vps / …）都归「项目」抽屉。网页切抽屉是 PR4。
 LONGTERM = "longterm"
 DRAWER_LABELS = {LONGTERM: "长期", "personal": "日常"}
 PROJECT_LABEL = "项目"
+DEFAULT_SPACES = ("personal", LONGTERM)  # 不指定时搜 / 列的范围：日常 + 长期（年轮卡 PR2）
+
+# 饼便利贴（方案第二节）：按便利贴筛时，口令「饼」= 四张里贴了任意一张。
+PIE_TAGS = ("筑巢饼", "连理饼", "养成饼", "远方饼")
+TAG_ALIASES = {"饼": PIE_TAGS}
 
 
-def resolve_space(space: str | None) -> str | None:
-    """检索空间语义（V6 空间隔离）：personal 是核心底色，不该被项目记忆稀释。
+def resolve_space(space: str | None) -> tuple[str, ...] | None:
+    """检索空间语义（V6 空间隔离，年轮卡 PR2 起默认带上长期）：项目记忆不该稀释关于轩的那两个抽屉。
 
-    不传 / 空串 = 只搜 personal 核心层；"all" = 明确要求跨全库；
-    其他值 = 指定空间。返回 None 表示不加空间过滤。
+    不传 / 空串 = 日常（personal）+ 长期（longterm）；"all" = 明确要求跨全库；
+    其他值 = 只看那一个空间（项目抽屉要显式指定：ember / vps / …）。返回 None 表示不加空间过滤。
     """
     if not space:
-        return "personal"
+        return DEFAULT_SPACES
     if space == "all":
         return None
-    return space
+    return (space,)
+
+
+def _tag_groups(value) -> list[set[str]]:
+    """'饼,开心' → [{四张饼}, {开心}]：组内任一张就算，组和组之间都要满足。"""
+    if value is None:
+        return []
+    if not isinstance(value, str):
+        raise ValueError("便利贴要是文字，几张用逗号隔开")
+    return [set(TAG_ALIASES.get(t, (t,))) for t in normalize_tags(value).split(",") if t]
+
+
+def tag_filter_ids(conn, tags: str | None = None, exclude_tags: str | None = None) -> list[int] | None:
+    """按便利贴筛：卡上的便利贴按逗号拆开后整张比，完全一样才算，不做子串匹配（搜「饼」不会碰到「南瓜饼」）。
+    tags 里每一张都要贴着（口令「饼」= 四张饼便利贴任一）；exclude_tags 里的一张都不能贴（比如排除「吃到了」
+    = 还没兑现的饼）。返回满足的卡的编号；两样都没给返回 None（不筛）。"""
+    include, exclude = _tag_groups(tags), _tag_groups(exclude_tags)
+    if not include and not exclude:
+        return None
+    banned = set().union(*exclude)
+    ids = []
+    for r in conn.execute(f"SELECT id, tags FROM memories WHERE {LIVE}"):
+        have = {t for t in normalize_tags(r["tags"] or "").split(",") if t}
+        if all(have & group for group in include) and not have & banned:
+            ids.append(r["id"])
+    return ids
+
+
+def card_filter(
+    conn,
+    space: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    tags: str | None = None,
+    exclude_tags: str | None = None,
+) -> tuple[list[str], list]:
+    """搜索和列目录共用的卡片筛选，返回 (条件, 参数)，SQL 里卡的别名是 m。
+    - 空间见 resolve_space；删掉的卡不算。
+    - 按日期筛（年轮卡 PR2）：任意一圈（删掉的圈不算）的日期落在范围里，这张卡就算；只到月的按整月算
+      （见 date_conditions）。还没有圈的卡（只会是退回旧程序期间新存的，下次启动就补上）看卡片日期。
+    - 按便利贴筛见 tag_filter_ids。"""
+    conds, params = ["m.deleted_at IS NULL"], []
+    spaces = resolve_space(space)
+    if spaces:
+        conds.append(f"m.space IN ({','.join('?' * len(spaces))})")
+        params += spaces
+    ring_conds, ring_params = date_conditions(date_from, date_to, col="rd.date")
+    if ring_conds:
+        card_conds, card_params = date_conditions(date_from, date_to, col="m.date")
+        live_ring = "SELECT 1 FROM memory_rings rd WHERE rd.memory_id = m.id AND rd.deleted_at IS NULL"
+        conds.append(
+            f"(EXISTS ({live_ring} AND {' AND '.join(ring_conds)})"
+            f" OR (NOT EXISTS ({live_ring}) AND {' AND '.join(card_conds)}))"
+        )
+        params += ring_params + card_params
+    ids = tag_filter_ids(conn, tags, exclude_tags)
+    if ids is not None:
+        conds.append("m.id IN (SELECT value FROM json_each(?))")
+        params.append(json.dumps(ids))
+    return conds, params
 
 
 @contextmanager
@@ -326,10 +398,8 @@ def save_memory(
                 "INSERT INTO memory_sources (memory_id, source_ref, quote) VALUES (?, ?, ?)",
                 (memory_id, source_ref, quote),
             )
-        # 语义指纹软失败：算不出来照常入库，缺席的等 rebuild_embeddings() 补
-        embedded = embeddings.embed_memory(
-            c, memory_id, fields["content"], topic=fields["topic"], tags=fields["tags"]
-        )
+        # 语义指纹（整条 + 按圈）软失败：算不出来照常入库，缺席的等 rebuild_embeddings() 补
+        embedded = embeddings.embed_card(c, memory_id)
         edges_written = add_edges(c, memory_id, links, created_by=links_by)
         activity.log(c, by, "save", memory_id, fields["content"])
     result = {"id": memory_id, "saved": True}
@@ -403,38 +473,77 @@ def get_memory(memory_id: int, include_deleted: bool = False) -> dict | None:
     return memory
 
 
-def _keyword_rows(query: str, space: str | None, extra: tuple[list[str], list] = ([], [])) -> list:
-    """关键词腿：LIKE 子串匹配 + 简单加权，中文子串直接好使（不上 FTS5，分词坑不值得踩）。"""
+def _live_rings(conn, ids) -> dict[int, list]:
+    """这些卡还在的圈（删掉的圈不算），按卡分组。"""
+    out: dict[int, list] = {}
+    ids = list(ids)
+    if ids:
+        for r in conn.execute(
+            "SELECT id, memory_id, date, content FROM memory_rings "
+            "WHERE memory_id IN (SELECT value FROM json_each(?)) AND deleted_at IS NULL ORDER BY id",
+            (json.dumps(ids),),
+        ):
+            out.setdefault(r["memory_id"], []).append(r)
+    return out
+
+
+def _excerpt(content: str, start: int = 0, end: int | None = None, lead: int = 0) -> str:
+    """一圈里 [start, end) 这一段的摘录，不超过 SUMMARY_LEN 字，切掉的两头标「…」。
+    lead > 0（关键词命中）：从命中的词往前留 lead 个字，整圈放得下就从头给。"""
+    end = len(content) if end is None else end
+    head = max(0, min(start - lead, end - SUMMARY_LEN)) if lead else start
+    piece = content[head:end].strip()
+    before = "…" if content[:head].strip() else ""
+    after = "…" if len(piece) > SUMMARY_LEN or content[end:].strip() else ""
+    return before + piece[:SUMMARY_LEN] + after
+
+
+def _keyword_ring(rings_of_card: list, tokens: list[str]) -> dict | None:
+    """关键词命中的是哪一圈：对上的词最多的那圈，一样多看新的（跟卡片日期同一个比法）。"""
+    best = None
+    for ring in rings_of_card:
+        hits = [ring["content"].find(t) for t in tokens if t in ring["content"]]
+        if hits:
+            key = (len(hits), rings._date_key(ring["date"]), ring["id"])
+            if best is None or key > best[0]:
+                best = (key, ring, min(hits))
+    if best is None:
+        return None
+    _, ring, pos = best
+    return {"id": ring["id"], "date": ring["date"], "excerpt": _excerpt(ring["content"], pos, lead=EXCERPT_LEAD)}
+
+
+def _keyword_hits(query: str, where: tuple[list[str], list]) -> list[tuple]:
+    """关键词腿：标题、便利贴、每一圈的正文做 LIKE 子串匹配 + 简单加权，中文子串直接好使
+    （不上 FTS5，分词坑不值得踩）。返回 [(卡, 命中的那一圈或 None)]，分高的在前。"""
     tokens = query.split() or [query]
-    where = " OR ".join(["(content LIKE ? OR tags LIKE ? OR topic LIKE ?)"] * len(tokens))
+    in_rings = "EXISTS (SELECT 1 FROM memory_rings r WHERE r.memory_id = m.id AND r.deleted_at IS NULL AND r.content LIKE ?)"
+    match = " OR ".join([f"(m.title LIKE ? OR m.tags LIKE ? OR {in_rings})"] * len(tokens))
     params: list = []
     for t in tokens:
         like = f"%{t}%"
         params += [like, like, like]
-    sql = f"SELECT * FROM memories WHERE ({where}) AND {LIVE}"
-    if space:
-        sql += " AND space = ?"
-        params.append(space)
-    conds, extra_params = extra
-    for cond in conds:
-        sql += f" AND {cond}"
-    params += extra_params
-    sql += " ORDER BY date DESC LIMIT 200"
+    conds, extra = where
+    sql = f"SELECT m.* FROM memories m WHERE ({match})" + "".join(f" AND {c}" for c in conds)
+    sql += " ORDER BY m.date DESC LIMIT 200"
     with get_conn() as conn:
-        rows = conn.execute(sql, params).fetchall()
+        rows = conn.execute(sql, params + extra).fetchall()
+        by_card = _live_rings(conn, (r["id"] for r in rows))
 
     def score(row) -> int:
         s = 0
+        texts = [ring["content"] for ring in by_card.get(row["id"], [])]
         for t in tokens:
-            if t in row["content"]:
+            if any(t in text for text in texts):
                 s += 2
-            if t in row["tags"] or t in row["topic"]:
+            if t in (row["title"] or "") or t in (row["tags"] or ""):
                 s += 3
-        if row["tier"] == "anchor":
+        if row["starred"]:  # 沿用老规矩里 anchor 的那 1 分（搬家时 anchor 全变成了⭐）
             s += 1
         return s
 
-    return sorted(rows, key=lambda r: (score(r), r["date"]), reverse=True)
+    ranked = sorted(rows, key=lambda r: (score(r), r["date"]), reverse=True)
+    return [(r, _keyword_ring(by_card.get(r["id"], []), tokens)) for r in ranked]
 
 
 def search_memories(
@@ -443,42 +552,59 @@ def search_memories(
     limit: int = 8,
     date_from: str | None = None,
     date_to: str | None = None,
+    tags: str | None = None,
+    exclude_tags: str | None = None,
 ) -> list[dict]:
     """hybrid 检索（V5）：关键词腿 + 语义腿，RRF 融合。
 
     语义腿不可用（没配 key / API 挂了 / 库里还没有当前模型的指纹）时
     自动退回纯关键词，结果形状不变。
-    space 不传 = 只搜 personal（V6 隔离）；"all" = 跨全库。
-    date_from / date_to 按发生日期筛（见 date_conditions），两条腿都筛。
+    年轮卡 PR2：关键词搜标题、便利贴和每一圈的正文；语义按圈（长的圈按段）比，哪一段对上整张卡就算命中。
+    结果里的 ring = 命中的那一圈（编号、日期，跟卡的开头不一样时带一小段摘录）。
+    space / 日期 / 便利贴怎么筛见 card_filter（不传 space = 日常 + 长期；"all" = 跨全库）。
     """
-    space = resolve_space(space)
-    dates = date_conditions(date_from, date_to)
-    kw_rows = _keyword_rows(query, space, dates)
-    vec_ids = embeddings.vector_search(
-        query, space=space, k=VEC_TOP_K, where=date_conditions(date_from, date_to, col="m.date")
-    )
-    if not vec_ids:
-        return [_short(r) for r in kw_rows[:limit]]
+    with get_conn() as conn:
+        where = card_filter(conn, space, date_from, date_to, tags, exclude_tags)
+    kw = _keyword_hits(query, where)
+    vec = embeddings.vector_search(query, k=VEC_TOP_K, where=where)
+    if not vec:
+        return [_short(row, ring) for row, ring in kw[:limit]]
 
-    by_id = {row["id"]: row for row in kw_rows}
-    missing = [mid for mid in vec_ids if mid not in by_id]
-    if missing:
-        marks = ",".join("?" * len(missing))
-        conds, params = dates
-        sql = f"SELECT * FROM memories WHERE id IN ({marks}) AND {LIVE}" + "".join(f" AND {c}" for c in conds)
-        with get_conn() as conn:
-            for row in conn.execute(sql, missing + params):
+    by_id = {row["id"]: row for row, _ in kw}
+    kw_ring = {row["id"]: ring for row, ring in kw}
+    missing = [v["id"] for v in vec if v["id"] not in by_id]
+    conds, params = where
+    with get_conn() as conn:
+        if missing:
+            sql = "SELECT m.* FROM memories m WHERE m.id IN (SELECT value FROM json_each(?))"
+            for row in conn.execute(sql + "".join(f" AND {c}" for c in conds), [json.dumps(missing), *params]):
                 by_id[row["id"]] = row
+        vec_rings = {
+            r["id"]: r for r in conn.execute(
+                "SELECT id, date, content FROM memory_rings WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps([v["ring_id"] for v in vec if v["ring_id"] is not None]),),
+            )
+        }
 
     # RRF：score = Σ 1/(K + 该腿排名)，两边都排前面的浮到最上面
     scores: dict[int, float] = {}
-    for rank, row in enumerate(kw_rows):
+    for rank, (row, _) in enumerate(kw):
         scores[row["id"]] = scores.get(row["id"], 0.0) + 1.0 / (RRF_K + rank)
-    for rank, mid in enumerate(vec_ids):
-        if mid in by_id:  # 已删 / 不在日期范围里的语义候选不算
-            scores[mid] = scores.get(mid, 0.0) + 1.0 / (RRF_K + rank)
+    vec_ring: dict[int, dict] = {}
+    for rank, hit in enumerate(vec):
+        mid = hit["id"]
+        if mid not in by_id:  # 已删 / 不在筛选范围里的语义候选不算
+            continue
+        scores[mid] = scores.get(mid, 0.0) + 1.0 / (RRF_K + rank)
+        ring = vec_rings.get(hit["ring_id"])
+        if ring is not None:
+            vec_ring[mid] = {
+                "id": ring["id"], "date": ring["date"],
+                "excerpt": _excerpt(ring["content"], hit["char_from"], hit["char_to"]),
+            }
     top = sorted(scores, key=lambda mid: (scores[mid], by_id[mid]["date"]), reverse=True)
-    return [_short(by_id[mid]) for mid in top[:limit]]
+    # 字面对上的那一圈最好解释，优先报它；只有意思对上的报最像的那一段所在的圈
+    return [_short(by_id[mid], kw_ring.get(mid) or vec_ring.get(mid)) for mid in top[:limit]]
 
 
 def list_memories(
@@ -487,33 +613,29 @@ def list_memories(
     date_to: str | None = None,
     page: int = 1,
     page_size: int = 20,
+    tags: str | None = None,
+    exclude_tags: str | None = None,
 ) -> dict:
-    space = resolve_space(space)
-    conds, params = [LIVE], []
-    if space:
-        conds.append("space = ?")
-        params.append(space)
-    date_conds, date_params = date_conditions(date_from, date_to)
-    conds += date_conds
-    params += date_params
-    where = "WHERE " + " AND ".join(conds)
+    """小克的目录：空间 / 日期 / 便利贴的筛法跟搜索一样（card_filter），按卡片日期新的在前。"""
     page = max(page, 1)
     with get_conn() as conn:
-        total = conn.execute(f"SELECT COUNT(*) FROM memories {where}", params).fetchone()[0]
+        conds, params = card_filter(conn, space, date_from, date_to, tags, exclude_tags)
+        where = "WHERE " + " AND ".join(conds)
+        total = conn.execute(f"SELECT COUNT(*) FROM memories m {where}", params).fetchone()[0]
         by_space = {
             r["space"]: r["n"]
             for r in conn.execute(
-                f"SELECT space, COUNT(*) n FROM memories {where} GROUP BY space", params
+                f"SELECT m.space, COUNT(*) n FROM memories m {where} GROUP BY m.space", params
             ).fetchall()
         }
         by_tier = {
             r["tier"]: r["n"]
             for r in conn.execute(
-                f"SELECT tier, COUNT(*) n FROM memories {where} GROUP BY tier", params
+                f"SELECT m.tier, COUNT(*) n FROM memories m {where} GROUP BY m.tier", params
             ).fetchall()
         }
         rows = conn.execute(
-            f"SELECT * FROM memories {where} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?",
+            f"SELECT m.* FROM memories m {where} ORDER BY m.date DESC, m.id DESC LIMIT ? OFFSET ?",
             params + [page_size, (page - 1) * page_size],
         ).fetchall()
     return {
@@ -619,8 +741,8 @@ def _touch(c, memory_id: int) -> None:
 
 
 def _apply(c, row, fields: dict) -> None:
-    """写入新值、记修改时间；content/topic/tags 变了就重算语义指纹。指纹算不出来时
-    删掉旧指纹——留着它语义检索会按改前的意思召回这条，而 rebuild 只补缺席/换模型的行，
+    """写入新值、记修改时间；content/topic/tags 变了就重算语义指纹（整条 + 过时的分段，见 embed_card）。
+    指纹算不出来时删掉旧指纹——留着它语义检索会按改前的意思召回这条，而 rebuild 只补缺席/换模型的行，
     补不回"同模型但过时"的；删了就回到缺指纹状态，关键词照常、rebuild 能补。"""
     sets = ", ".join(f"{k} = ?" for k in fields)
     c.execute(
@@ -631,9 +753,7 @@ def _apply(c, row, fields: dict) -> None:
     if "content" in fields or "date" in fields:
         rings.follow_card(c, row["id"])
     if any(k in fields and fields[k] != row[k] for k in ("content", "topic", "tags")):
-        merged = {**dict(row), **fields}
-        if not embeddings.embed_memory(c, row["id"], merged["content"], topic=merged["topic"], tags=merged["tags"]):
-            c.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (row["id"],))
+        embeddings.embed_card(c, row["id"])
 
 
 _UNSET = object()
@@ -676,6 +796,8 @@ def update_memory(
             c.execute(f"UPDATE memories SET {sets} WHERE id = ?", [*rewrite.values(), memory_id])
             if "content" in rewrite or "date" in rewrite:
                 rings.follow_card(c, memory_id)
+            if "content" in rewrite:  # 圈的正文动了（哪怕只是去掉首尾空白），分段指纹已作废，补上
+                embeddings.embed_card(c, memory_id, whole=False)
     if conn is not None:
         return {"id": memory_id, "changed": list(changed)}
     return {"id": memory_id, "changed": list(changed), "memory": get_memory(memory_id)}

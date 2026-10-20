@@ -98,6 +98,33 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
 );
 CREATE INDEX IF NOT EXISTS idx_emb_model ON memory_embeddings(model);
 
+-- 按圈算的语义指纹（年轮卡 PR2）：每一圈一份；太长的圈切成几段，一段一份（app/embeddings.py chunk_spans）。
+-- 搜的时候哪一段对上，整张卡就算命中，结果里带上是哪一圈。上面的整条指纹表照常维护，当退路（PR5 再删）。
+-- char_from / char_to = 这一段在这一圈正文里的起止（摘录用）；text_hash = 算指纹那一刻拼给模型的文本
+-- （标题 + 便利贴 + 这一段）的摘要，对不上 = 过时，补算时重算。圈 / 卡真删时级联删。
+CREATE TABLE IF NOT EXISTS ring_embeddings (
+    ring_id    INTEGER NOT NULL REFERENCES memory_rings(id) ON DELETE CASCADE,
+    memory_id  INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    chunk      INTEGER NOT NULL,    -- 这一圈的第几段，从 0 起
+    char_from  INTEGER NOT NULL,
+    char_to    INTEGER NOT NULL,
+    text_hash  TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    dim        INTEGER NOT NULL,
+    embedding  BLOB NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','+8 hours')),
+    PRIMARY KEY (ring_id, chunk)
+);
+CREATE INDEX IF NOT EXISTS idx_ring_emb_mem ON ring_embeddings(memory_id);
+CREATE INDEX IF NOT EXISTS idx_ring_emb_model ON ring_embeddings(model);
+-- 圈的正文不管从哪条路改了（改卡时圈跟着走、搬家对齐、以后的改圈、退回旧程序期间），
+-- 这一圈的旧指纹立刻作废：搜索绝不按改之前的意思命中；缺了的由写入时重算或补算补上。
+CREATE TRIGGER IF NOT EXISTS ring_content_changed AFTER UPDATE OF content ON memory_rings
+WHEN NEW.content IS NOT OLD.content
+BEGIN
+    DELETE FROM ring_embeddings WHERE ring_id = NEW.id;
+END;
+
 -- 浮现日志（V6b）：①③ 层的冷却依据——同一条记忆 3 天内不重复递。
 -- ② 话题共振层不记也不查这张表（相关记忆永远该到场）。
 CREATE TABLE IF NOT EXISTS briefing_log (
