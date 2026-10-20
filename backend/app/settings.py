@@ -3,13 +3,15 @@
 - history_keep：每条记忆留几版旧内容，1 或 2（默认 1）。调小时多出来的旧版立刻扔掉。
 - activity_days：最近动静显示多少天（默认 30），也是删掉的记忆还能恢复的期限，过了才真删。
 - ke_can_delete：小克能不能用 memory_delete 删记忆（默认开）。
+- ke_can_star：小克能不能给卡点⭐（默认开，轩 2026-10-20 定）。
 """
 
 import json
 
 from app.db import get_conn
 
-DEFAULTS = {"history_keep": 1, "activity_days": 30, "ke_can_delete": True}
+DEFAULTS = {"history_keep": 1, "activity_days": 30, "ke_can_delete": True, "ke_can_star": True}
+SWITCHES = ("ke_can_delete", "ke_can_star")  # 开 / 关两种值的设置
 HISTORY_KEEP_CHOICES = (1, 2)
 ACTIVITY_DAYS_RANGE = (1, 365)
 
@@ -33,9 +35,9 @@ def _validate(key: str, value):
         lo, hi = ACTIVITY_DAYS_RANGE
         if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
             raise ValueError(f"activity_days 要是 {lo}–{hi} 的整数")
-    elif key == "ke_can_delete":
+    elif key in SWITCHES:
         if not isinstance(value, bool):
-            raise ValueError("ke_can_delete 要是 true / false")
+            raise ValueError(f"{key} 要是 true / false")
     else:
         raise ValueError(f"没有这个设置：{key}")
     return value

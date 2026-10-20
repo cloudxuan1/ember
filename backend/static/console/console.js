@@ -485,13 +485,17 @@
       b.disabled = !st;
       b.setAttribute('aria-disabled', busy);
     });
-    var ke = !!(st && st.ke_can_delete);
-    var sw = $('ke-switch');
-    sw.setAttribute('aria-checked', ke ? 'true' : 'false');
-    sw.firstElementChild.classList.toggle('track-on', ke);
-    sw.disabled = !st;
-    sw.setAttribute('aria-disabled', busy);
+    renderSwitch('ke-switch', !!(st && st.ke_can_delete), !st, busy);
+    renderSwitch('star-switch', !!(st && st.ke_can_star), !st, busy);
     renderThemeControls();
+  }
+
+  function renderSwitch(id, on, disabled, busy) {
+    var sw = $(id);
+    sw.setAttribute('aria-checked', on ? 'true' : 'false');
+    sw.firstElementChild.classList.toggle('track-on', on);
+    sw.disabled = disabled;
+    sw.setAttribute('aria-disabled', busy);
   }
 
   function settingsReady() {
@@ -578,6 +582,14 @@
     patchSettings({ ke_can_delete: next }, next ? '小克现在能删了' : '小克现在只能存和改');
   }
 
+  function toggleStar() {
+    if (!settingsReady()) {
+      return;
+    }
+    var next = !S.settings.ke_can_star;
+    patchSettings({ ke_can_star: next }, next ? '小克现在能点⭐了' : '现在只有你能点⭐');
+  }
+
   function askClearAll() {
     L.confirmDialog({ title: '清空所有上一版？', msg: '清掉以后，这些记忆就没法回退了。', ok: '清空' }).then(function (ok) {
       if (!ok) {
@@ -599,6 +611,7 @@
       b.addEventListener('click', function () { changeDays(Number(b.getAttribute('data-days'))); });
     });
     $('ke-switch').addEventListener('click', toggleKe);
+    $('star-switch').addEventListener('click', toggleStar);
     document.querySelectorAll('#theme-seg .segbtn').forEach(function (b) {
       b.addEventListener('click', function () { pickTheme(b.getAttribute('data-theme')); });
     });
