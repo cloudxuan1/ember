@@ -737,3 +737,44 @@ def test_rebuild_repairs_stale_chunk_offsets():
     assert embeddings.rebuild_embeddings()["rings_embedded_now"] == 1
     assert [(r["char_from"], r["char_to"]) for r in _ring_rows(mid)] == embeddings.chunk_spans(content)
     assert embeddings.rebuild_embeddings(dry_run=True)["rings_to_embed"] == 0
+
+
+class _InvalidVectorResponse:
+    def __init__(self, n, bad_vector):
+        self.n, self.bad_vector = n, bad_vector
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"data": [
+            {"index": i, "embedding": self.bad_vector if i == self.n - 1 else [1.0, 0.0, 0.0, 1e-6]}
+            for i in range(self.n)
+        ]}
+
+
+@pytest.mark.parametrize("bad_vector", [["bad", 0.0, 0.0, 1e-6], None, [1e100, 0.0, 0.0, 1e-6],
+                                      [float("nan"), 0.0, 0.0, 1e-6]],
+                         ids=["non_numeric", "null", "float32_overflow", "nan"])
+def test_invalid_vector_response_does_not_block_save(monkeypatch, bad_vector):
+    monkeypatch.setattr(embeddings, "embed_texts", REAL_EMBED_TEXTS)
+    monkeypatch.setattr(embeddings.httpx, "post",
+                        lambda url, json, **kw: _InvalidVectorResponse(len(json["input"]), bad_vector))
+    saved = memories.save_memory(date="2026-10-01", content="编的：指纹暂时算不出来也要保存")
+    assert saved["saved"] is True and saved["embedded"] is False
+    assert memories.get_memory(saved["id"])["content"] == "编的：指纹暂时算不出来也要保存"
+    assert _ring_rows() == []
+    with get_conn() as c:
+        assert c.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()[0] == 0
+
+
+def test_invalid_vector_response_does_not_roll_back_edit(monkeypatch):
+    mid = _save("编的：原来想去海边")
+    monkeypatch.setattr(embeddings, "embed_texts", REAL_EMBED_TEXTS)
+    monkeypatch.setattr(embeddings.httpx, "post",
+                        lambda url, json, **kw: _InvalidVectorResponse(len(json["input"]), ["bad", 0.0, 0.0, 1e-6]))
+    memories.update_memory(mid, {"content": "编的：后来决定去山上"}, by="xuan")
+    assert memories.get_memory(mid)["content"] == "编的：后来决定去山上"
+    assert _ring_rows(mid) == []
+    with get_conn() as c:
+        assert c.execute("SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (mid,)).fetchone()[0] == 0

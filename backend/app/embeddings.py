@@ -13,6 +13,7 @@
 
 import hashlib
 import json
+import math
 import os
 import re
 import struct
@@ -67,7 +68,19 @@ def embed_texts(texts: list[str], timeout: float = EMBED_TIMEOUT) -> list[list[f
     data = sorted(resp.json()["data"], key=lambda d: d["index"])
     if [d["index"] for d in data] != list(range(len(texts))):  # 少给 / 错位：当失败处理，别把指纹配错段
         raise RuntimeError(f"embedding 返回了 {len(data)} 条，要的是 {len(texts)} 条")
-    return [d["embedding"] for d in data]
+    vectors = [d["embedding"] for d in data]
+    try:  # 整批先验过再交给写库：坏向量走现有软失败，不能把记忆保存一起回滚
+        dim = None
+        for vector in vectors:
+            if not isinstance(vector, list) or not vector or (dim is not None and len(vector) != dim):
+                raise ValueError("向量格式或维度不一致")
+            if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in vector):
+                raise ValueError("向量必须是有限数值")
+            _pack(vector)  # float32 溢出也算坏回包，别等存到一半才发现
+            dim = len(vector)
+    except (TypeError, ValueError, OverflowError, struct.error) as err:
+        raise RuntimeError("embedding 返回了无效向量，整批未写入") from err
+    return vectors
 
 
 def memory_text(content: str, topic: str = "", tags: str = "") -> str:
