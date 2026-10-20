@@ -101,10 +101,18 @@
     revert: ['M4 5v5h5M4.6 10A8 8 0 1 1 6 16.6'],
     chev: ['M6 9l6 6 6-6'],
     edit: ['M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4'],
-    trash: ['M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5']
+    trash: ['M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5'],
+    star: ['M12 3.8l2.5 5.1 5.6.8-4.05 3.95.96 5.6L12 16.6l-5.01 2.65.96-5.6L3.9 9.7l5.6-.8z'],
+    // 饼：线稿的一只热派（派皮上两道口子、冒两缕热气）
+    pie: ['M3 12.2c0-1.9 4-3.4 9-3.4s9 1.5 9 3.4-4 3.4-9 3.4-9-1.5-9-3.4z', 'M3 12.2l1.4 4.4c.3 1 1.3 1.7 2.4 1.7h10.4c1.1 0 2.1-.7 2.4-1.7l1.4-4.4',
+      'M8.8 12l1.8.7M13.4 12.7l1.8-.7', 'M9.5 6.6c-.8-1 .8-2 0-3.1M14.5 6.6c-.8-1 .8-2 0-3.1'],
+    doc: ['M7 3.5h7l4 4v13H7zM14 3.5v4h4'],
+    chat: ['M4.5 5.5h15v10h-9l-4 3.5v-3.5h-2z'],
+    tick: ['M5 12.5l4.2 4.2L19 7']
   };
 
-  function icon(name, size, extraClass) {
+  /** icon('star', 18, 'extra-class', 实心?) */
+  function icon(name, size, extraClass, filled) {
     var s = document.createElementNS(SVG_NS, 'svg');
     s.setAttribute('class', 'ico' + (extraClass ? ' ' + extraClass : ''));
     s.setAttribute('width', String(size || 18));
@@ -114,6 +122,9 @@
     (ICONS[name] || []).forEach(function (d) {
       var p = document.createElementNS(SVG_NS, 'path');
       p.setAttribute('d', d);
+      if (filled) {
+        p.setAttribute('fill', 'currentColor');
+      }
       s.appendChild(p);
     });
     return s;
@@ -207,6 +218,22 @@
     return cur ? (p.m + ' 月') : (p.y + ' 年 ' + p.m + ' 月');
   }
 
+  /** 年轮每圈上面那行：8 月 9 日 · 周六 / 8 月 · 只记到月；不是今年的加上年份 */
+  function dateLong(s) {
+    var p = parseMemDate(s);
+    if (!p) {
+      return String(s || '');
+    }
+    var y = p.y === curYear() ? '' : p.y + ' 年 ';
+    return p.d ? (y + p.m + ' 月 ' + p.d + ' 日 · ' + weekday(s)) : (y + p.m + ' 月 · 只记到月');
+  }
+
+  /** '2026-8-5' / '2026-08' → '2026-08'（月份按钮比大小用），认不出返回 '' */
+  function ymOf(s) {
+    var p = parseMemDate(s);
+    return p ? p.y + '-' + pad2(p.m) : '';
+  }
+
   function weekday(s) {
     var p = parseMemDate(s);
     if (!p || !p.d) {
@@ -290,8 +317,28 @@
     });
     return out;
   }
+  // 四张饼便利贴（跟后端 memories.PIE_TAGS 一致）；吃到了 / 面团 另有样子
+  var PIE_TAGS = ['筑巢饼', '连理饼', '养成饼', '远方饼'];
   function tagClass(t) {
-    return t === '旧档' ? 'tag tag-old' : 'tag tag-diary';
+    if (t === '旧档') {
+      return 'tag tag-old';
+    }
+    if (PIE_TAGS.indexOf(t) !== -1) {
+      return 'tag tag-pie';
+    }
+    if (t === '吃到了') {
+      return 'tag tag-ate';
+    }
+    return t === '面团' ? 'tag tag-dough' : 'tag tag-diary';
+  }
+
+  /** 几圈就几个点，第几圈亮第几个点（lit 从 0 数）。label 给读屏 */
+  function ringDots(n, lit, cls) {
+    var kids = [];
+    for (var i = 0; i < n; i++) {
+      kids.push(h('span', { class: i === lit ? 'rdot rdot-on' : 'rdot' }));
+    }
+    return h('span', { class: cls || 'rdots', role: 'img', 'aria-label': '共 ' + n + ' 圈，这是第 ' + (lit + 1) + ' 圈' }, kids);
   }
 
   // ---------- 调接口 ----------
@@ -439,6 +486,8 @@
   window.EmberLib = {
     THEMES: THEMES,
     THEME_LABELS: THEME_LABELS,
+    ICONS: ICONS,
+    PIE_TAGS: PIE_TAGS,
     getTheme: function () { return currentTheme; },
     setTheme: function (t) { currentTheme = applyTheme(t, true); return currentTheme; },
     h: h,
@@ -453,12 +502,15 @@
     parseMemDate: parseMemDate,
     dateBig: dateBig,
     weekday: weekday,
+    dateLong: dateLong,
+    ymOf: ymOf,
     monthLabel: monthLabel,
     prevMonth: prevMonth,
     stampLabel: stampLabel,
     normalizeInputDate: normalizeInputDate,
     splitTags: splitTags,
     tagClass: tagClass,
+    ringDots: ringDots,
     api: api,
     qs: qs,
     toast: toast,
