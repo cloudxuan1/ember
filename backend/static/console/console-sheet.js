@@ -97,6 +97,10 @@
     if (!sh) {
       return;
     }
+    if (sh.mode === 'view' && Rings().dirty(sh)) {
+      Rings().saveThenClose(sh, closeSheet); // 关面板 = 存：写了一半的那一圈先存上再关（design-rules 踩坑 4）
+      return;
+    }
     if (!editDirty(sh)) {
       closeSheet();
       return;
@@ -276,7 +280,7 @@
     if (m) {
       head.appendChild(App.starBtn(m, 'shead-star'));
     }
-    head.appendChild(closeBtn('关闭', closeSheet));
+    head.appendChild(closeBtn('关闭', requestClose));
   }
 
   /** '2026-10-18 15:40:12' → 10 月 18 日（不是今年的加上年份） */

@@ -223,7 +223,26 @@
     return { date: date };
   }
 
-  function save(sh) {
+  /** 关面板（点叉、点背景、Esc）时这一圈还开着、有改动：写好了就先存再关；没写好（空的、没选日子、以后的日子）问一句 */
+  function saveThenClose(sh, close) {
+    var e = sh.ring;
+    if (e.busy) {
+      return;
+    }
+    var c = check(e);
+    if (c.err) {
+      L.confirmDialog({ title: '这一圈还没写好', msg: c.err + '。现在关掉，刚写的就不要了。', ok: '不要了' }).then(function (ok) {
+        if (ok && S.sheet === sh) {
+          close();
+        }
+      });
+      return;
+    }
+    save(sh, close);
+  }
+
+  /** after：存好以后再做的事（关面板时用） */
+  function save(sh, after) {
     var e = sh.ring;
     if (!e || e.busy) {
       return;
@@ -241,6 +260,9 @@
     req.then(function (data) {
       var msg = e.id == null ? '补好了一圈' : (data.changed === false ? '没有改动' : '这一圈改好了');
       done(sh, e, data, data.ring_id, msg);
+      if (after && S.sheet === sh) {
+        after();
+      }
     }, function (err) {
       failed(sh, e, err);
     });
@@ -355,6 +377,7 @@
   window.EmberRings = {
     timeline: timeline,
     dirty: dirty,
+    saveThenClose: saveThenClose,
     scrollToSpot: scrollToSpot
   };
 })();
