@@ -13,6 +13,7 @@
   var PAGE_SIZE = 200;
   var MONTH_CHIPS = 3;
   var SEARCH_DEBOUNCE_MS = 250;
+  var starWrites = {}; // 同一张卡串行写，只把最后一次点选作为目标
 
   var VERBS = { save: '存了', edit: '改了', revert: '回退了', delete: '删了', restore: '恢复了' };
   var WHO = {
@@ -275,6 +276,9 @@
   }
 
   function starBtn(m, cls) {
+    if (starWrites[m.id]) {
+      m.starred = starWrites[m.id].wanted ? 1 : 0;
+    }
     var on = !!m.starred;
     return h('button', {
       class: 'press starbtn ' + cls + (on ? ' star-on' : ''),
@@ -286,29 +290,54 @@
     }, icon('star', 22, null, on));
   }
 
-  /** 点⭐：先在页面上变（列表、面板一起），后台没存上再变回来。⭐ 筛着时取消，卡先留在眼前，换筛选再走 */
-  function setStar(id, on, btn) {
+  /** 页面重画过也更新当前的卡片和面板，不留着请求发出时那批旧对象。 */
+  function paintStar(id, on) {
     var targets = S.lib.items.filter(function (m) { return m.id === id; });
     if (S.sheet && S.sheet.mem && S.sheet.id === id) {
       targets.push(S.sheet.mem);
     }
-    var apply = function (v) {
-      targets.forEach(function (m) { m.starred = v ? 1 : 0; });
-      document.querySelectorAll('[data-star="' + Number(id) + '"]').forEach(function (b) {
-        b.classList.toggle('star-on', v);
-        b.classList.remove('star-pop');
-        b.setAttribute('aria-pressed', v ? 'true' : 'false');
-        b.replaceChild(icon('star', 22, null, v), b.firstChild);
-      });
-    };
-    apply(on);
+    targets.forEach(function (m) { m.starred = on ? 1 : 0; });
+    document.querySelectorAll('[data-star="' + Number(id) + '"]').forEach(function (b) {
+      b.classList.toggle('star-on', on);
+      b.classList.remove('star-pop');
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.replaceChild(icon('star', 22, null, on), b.firstChild);
+    });
+  }
+
+  function sendStar(id, write) {
+    var sent = write.wanted;
+    write.busy = true;
+    api('POST', '/api/memories/' + id + '/star', { starred: sent }).then(function () {
+      write.saved = sent;
+      write.busy = false;
+      if (write.wanted !== sent) {
+        sendStar(id, write); // 上一次落定后再写最后一次点选，回包不会倒着覆盖
+      } else {
+        delete starWrites[id];
+      }
+      paintStar(id, write.wanted);
+    }, function (err) {
+      delete starWrites[id];
+      paintStar(id, write.saved);
+      toast(err.message);
+    });
+  }
+
+  /** 点⭐立即亮，连续点按同一张卡排队；⭐ 筛着时取消，卡先留在眼前，换筛选再走。 */
+  function setStar(id, on, btn) {
+    var write = starWrites[id];
+    if (!write) {
+      write = starWrites[id] = { saved: !on, wanted: on, busy: false };
+    }
+    write.wanted = on;
+    paintStar(id, on);
     if (on && btn) {
       btn.classList.add('star-pop');
     }
-    api('POST', '/api/memories/' + id + '/star', { starred: on }).then(null, function (err) {
-      apply(!on);
-      toast(err.message);
-    });
+    if (!write.busy) {
+      sendStar(id, write);
+    }
   }
 
   function memCard(m) {
