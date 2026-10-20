@@ -102,8 +102,11 @@
       Sheet().renderSheet();
       var t = ed.refs.text;
       if (t) {
-        t.focus({ preventScroll: true });
-        t.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        // 不加 preventScroll：iPhone 弹键盘时自己会把框挪到键盘上面（加了它，要先打一个字才挪上来）
+        t.focus();
+        var end = t.value.length;
+        t.setSelectionRange(end, end); // 改一圈时光标放在最后，接着往下写
+        liftAboveKeyboard(t);
       }
     };
     if (!dirty(sh)) {
@@ -115,6 +118,37 @@
         go();
       }
     });
+  }
+
+  /** 兜底：键盘弹出来以后框的底边还在键盘下面，就把面板里面往上滚到露出来。
+      iPhone 弹键盘时网页不会变矮，半高的面板底下没地方可滚：键盘开着时先在面板底部垫出键盘那么高的空，键盘收起再拿掉 */
+  function liftAboveKeyboard(el) {
+    var vv = window.visualViewport;
+    var scroller = document.getElementById('sheet');
+    if (!vv || !scroller) {
+      return;
+    }
+    var fix = function () {
+      var kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      var a = document.activeElement;
+      if (!kb || !a || !a.closest || !a.closest('#sheet .ed')) {
+        vv.removeEventListener('resize', fix);
+        scroller.style.paddingBottom = '';
+        return;
+      }
+      scroller.style.paddingBottom = 'calc(28px + ' + kb + 'px)';
+      var over = a.getBoundingClientRect().bottom - (vv.offsetTop + vv.height - 16);
+      if (over > 0) {
+        scroller.scrollTop += over;
+      }
+    };
+    vv.removeEventListener('resize', fix);
+    vv.addEventListener('resize', fix);
+    setTimeout(function () {
+      if (document.activeElement === el) {
+        fix(); // 键盘本来就开着（没有 resize）时也查一次
+      }
+    }, 600);
   }
 
   function closeEditor(sh, focusKey) {
