@@ -24,7 +24,6 @@ description: 做网页、界面、交互、动画、输入框之前先读：轩�
    ❌ 弯路：`repeating-linear-gradient`、伪元素、`background-size` 裁剪。iOS 会把渐变按元素大小拉伸。
 3. **内容把列撑宽，iPhone 整页被缩放**：flex / grid 里的列加 `min-width: 0`。
    ❌ 弯路：挨个改输入框的 `min-width`、`contain: inline-size`、全局 `overflow: hidden`。
-4. **面板里改了、界面也跟着变了，关掉却没存**：所有关法（点叉、点背景、往下滑）都要存，或者一改就自动存。
 
 ## 验收
 

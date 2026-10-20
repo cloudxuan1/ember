@@ -1,4 +1,5 @@
-/* ember 记忆库网页 · 底部面板：点开一条看全文 / 上一版 / 回退 / 清掉 / 删除，编辑，右下角 + 新写一条。
+/* ember 记忆库网页 · 底部面板：点开一张卡看年轮 / 上一版 / 回退 / 清掉 / 删除，改标题和便利贴，右下角 + 新写一张。
+   年轮那一段（补圈 / 改圈 / 删圈）在 console-rings.js；往上推展开到顶在 console-sheet-drag.js。
    状态都在 console.js 的 S 里（S.sheet）。服务器给的字一律 textContent，不用 innerHTML。 */
 (function () {
   'use strict';
@@ -16,6 +17,13 @@
 
   var TOP_TAGS = 12;
 
+  function Rings() {
+    return window.EmberRings;
+  }
+  function Drag() {
+    return window.EmberSheetDrag;
+  }
+
   // =====================================================================
   // 底部面板：开 / 关
   // =====================================================================
@@ -28,6 +36,9 @@
     layer.classList.remove('closing');
     layer.hidden = false;
     L.setInertForModal();
+    if (Drag()) {
+      Drag().reset(); // 每次打开都从半高开始
+    }
     $('sheet').scrollTop = 0;
     $('sheet-dialog').focus({ preventScroll: true });
   }
@@ -71,10 +82,13 @@
 
   function editDirty(sh) {
     var ed = sh && sh.ed;
+    if (sh && sh.mode === 'view') {
+      return Rings().dirty(sh);
+    }
     if (!ed || (sh.mode !== 'edit' && sh.mode !== 'new')) {
       return false;
     }
-    return ed.text !== ed.orig.text || ed.date !== ed.orig.date || ed.sel.join(',') !== ed.orig.tags;
+    return ed.title !== ed.orig.title || ed.text !== ed.orig.text || ed.date !== ed.orig.date || ed.sel.join(',') !== ed.orig.tags;
   }
 
   /** 点遮罩 / 按 Esc：正在写的有改动就先问一句 */
@@ -94,8 +108,12 @@
     });
   }
 
-  function openDetail(id, listItem, opener) {
-    S.sheet = { mode: 'view', id: id, mem: listItem || null, full: false, prevOpen: false, opener: opener || null, focusKeys: L.focusKeys(opener), req: 0, busy: false };
+  /** spot = 从某个月 / 搜索点进来时要滚到、闪一下的那一圈（编号），没有就 null */
+  function openDetail(id, listItem, opener, spot) {
+    S.sheet = {
+      mode: 'view', id: id, mem: listItem || null, full: false, prevOpen: false, opener: opener || null, focusKeys: L.focusKeys(opener),
+      req: 0, busy: false, ring: null, spot: spot == null ? null : spot, spotOn: spot != null, needScroll: spot != null, flash: null
+    };
     showSheet();
     renderSheet();
     fetchDetail();
@@ -107,7 +125,7 @@
       return;
     }
     var req = ++sh.req;
-    api('GET', '/api/memories/' + sh.id).then(function (mem) {
+    return api('GET', '/api/memories/' + sh.id).then(function (mem) {
       if (S.sheet !== sh || req !== sh.req) {
         return;
       }
@@ -117,11 +135,20 @@
       if (sh.mode === 'view') {
         renderSheet();
       }
+      return mem;
     }, function (err) {
       if (S.sheet !== sh || req !== sh.req) {
         return;
       }
       toast(err.message);
+      if (err.status === 404 && editDirty(sh)) {
+        if (sh.ring) {
+          sh.ring.err = '这张卡已被删掉了；你写的内容还在，请先复制再关闭';
+        }
+        renderSheet();
+        afterChange(false);
+        return;
+      }
       if (err.status === 404 || !sh.mem) {
         closeSheet();
         if (err.status === 404) {
@@ -140,15 +167,27 @@
 
   function renderSheet() {
     var sh = S.sheet;
-    var el = L.clear($('sheet'));
+    var el = $('sheet');
+    var top = el.scrollTop; // 重画（拉完全文、存好一圈…）不让面板跳回顶上
+    var a = document.activeElement;
+    var inEd = sh && sh.ring && a && a.closest && a.closest('.ed') ? ({ TEXTAREA: 'text', INPUT: 'date' }[a.tagName] || 'save') : null;
+    L.clear(el);
+    renderHead(sh);
     if (!sh) {
       return;
     }
     if (sh.mode === 'view') {
-      $('sheet-dialog').setAttribute('aria-label', '记忆 #' + sh.id);
+      $('sheet-dialog').setAttribute('aria-label', (sh.mem && sh.mem.title ? '「' + sh.mem.title + '」' : '卡 #' + sh.id) + ' · 年轮');
       renderView(el, sh);
+      el.scrollTop = top;
+      if (sh.mem) {
+        Rings().scrollToSpot(sh, el);
+      }
+      if (inEd && sh.ring && sh.ring.refs[inEd]) {
+        sh.ring.refs[inEd].focus({ preventScroll: true }); // 正写着一圈，面板在底下刷新了：焦点留在原处
+      }
     } else {
-      $('sheet-dialog').setAttribute('aria-label', sh.mode === 'new' ? '写一条新的记忆' : '编辑记忆 #' + sh.id);
+      $('sheet-dialog').setAttribute('aria-label', sh.mode === 'new' ? '写一张新卡' : '改 #' + sh.id + ' 的标题和便利贴');
       renderEdit(el, sh);
     }
     // 点的按钮被重画掉了（编辑 / 保存 / 回退 / 清掉…）：焦点留在面板上，别掉回页面开头
@@ -170,6 +209,9 @@
     var which = i === 0 ? '较新的一版' : '更早的一版';
     if (n > 1) {
       kids.push(h('span', { class: 'prevmeta', text: which + ' · ' + verMeta(v) }));
+    }
+    if ('title' in v && (v.title || '') !== (m.title || '')) {
+      kids.push(h('span', { class: 'prevline', text: '那一版的标题：' + (v.title || '没写标题') }));
     }
     if (v.date !== m.date) {
       kids.push(h('span', { class: 'prevline', text: '那一版的日子：' + L.dateBig(v.date) }));
@@ -230,30 +272,60 @@
     return box;
   }
 
+  /** 面板顶上不跟着滚的那一条：标题、⭐、关闭（只在看卡时有；编辑 / 新写自己带标题行） */
+  function renderHead(sh) {
+    var head = L.clear($('sheet-head'));
+    head.hidden = !sh || sh.mode !== 'view';
+    if (head.hidden) {
+      return;
+    }
+    var m = sh.mem;
+    var titled = !!(m && m.title);
+    head.appendChild(h('h2', { class: titled ? 'stitle' : 'stitle stitle-none', text: titled ? m.title : (m ? '没写标题' : '#' + sh.id) }));
+    if (m) {
+      head.appendChild(App.starBtn(m, 'shead-star'));
+    }
+    head.appendChild(closeBtn('关闭', requestClose)); // 跟点背景、Esc 一样：写了一半先问一句
+  }
+
+  /** '2026-10-18 15:40:12' → 10 月 18 日（不是今年的加上年份） */
+  function dayLabel(at) {
+    var p = L.parseMemDate(String(at || '').slice(0, 10));
+    if (!p || !p.d) {
+      return '';
+    }
+    return (p.y === L.curYear() ? '' : p.y + ' 年 ') + p.m + ' 月 ' + p.d + ' 日';
+  }
+
+  /** 「来自」那一行：老记忆写来源文件 / 小节；没有来源写哪天存进来的 */
+  function fromLine(m) {
+    var refs = (m.sources || []).map(function (x) { return String(x.source_ref || '').trim(); }).filter(Boolean);
+    if (refs.length) {
+      return h('span', { class: 'from' }, icon('doc', 16), h('span', { text: '来自：' + refs.join('、') }));
+    }
+    var day = dayLabel(m.created_at);
+    return day ? h('span', { class: 'from' }, icon('chat', 16), h('span', { text: '来自：' + day + '存进来的' })) : null;
+  }
+
   function renderView(el, sh) {
     var m = sh.mem;
     if (!m) {
-      el.appendChild(h('div', { class: 'dhead' },
-        h('span', { class: 'dheadl' }, h('span', { class: 'ddate' }, h('span', { class: 'ddate-big', text: '#' + sh.id }))),
-        closeBtn('关闭', closeSheet)));
       el.appendChild(h('span', { class: 'loading', text: '正在打开……' }));
       return;
     }
     var tags = L.splitTags(m.tags);
-    el.appendChild(h('div', { class: 'dhead' },
-      h('span', { class: 'dheadl' },
-        h('span', { class: 'ddate' },
-          h('span', { class: 'ddate-big', text: L.dateBig(m.date) }),
-          h('span', { class: 'ddate-wk', text: L.weekday(m.date) })),
-        h('span', { class: 'tags' },
-          h('span', { class: 'tag tag-no', text: '#' + m.id }),
-          tags.map(function (t) { return h('span', { class: L.tagClass(t), text: t }); }))),
-      closeBtn('关闭', closeSheet)));
-    el.appendChild(h('span', { class: 'dtext', text: m.content }));
+    el.appendChild(h('div', { class: 'smeta' },
+      h('span', { class: 'tag tag-drawer', text: m.drawer || '日常' }),
+      h('span', { class: 'tag tag-no', text: '#' + m.id }),
+      sh.full ? fromLine(m) : null));
+    if (tags.length) {
+      el.appendChild(h('div', { class: 'tags stags' }, tags.map(function (t) { return h('span', { class: L.tagClass(t), text: t }); })));
+    }
+    el.appendChild(Rings().timeline(sh));
     el.appendChild(prevBox(sh));
     el.appendChild(h('div', { class: 'grid2' },
-      h('button', { class: 'press btn-soft bigbtn', type: 'button', disabled: !sh.full, onclick: function () { startEdit(sh); } }, icon('edit', 18), '编辑'),
-      h('button', { class: 'press btn-danger bigbtn', type: 'button', onclick: function () { askDelete(sh); } }, icon('trash', 18), '删除')));
+      h('button', { class: 'press btn-soft bigbtn', type: 'button', disabled: !sh.full, onclick: function () { startEdit(sh); } }, icon('edit', 18), '标题和便利贴'),
+      h('button', { class: 'press btn-danger bigbtn', type: 'button', onclick: function () { askDelete(sh); } }, icon('trash', 18), '删整张卡')));
   }
 
   function revertTo(sh, v) {
@@ -304,15 +376,16 @@
   function askDelete(sh) {
     var days = S.settings ? S.settings.activity_days : 30;
     L.confirmDialog({
-      title: '删掉 #' + sh.id + '？',
-      msg: '删掉以后，' + days + ' 天内还能在最近动静里恢复。',
+      title: '删掉整张卡 #' + sh.id + '？',
+      msg: '连同所有的圈一起删。删掉以后，' + days + ' 天内还能在最近动静里恢复。',
       ok: '删除'
     }).then(function (ok) {
       if (!ok || S.sheet !== sh) {
         return;
       }
-      api('DELETE', '/api/memories/' + sh.id).then(function () {
-        toast('删掉了，最近动静里还能恢复');
+      var id = sh.id;
+      api('DELETE', '/api/memories/' + id).then(function () {
+        toast('删掉了整张卡', { label: '撤回', run: function () { undoDeleteCard(id); } });
         if (S.sheet === sh) {
           closeSheet();
         }
@@ -327,13 +400,25 @@
     });
   }
 
+  /** 防手滑：删整张卡后提示条上的「撤回」，跟最近动静里的「恢复」是同一件事 */
+  function undoDeleteCard(id) {
+    api('POST', '/api/memories/' + id + '/restore').then(function () {
+      toast('撤回了，#' + id + ' 回来了');
+      afterChange(null);
+    }, function (err) {
+      toast(err.message);
+      afterChange(null);
+    });
+  }
+
   // =====================================================================
   // 底部面板：编辑 / 新写
   // =====================================================================
-  function newEd(date, text, tags, expect) {
+  function newEd(title, date, text, tags, expect) {
     var p = L.parseMemDate(date);
     var sel = L.splitTags(tags);
     return {
+      title: title || '',
       prec: p && !p.d ? 'month' : 'day',
       date: date || '',
       text: text || '',
@@ -341,16 +426,27 @@
       cands: sel.slice(),
       expect: expect,
       busy: false,
-      orig: { date: date || '', text: text || '', tags: sel.join(',') },
+      orig: { title: title || '', date: date || '', text: text || '', tags: sel.join(',') },
       refs: {}
     };
   }
 
+  /** 编辑整张卡只改标题和便利贴：日子和内容在年轮里一圈一圈改 */
   function startEdit(sh) {
     if (!sh.mem || !sh.full) {
       return;
     }
-    sh.ed = newEd(sh.mem.date, sh.mem.content, sh.mem.tags, sh.mem.updated_at || null);
+    if (Rings().dirty(sh)) {
+      L.confirmDialog({ title: '刚写的不要了？', msg: '那一圈还没存。', ok: '不要了' }).then(function (ok) {
+        if (ok && S.sheet === sh) {
+          sh.ring = null;
+          startEdit(sh);
+        }
+      });
+      return;
+    }
+    sh.ring = null;
+    sh.ed = newEd(sh.mem.title, sh.mem.date, sh.mem.content, sh.mem.tags, sh.mem.updated_at || null);
     sh.mode = 'edit';
     sh.prevOpen = false;
     renderSheet();
@@ -359,8 +455,8 @@
   }
 
   function startNew(opener) {
-    S.sheet = { mode: 'new', id: null, mem: null, full: false, prevOpen: false, opener: opener || null, req: 0, busy: false };
-    S.sheet.ed = newEd(L.bjDay(0), '', '', null);
+    S.sheet = { mode: 'new', id: null, mem: null, full: false, prevOpen: false, opener: opener || null, req: 0, busy: false, ring: null };
+    S.sheet.ed = newEd('', L.bjDay(0), '', '', null);
     showSheet();
     renderSheet();
     loadTagCands(S.sheet);
@@ -491,10 +587,45 @@
   function renderEdit(el, sh) {
     var ed = sh.ed;
     var r = ed.refs = {};
+    var isNew = sh.mode === 'new';
     el.appendChild(h('div', { class: 'edhead' },
-      h('h2', { class: 'edtitle', text: sh.mode === 'new' ? '写一条新的' : '编辑 #' + sh.id }),
-      closeBtn(sh.mode === 'new' ? '不写了' : '取消编辑', cancelEdit)));
+      h('h2', { class: 'edtitle', text: isNew ? '写一张新卡' : '标题和便利贴 #' + sh.id }),
+      closeBtn(isNew ? '不写了' : '取消编辑', cancelEdit)));
 
+    // 标题（可选）
+    r.title = h('input', { id: 'ed-title', class: 'field', type: 'text', placeholder: '不写就显示内容开头', autocomplete: 'off', maxlength: '80', enterkeyhint: 'done' });
+    r.title.value = ed.title;
+    r.title.addEventListener('input', function () {
+      ed.title = r.title.value;
+      updateEdit(sh);
+    });
+    el.appendChild(h('div', { class: 'fgroup' }, h('label', { class: 'flabel', for: 'ed-title' }, '标题（可选）'), r.title));
+    if (!isNew) {
+      el.appendChild(h('span', { class: 'fhint fhint-block', text: '日子和内容在年轮里改：点那一圈右边的笔。' }));
+    }
+    if (isNew) {
+      renderFirstRing(el, sh);
+    }
+    renderTagsGroup(el, sh);
+
+    r.warn = h('span', { class: 'fwarn', 'aria-live': 'polite' });
+    el.appendChild(r.warn);
+    r.save = h('button', { class: 'press btn-primary bigbtn', type: 'button', onclick: function () { saveEdit(sh); } }, '保存');
+    el.appendChild(h('div', { class: 'grid2' },
+      h('button', { class: 'press btn-ghost bigbtn', type: 'button', onclick: cancelEdit }, '取消'),
+      r.save));
+
+    renderTagChips(sh);
+    updateEdit(sh);
+    if (r.text) {
+      requestAnimationFrame(function () { autoGrow(r.text); });
+    }
+  }
+
+  /** 新写一张：第一圈的日子和内容 */
+  function renderFirstRing(el, sh) {
+    var ed = sh.ed;
+    var r = ed.refs;
     // 发生的日子
     r.segDay = h('button', { class: 'press segbtn', type: 'button', onclick: function () { setPrec(sh, 'day'); } }, '具体到哪天');
     r.segMonth = h('button', { class: 'press segbtn', type: 'button', onclick: function () { setPrec(sh, 'month'); } }, '只记得月份');
@@ -514,9 +645,12 @@
       autoGrow(r.text);
       updateEdit(sh);
     });
-    el.appendChild(h('div', { class: 'fgroup' }, h('label', { class: 'flabel', for: 'ed-text' }, '内容'), r.text));
+    el.appendChild(h('div', { class: 'fgroup' }, h('label', { class: 'flabel', for: 'ed-text' }, '内容（第一圈）'), r.text));
+  }
 
-    // 标签
+  function renderTagsGroup(el, sh) {
+    var ed = sh.ed;
+    var r = ed.refs;
     r.tagwrap = h('div', { class: 'tagwrap', role: 'group', 'aria-labelledby': 'ed-tags-label' });
     r.newtag = h('input', {
       id: 'ed-newtag', class: 'field', type: 'text', placeholder: '新标签，几个可以用逗号隔开',
@@ -529,41 +663,18 @@
       }
     });
     el.appendChild(h('div', { class: 'fgroup' },
-      h('span', { class: 'flabel', id: 'ed-tags-label' }, '标签（可选）'),
+      h('span', { class: 'flabel', id: 'ed-tags-label' }, '便利贴（可选）'),
       r.tagwrap,
       h('div', { class: 'tagadd' }, r.newtag,
         h('button', { class: 'press btn-ghost', type: 'button', onclick: function () { addNewTags(sh); } }, '添加'))));
-
-    r.warn = h('span', { class: 'fwarn', 'aria-live': 'polite' });
-    el.appendChild(r.warn);
-    r.save = h('button', { class: 'press btn-primary bigbtn', type: 'button', onclick: function () { saveEdit(sh); } }, '保存');
-    el.appendChild(h('div', { class: 'grid2' },
-      h('button', { class: 'press btn-ghost bigbtn', type: 'button', onclick: cancelEdit }, '取消'),
-      r.save));
-
-    renderTagChips(sh);
-    updateEdit(sh);
-    requestAnimationFrame(function () { autoGrow(r.text); });
   }
 
   function updateEdit(sh) {
     var ed = sh.ed;
     var r = ed.refs;
-    var day = ed.prec === 'day';
-    r.segDay.classList.toggle('seg-on', day);
-    r.segMonth.classList.toggle('seg-on', !day);
-    r.segDay.setAttribute('aria-pressed', day ? 'true' : 'false');
-    r.segMonth.setAttribute('aria-pressed', day ? 'false' : 'true');
-    r.dateHint.textContent = day ? '点一下选是哪天' : '只记得月份就选月份，比如 2026-07';
-    var dateOk = !!L.normalizeInputDate(ed.prec, ed.date);
-    var textOk = ed.text.trim().length > 0;
     var warn = '';
-    if (!textOk && !dateOk) {
-      warn = '内容和发生的日子都填好，就能保存';
-    } else if (!textOk) {
-      warn = '内容不能是空的';
-    } else if (!dateOk) {
-      warn = '发生的日子还没填好';
+    if (sh.mode === 'new') {
+      warn = firstRingWarn(ed, r);
     }
     r.warn.textContent = warn;
     r.warn.hidden = !warn;
@@ -573,16 +684,43 @@
     r.save.textContent = ed.busy ? '正在存……' : '保存';
   }
 
+  /** 新写一张：日子、内容都要填好，日子不能是以后 */
+  function firstRingWarn(ed, r) {
+    var day = ed.prec === 'day';
+    r.segDay.classList.toggle('seg-on', day);
+    r.segMonth.classList.toggle('seg-on', !day);
+    r.segDay.setAttribute('aria-pressed', day ? 'true' : 'false');
+    r.segMonth.setAttribute('aria-pressed', day ? 'false' : 'true');
+    r.dateHint.textContent = day ? '点一下选是哪天' : '只记得月份就选月份，比如 2026-07';
+    var date = L.normalizeInputDate(ed.prec, ed.date);
+    var dateOk = !!date;
+    var textOk = ed.text.trim().length > 0;
+    var today = L.bjDay(0);
+    if (dateOk && date > (day ? today : today.slice(0, 7))) {
+      return '不能写以后的日子，打算哪天做写进内容里';
+    }
+    if (!textOk && !dateOk) {
+      return '内容和发生的日子都填好，就能保存';
+    }
+    if (!textOk) {
+      return '内容不能是空的';
+    }
+    return dateOk ? '' : '发生的日子还没填好';
+  }
+
   function saveEdit(sh) {
     var ed = sh.ed;
+    var isNew = sh.mode === 'new';
     var date = L.normalizeInputDate(ed.prec, ed.date);
     var content = ed.text.trim();
-    if (!date || !content || ed.busy) {
+    if (ed.busy || (isNew && (!date || !content || firstRingWarn(ed, ed.refs)))) {
       return;
     }
     ed.busy = true;
     updateEdit(sh);
-    var body = { date: date, content: content, tags: ed.sel.join(',') };
+    var body = isNew
+      ? { title: ed.title.trim(), date: date, content: content, tags: ed.sel.join(',') }
+      : { title: ed.title.trim(), tags: ed.sel.join(',') };
     var done = function () {
       ed.busy = false;
       if (S.sheet === sh && sh.ed === ed) {
@@ -592,11 +730,11 @@
 
     if (sh.mode === 'new') {
       api('POST', '/api/memories', body).then(function (data) {
-        toast('存好了 #' + data.id);
+        toast('存好了一张新卡 #' + data.id);
         if (S.sheet === sh) {
           closeSheet();
         }
-        // 回到「全部」，新写的那条能看见
+        // 回到「全部」，新写的那张能看见
         App.resetLibraryView();
         afterChange(null);
       }, function (err) {
@@ -647,6 +785,7 @@
   window.EmberSheet = {
     openDetail: openDetail,
     fetchDetail: fetchDetail,
+    renderSheet: renderSheet,
     startNew: startNew,
     requestClose: requestClose
   };

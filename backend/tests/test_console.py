@@ -90,6 +90,7 @@ def test_month_chips_cover_the_whole_library_instead_of_the_first_page(client):
         conn.executemany("INSERT INTO memories (date, content) VALUES (?, ?)",
                          [("2026-10-18", f"十月 {i}") for i in range(201)] +
                          [(f"2026-{month:02d}", "更早的") for month in (9, 8, 7)])
+        conn.execute("INSERT INTO memory_rings (memory_id, date, content) SELECT id, date, content FROM memories")
     first = client.get("/api/memories?page_size=200").json()
     assert len(first["items"]) == 200 and all(m["date"] == "2026-10-18" for m in first["items"])
     assert first["months"] == ["2026-10", "2026-09", "2026-08", "2026-07"]
@@ -450,8 +451,9 @@ def test_saving_normalized_form_repairs_legacy_values_without_an_edit(client):
 
 def test_month_filter_still_finds_legacy_unpadded_days_and_rejects_inverted_ranges(client):
     mid = _save("老格式日期")
-    with get_conn() as conn:
+    with get_conn() as conn:  # 老数据搬家时日期原样抄进第一圈，没补零的也照抄
         conn.execute("UPDATE memories SET date = '2026-08-5' WHERE id = ?", (mid,))
+        conn.execute("UPDATE memory_rings SET date = '2026-08-5' WHERE memory_id = ?", (mid,))
     assert [i["id"] for i in client.get("/api/memories?date_from=2026-08&date_to=2026-08").json()["items"]] == [mid]
     assert client.get("/api/memories?date_from=2026-08-20&date_to=2026-08-10").status_code == 400
 
@@ -483,3 +485,92 @@ def test_root_serves_the_page_without_caching(client):
     resp = client.get("/")
     assert resp.status_code == 200 and resp.headers["cache-control"] == "no-store"
     assert "/static/console/console.js" in resp.text and 'id="brand"' in resp.text
+
+
+# ---------- 年轮卡（PR4）：混着来的月份、⭐ / 饼、补圈 / 改圈 / 删圈 ----------
+
+
+@pytest.fixture
+def today(monkeypatch):
+    monkeypatch.setattr(memories, "_today", lambda: "2026-10-20")
+
+
+def test_month_filter_mixes_cards_by_any_ring(client, today):
+    cake = _save("编的：在甜品店说好学做抹茶蛋糕", date="2026-08-09", title="学做抹茶蛋糕")
+    memories.add_ring(cake, "2026-09-06", "编的：第一次做，塌了一半")
+    memories.add_ring(cake, "2026-10-18", "编的：第三次成功了")
+    walk = _save("编的：九月底散步", date="2026-09-28")
+    whole = client.get("/api/memories").json()
+    assert [i["id"] for i in whole["items"]] == [cake, walk]  # 全部：只出现一次，按最新一圈
+    assert whole["months"] == ["2026-10", "2026-09", "2026-08"]
+    assert [r["date"] for r in whole["items"][0]["rings"]] == ["2026-08-09", "2026-09-06", "2026-10-18"]
+    assert whole["items"][0]["drawer"] == "日常"
+    sep = client.get("/api/memories?date_from=2026-09&date_to=2026-09").json()
+    assert [i["id"] for i in sep["items"]] == [walk, cake]  # 按九月那一圈排：09-28 在 09-06 前面
+    aug = client.get("/api/memories?date_to=2026-08").json()  # 「更早」
+    assert [i["id"] for i in aug["items"]] == [cake]
+    assert [i["id"] for i in client.get("/api/memories?q=抹茶蛋糕").json()["items"]] == [cake]  # 标题也搜
+    assert [i["id"] for i in client.get("/api/memories?q=塌了").json()["items"]] == [cake]  # 每一圈也搜
+
+
+def test_star_and_pie_filters(client):
+    pie = _save("编的：约好一起读完一本书", tags="连理饼,读书")
+    eaten = _save("编的：阳台挂上了小灯", tags="筑巢饼,吃到了")
+    dough = _save("编的：有点想学游泳", tags="面团")
+    pumpkin = _save("编的：下午吃了南瓜饼", tags="吃的")
+    assert [i["id"] for i in client.get("/api/memories?pie=1").json()["items"]] == [eaten, pie]
+    assert client.post(f"/api/memories/{dough}/star", json={"starred": True}).json() == {"id": dough, "starred": True}
+    client.post(f"/api/memories/{pie}/star", json={"starred": True})
+    assert [i["id"] for i in client.get("/api/memories?starred=1").json()["items"]] == [dough, pie]
+    assert [i["id"] for i in client.get("/api/memories?starred=1&pie=1").json()["items"]] == [pie]
+    assert [i["id"] for i in client.get("/api/memories?q=南瓜饼").json()["items"]] == [pumpkin]
+    assert client.post(f"/api/memories/{pie}/star", json={"starred": "yes"}).status_code == 400
+    assert client.post("/api/memories/99999/star", json={"starred": True}).status_code == 404
+    assert _acts(client)[0]["action"] == "save"  # 点⭐不进最近动静
+
+
+def test_ring_endpoints(client, today):
+    mid = _save("编的：约好等天凉了去海边", date="2026-08-30", title="去海边住一晚")
+    seen = client.get(f"/api/memories/{mid}").json()
+    assert [r["content"] for r in seen["rings"]] == ["编的：约好等天凉了去海边"]
+    resp = client.post(f"/api/memories/{mid}/rings", json={
+        "date": "2026-10-16", "content": " 编的：存了两家民宿 ", "expect_updated_at": seen["updated_at"]})
+    assert resp.status_code == 201
+    body = resp.json()
+    ring_id = body["ring_id"]
+    assert body["memory"]["date"] == "2026-10-16" and len(body["memory"]["history"]) == 1
+    assert body["memory"]["rings"][-1] == {**body["memory"]["rings"][-1], "id": ring_id, "content": "编的：存了两家民宿"}
+    stale = client.patch(f"/api/memories/{mid}/rings/{ring_id}", json={
+        "date": "2026-10-17", "content": "编的：改", "expect_updated_at": seen["updated_at"]})
+    assert stale.status_code == 409
+    fresh = body["memory"]["updated_at"]
+    edited = client.patch(f"/api/memories/{mid}/rings/{ring_id}", json={
+        "date": "2026-10", "content": "编的：十月存了两家", "expect_updated_at": fresh}).json()
+    assert edited["changed"] is True and edited["memory"]["rings"][-1]["date"] == "2026-10"
+    assert client.post(f"/api/memories/{mid}/rings", json={"date": "2026-12-01", "content": "编的：以后"}).status_code == 400
+    assert client.post(f"/api/memories/{mid}/rings", json=["不是对象"]).status_code == 400
+    assert client.patch(f"/api/memories/{mid}/rings/99999", json={"date": "2026-10-01", "content": "编的"}).status_code == 404
+    gone = client.request("DELETE", f"/api/memories/{mid}/rings/{ring_id}",
+                          json={"expect_updated_at": edited["memory"]["updated_at"]})
+    assert gone.status_code == 200 and len(gone.json()["memory"]["rings"]) == 1
+    first = gone.json()["memory"]["rings"][0]["id"]
+    last = client.delete(f"/api/memories/{mid}/rings/{first}")
+    assert last.status_code == 400 and "最后一圈" in last.json()["error_description"]
+    act = _acts(client)[0]
+    assert (act["action"], act["can"], act["title"]) == ("edit", "revert", "去海边住一晚")
+    undo = client.post(f"/api/memories/{mid}/revert", json={  # 提示条上的「撤回」
+        "history_id": gone.json()["history_id"], "expect_updated_at": gone.json()["memory"]["updated_at"]})
+    assert undo.status_code == 200
+    assert [r["content"] for r in undo.json()["memory"]["rings"]] == ["编的：约好等天凉了去海边", "编的：十月存了两家"]
+
+
+def test_ring_and_star_endpoints_need_the_browser_login(gated):
+    mid = _save("编的：一张卡")
+    for method, path, body in (
+        ("POST", f"/api/memories/{mid}/rings", {"date": "2026-07-02", "content": "编的"}),
+        ("PATCH", f"/api/memories/{mid}/rings/1", {"date": "2026-07-02", "content": "编的"}),
+        ("DELETE", f"/api/memories/{mid}/rings/1", None),
+        ("POST", f"/api/memories/{mid}/star", {"starred": True}),
+    ):
+        for headers in ({}, BEARER, MCP_BEARER):
+            assert gated.request(method, path, json=body, headers=headers).status_code == 401
