@@ -4,16 +4,18 @@
 - activity_days：最近动静显示多少天（默认 30），也是删掉的记忆还能恢复的期限，过了才真删。
 - ke_can_delete：小克能不能用 memory_delete 删记忆（默认开）。
 - ke_can_star：小克能不能给卡点⭐（默认开，轩 2026-10-20 定）。
+- briefing_pies：开场简报最多带几张没吃到的饼（默认 4，沿用原来「没完的事」的条数；0 = 不带）。
 """
 
 import json
 
 from app.db import get_conn
 
-DEFAULTS = {"history_keep": 1, "activity_days": 30, "ke_can_delete": True, "ke_can_star": True}
+DEFAULTS = {"history_keep": 1, "activity_days": 30, "ke_can_delete": True, "ke_can_star": True, "briefing_pies": 4}
 SWITCHES = ("ke_can_delete", "ke_can_star")  # 开 / 关两种值的设置
 HISTORY_KEEP_CHOICES = (1, 2)
 ACTIVITY_DAYS_RANGE = (1, 365)
+BRIEFING_PIES_RANGE = (0, 8)  # 开场一共最多 8 条（briefing.TOTAL_CAP）
 
 
 def get_settings(conn=None) -> dict:
@@ -35,6 +37,10 @@ def _validate(key: str, value):
         lo, hi = ACTIVITY_DAYS_RANGE
         if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
             raise ValueError(f"activity_days 要是 {lo}–{hi} 的整数")
+    elif key == "briefing_pies":
+        lo, hi = BRIEFING_PIES_RANGE
+        if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+            raise ValueError(f"briefing_pies 要是 {lo}–{hi} 的整数")
     elif key in SWITCHES:
         if not isinstance(value, bool):
             raise ValueError(f"{key} 要是 true / false")

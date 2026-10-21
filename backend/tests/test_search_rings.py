@@ -840,3 +840,19 @@ def test_star_does_not_touch_fingerprints():
     CALLS.clear()
     memories.set_star(mid, True)
     assert CALLS == [] and _rings_missing() == 0
+
+
+def test_status_counts_missing_and_outdated_ring_fingerprints(monkeypatch):
+    a = _save("编的：去看了一场雨")
+    b = _save("编的：搬完箱子")
+    assert mcp_server.memory_status()["ring_fingerprints"] | {"note": ""} == {
+        "enabled": True, "rings": 2, "missing": 0, "outdated": 0, "note": "",
+    }
+    with get_conn() as c:  # 一圈的指纹没了，另一圈的摘要对不上（比如补算时网断了一半）
+        c.execute("DELETE FROM ring_embeddings WHERE memory_id = ?", (a,))
+        c.execute("UPDATE ring_embeddings SET text_hash = 'old' WHERE memory_id = ?", (b,))
+    status = mcp_server.memory_status()["ring_fingerprints"]
+    assert (status["rings"], status["missing"], status["outdated"]) == (2, 1, 1)
+    assert "补算" in status["note"]
+    monkeypatch.setenv("EMBEDDING_MODEL", "test-model-b")  # 换了模型：旧模型的都算缺
+    assert mcp_server.memory_status()["ring_fingerprints"]["missing"] == 2

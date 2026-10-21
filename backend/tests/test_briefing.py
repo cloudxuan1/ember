@@ -1,4 +1,4 @@
-"""V6b：主动浮现（memory_briefing 三级漏斗）。
+"""V6b：主动浮现（memory_briefing 三级漏斗）。① 层年轮卡 PR3 起是「没吃到的饼」。
 
 纪律：sensitive 记忆永不进 briefing；①③ 层 3 天冷却、② 话题层不冷却；
 superseded 剔除；只看 personal；总上限 8 条。语义腿不可用时 ② 退关键词。
@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from app import briefing, memories
+from app import briefing, memories, settings
 from app.db import get_conn, init_db
 
 
@@ -33,24 +33,43 @@ def _future(days: int) -> str:
 # ---------- 三级漏斗 ----------
 
 
-def test_unfinished_interval_surfaces_with_reason():
-    ongoing = _save("朋友预产期临近", start_date="2026-06-01", end_date=_future(30))
-    _save("早就结束的事", start_date="2026-01-01", end_date="2026-02-01")
+def test_uneaten_pie_surfaces_eaten_and_dough_do_not():
+    """方案第七节：一张连理饼、一张连理饼 + 吃到了、一张面团，饼那一层只出第一张。"""
+    pie = _save("编的：说好明年一起去看极光", tags="连理饼,期待")
+    eaten = _save("编的：一起包了饺子", tags="连理饼,吃到了")
+    dough = _save("编的：也许可以养只猫", tags="面团")
+    _save("编的：正文里写着南瓜饼", tags="小吃")
     result = briefing.build_briefing()
-    items = {i["id"]: i for i in result["items"]}
-    assert items[ongoing]["reason"] == briefing.REASON_UNFINISHED
-    # ended 的区间不算"没完的事"（它只可能以"近期"身份出现）
-    ended_reasons = [i["reason"] for i in result["items"] if "结束" in i["content"]]
-    assert briefing.REASON_UNFINISHED not in ended_reasons
+    pies = [i["id"] for i in result["items"] if i["reason"] == briefing.REASON_PIE]
+    assert pies == [pie]
+    assert eaten not in pies
+    # 面团哪一层都不递：最近层、话题层也不行；主动搜索照样找得到
+    assert dough not in _ids(result) and dough not in _ids(briefing.build_briefing(topic="养只猫"))
+    assert dough in [r["id"] for r in memories.search_memories("养只猫")]
 
 
-def test_upcoming_counts_as_unfinished():
-    upcoming = _save("下月的约定", start_date=_future(10))
-    result = briefing.build_briefing()
-    assert any(
-        i["id"] == upcoming and i["reason"] == briefing.REASON_UNFINISHED
-        for i in result["items"]
-    )
+def test_pies_newest_ring_first_and_count_is_a_setting():
+    old = _save("编的：想学游泳", date="2026-03-01", tags="养成饼")
+    new = _save("编的：想去海边住几天", date="2026-06-01", tags="远方饼")
+    memories.add_ring(old, "2026-07-02", "编的：报了游泳课")  # 补了一圈 → 最新一圈更近，排到前面
+    third = _save("编的：想把阳台种满", date="2026-05-01", tags="筑巢饼")
+    pies = [i["id"] for i in briefing.build_briefing()["items"] if i["reason"] == briefing.REASON_PIE]
+    assert pies == [old, new, third]
+
+    # 设置管整份开场：饼不能换成「最近的事」「和眼下话题相关」再溜进来
+    for n, want in ((1, [old]), (0, [])):
+        settings.update_settings({"briefing_pies": n})
+        for topic in (None, "想"):
+            with get_conn() as conn:  # 每次都当第一次开场，不让上一次的冷却挡住
+                conn.execute("DELETE FROM briefing_log")
+            assert [i for i in _ids(briefing.build_briefing(topic=topic)) if i in (old, new, third)] == want
+
+
+def test_interval_fields_no_longer_surface_as_unfinished():
+    mid = _save("编的：以前的区间记忆", date="2026-01-01", start_date="2026-06-01", end_date=_future(30))
+    for i in range(3):
+        _save(f"编的：近来的事 {i}", date=f"2026-07-0{i + 2}")
+    assert mid not in _ids(briefing.build_briefing())
 
 
 def test_topic_resonance_via_keyword_fallback():
@@ -90,7 +109,7 @@ def test_recent_layer_sorts_by_event_date_not_created_at():
 
 
 def test_sensitive_never_surfaces_in_any_layer():
-    s1 = _save("敏感的事", tags="sensitive", start_date="2026-06-01")
+    s1 = _save("敏感的事", tags="连理饼,sensitive")
     s2 = _save("敏感的海边", tags="海边,sensitive")
     result = briefing.build_briefing(topic="海边 敏感")
     assert s1 not in _ids(result) and s2 not in _ids(result)
@@ -99,19 +118,20 @@ def test_sensitive_never_surfaces_in_any_layer():
 
 
 def test_superseded_never_surfaces():
-    old = _save("旧结论", start_date="2026-06-01")
+    old = _save("旧结论", tags="筑巢饼")
     _save("新结论", links=[{"id": old, "relation": "supersedes"}])
     assert old not in _ids(briefing.build_briefing(topic="结论"))
 
 
 def test_project_space_stays_out():
-    proj = _save("ember 施工细节", space="ember", start_date="2026-06-01")
+    proj = _save("ember 施工细节", space="ember", tags="筑巢饼")
     assert proj not in _ids(briefing.build_briefing(topic="ember 施工"))
 
 
 def test_total_cap_is_eight():
+    settings.update_settings({"briefing_pies": 8})
     for i in range(12):
-        _save(f"记忆 {i}", start_date="2026-06-01")
+        _save(f"记忆 {i}", tags="远方饼")
     assert briefing.build_briefing()["count"] <= briefing.TOTAL_CAP
 
 
@@ -119,13 +139,13 @@ def test_total_cap_is_eight():
 
 
 def test_cooldown_blocks_repeat_within_three_days():
-    mid = _save("进行中的事", start_date="2026-06-01")
+    mid = _save("还没吃到的饼", tags="连理饼")
     assert mid in _ids(briefing.build_briefing())
     assert mid not in _ids(briefing.build_briefing())  # 第二次开场不重复递
 
 
 def test_cooldown_expires_after_three_days():
-    mid = _save("进行中的事", start_date="2026-06-01")
+    mid = _save("还没吃到的饼", tags="连理饼")
     briefing.build_briefing()
     with get_conn() as conn:  # 把日志拨回 4 天前，模拟冷却过期
         conn.execute(
@@ -135,7 +155,7 @@ def test_cooldown_expires_after_three_days():
 
 
 def test_topic_layer_ignores_cooldown():
-    mid = _save("海边的约定", start_date="2026-06-01")
+    mid = _save("海边的约定", tags="远方饼")
     briefing.build_briefing()  # 以 ① 层身份递过一次，进了冷却
     result = briefing.build_briefing(topic="海边")
     items = {i["id"]: i for i in result["items"]}
