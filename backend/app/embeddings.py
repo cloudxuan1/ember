@@ -225,6 +225,19 @@ def _stale(conn, plans: list[dict], memory_id: int | None = None) -> list[dict]:
     return [p for p in plans if [(c[0], c[1], c[2], c[4]) for c in p["chunks"]] != have.get(p["ring_id"], [])]
 
 
+def ring_status() -> dict:
+    """按圈指纹齐不齐（memory_status 报给小克，坏了不用等人跑 --dry-run 才发现）：还在的圈一共几圈，
+    当前模型下一份都没有的几圈（missing）、有但跟现在的文本 / 摘录坐标对不上的几圈（outdated）。没配 embedding 只报没开。"""
+    if not (enabled() and vec_available()):  # 跟 embed_card 一样：两样都齐才算语义腿开着
+        return {"enabled": False}
+    with get_conn() as conn:
+        plans = _ring_plans(conn)
+        stale = _stale(conn, plans)
+        have = {r[0] for r in conn.execute("SELECT DISTINCT ring_id FROM ring_embeddings WHERE model = ?", (current_model(),))}
+    missing = sum(1 for p in stale if p["ring_id"] not in have)
+    return {"enabled": True, "rings": len(plans), "missing": missing, "outdated": len(stale) - missing}
+
+
 def _store_ring(conn, plan: dict, vectors: list[list[float]]) -> None:
     conn.execute("DELETE FROM ring_embeddings WHERE ring_id = ?", (plan["ring_id"],))
     conn.executemany(

@@ -1,12 +1,13 @@
-"""ember 的 MCP 工具层：存 / 搜 / 看 / 改 / 删 / 列 / 状态 + briefing（V6b）
-+ chat-lite 思考彩蛋词库两个工具，少而清楚。纪律写进工具本身。"""
+"""ember 的 MCP 工具层：存 / 补一圈 / 搜 / 看 / 改 / 删 / 列 / 状态 + briefing（V6b）
++ chat-lite 思考彩蛋词库两个工具，少而清楚。纪律写进工具本身，说明用人话（年轮卡 PR3）；工具名保持英文（客户端要求）。"""
 
 import os
+import textwrap
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from app import briefing, memories, settings, thinking_words
+from app import briefing, embeddings, memories, settings, thinking_words
 
 # FastMCP 默认只放行本机 Host 头（DNS-rebinding 防护），
 # 经 Cloudflare Tunnel 进来的请求带公网域名，必须显式加进白名单，否则 421。
@@ -32,6 +33,59 @@ mcp = FastMCP(
 )
 
 
+RULES = """记卡的规矩：
+1. 同一件事有了后续 → memory_add_ring 补一圈；一件新的事 → memory_save 新卡；心情小日记一天一张。
+2. 分量重的结果（值得单独记的时刻）→ 新存一张卡，原卡再补一圈「见 #编号」。
+3. 每一圈的日子 = 这一圈的事发生（或说出口）的那天，不能写以后的日子；打算哪天做，写进这一圈的内容里。
+   所以有某一圈 = 那件事已经发生了；饼兑没兑现，看有没有贴「吃到了」。
+4. 日子写具体的 YYYY-MM-DD（2026-10-18）或只到月 YYYY-MM（2026-07）。**不许写"最近""前几天""下周""昨天"**，
+   先按今天的日期换算成具体日子再写。
+5. 存的时候顺手贴一两张心情便利贴（着急、开心……）。
+6. 专用便利贴只贴在饼和灵感上：筑巢饼（建家、项目）、连理饼（两个人之间）、养成饼（个人成长）、
+   远方饼（要去的地方）；兑现了加贴「吃到了」；还没决定做不做的灵感贴「面团」（决定做了就把面团换成对应的饼）。
+   面团不进开场、不催，只是存着免得灵感丢了。
+7. 三个抽屉（space）：日常 personal（默认：发生过的事、心情小日记、饼）；长期 longterm（关于轩的常识，
+   按主题一张卡，只放常识不放事件，常识变了就在那张卡上补一圈）；项目（技术笔记，写项目名：ember / vps / …）。"""
+
+def _with_rules(fn):
+    """把记卡的规矩接在工具说明后面（工具说明就是 docstring，客户端看的是它）。"""
+    fn.__doc__ = fn.__doc__.rstrip() + "\n\n" + textwrap.indent(RULES, "    ") + "\n    "
+    return fn
+
+
+LEGACY_KEYS = ("tier", "topic", "start_date", "end_date", "interval_status")  # 年轮卡拿掉的老栏位，不再给小克看
+
+
+def _lean(item: dict) -> dict:
+    return {k: v for k, v in item.items() if k not in LEGACY_KEYS}
+
+
+def _card(memory: dict) -> dict:
+    """给小克看的一张卡：卡头 + 一圈一圈（从早到晚）+ 来自哪里。"""
+    out = {
+        "id": memory["id"],
+        "title": memory["title"],
+        "drawer": memory["drawer"],
+        "space": memory["space"],
+        "starred": bool(memory["starred"]),
+        "tags": memory["tags"],
+        "date": memory["date"],
+        "rings": [{"id": r["id"], "date": r["date"], "content": r["content"]} for r in memory["rings"]],
+        "sources": memory["sources"],
+        "created_at": memory["created_at"],
+        "updated_at": memory["updated_at"],
+    }
+    if not out["rings"]:  # 退回旧程序期间存的卡还没有圈（服务下次启动会补上）：先给整段内容
+        out["content"] = memory["content"]
+    if memory["superseded_by"]:  # 事情已经翻页：别把旧的当现状说
+        out["superseded_by"] = memory["superseded_by"]
+    return out
+
+
+def _rings_hint(memory: dict) -> str:
+    return "、".join(f"#{r['id']}（{r['date']}）" for r in memory["rings"])
+
+
 @mcp.tool()
 def memory_search(
     query: str,
@@ -42,22 +96,19 @@ def memory_search(
     tags: str | None = None,
     exclude_tags: str | None = None,
 ) -> dict:
-    """搜索记忆（语义 + 关键词 hybrid），返回目录（编号 id + 发生日期 date + 短内容），不含全文。
+    """在记忆里找东西，返回一串卡的目录（编号 id、日子、开头一小段），不是全文。
 
-    用户提到过去的事、人物、约定、偏好时先调用这个。
-    V5 起带语义检索：查询词和记忆字面不同也能召回（搜"难过"能找到
-    "眼泪在眼眶里打转"），所以用自然的词直接搜就好，不用猜原文用词。
-    一张卡下面有好几圈（哪天、发生了什么）：哪一圈对上整张卡就算，结果里的 ring 是命中的那一圈
-    （编号、日期，跟卡的开头不一样时带一小段摘录）。
-    需要某条的完整内容和来源时，再用 memory_recall(id) 取详情。
-    space：**不传 = 日常（personal）+ 长期（longterm）**。
-    聊项目/技术话题务必显式传对应空间（ember / vps / ...）；
-    确实要跨全库找传 "all"。
-    限定发生日期：date_from / date_to，可只写到月或年——"8 月发生的"传
-    date_from="2026-08", date_to="2026-08"；卡里任意一圈在范围里就算，只记到月的算在那个月里。
-    按便利贴筛：tags 逗号分隔，每一张都要贴着；整张比，搜"饼"不会碰到"南瓜饼"。
-    tags="饼" = 四张饼便利贴（筑巢饼 / 连理饼 / 养成饼 / 远方饼）任一；
-    exclude_tags 里的一张都不能贴——还没兑现的饼：tags="饼", exclude_tags="吃到了"。
+    轩提到以前的事、人、约定、喜好时，先搜一下再接话。
+    按意思找，不用猜原话：搜"难过"也能找到写着"眼泪在眼眶里打转"的卡，用自然的说法直接搜就好。
+    一张卡下面有好几圈（哪天、发生了什么），哪一圈对上了整张卡就算；结果里的 ring 是对上的那一圈
+    （编号、日子，跟卡的开头不一样时带一小段摘录）。要看整张卡和来源，再用 memory_recall(id)。
+
+    space（抽屉）：**不传 = 日常 personal + 长期 longterm**；聊项目 / 技术时传项目名（ember / vps / …）；真要全库找传 "all"。
+    限定日子：date_from / date_to，可以只写到月或年——"8 月的事"传 date_from="2026-08", date_to="2026-08"；
+    卡里任意一圈落在范围里就算，只记到月的算在那个月里。不能写"上个月"这种说法。
+    按便利贴筛：tags 用逗号隔开，每一张都要贴着；整张比，"饼"不会碰到"南瓜饼"。
+    tags="饼" = 四张饼便利贴（筑巢饼 / 连理饼 / 养成饼 / 远方饼）任意一张；exclude_tags 里的一张都不能贴。
+    还没兑现的饼：tags="饼", exclude_tags="吃到了"。
     """
     try:
         results = memories.search_memories(
@@ -66,126 +117,160 @@ def memory_search(
         )
     except ValueError as err:
         return {"error": str(err)}
-    return {"count": len(results), "results": results}
+    return {"count": len(results), "results": [_lean(r) for r in results]}
 
 
 @mcp.tool()
 def memory_recall(id: int) -> dict:
-    """按 ID 取一条记忆的完整内容、来源证据（source_ref + 原话片段）和关系边。
-
-    边自带对方记忆的一行摘要（不用挨个再查）；区间型记忆带 interval_status
-    （upcoming / ongoing / ended，按今天现算）。
+    """看一整张卡：标题、抽屉、⭐、便利贴，下面一圈一圈按从早到晚列出来（每圈的编号、日子、内容），
+    再加上来自哪里（来源文件 / 小节 + 原话片段）。改某一圈、删某一圈要用这里的圈编号。
+    卡上有 superseded_by = 这件事已经翻篇，被那张卡接上了，别把这张当现状说。
     """
     memory = memories.get_memory(id)
     if memory is None:
         return {"error": f"记忆 {id} 不存在（或已被删掉，轩能在网页「最近动静」里恢复）"}
-    return memory
+    return _card(memory)
 
 
 @mcp.tool()
+@_with_rules
 def memory_save(
     date: str,
     content: str,
+    title: str | None = None,
     tags: str = "",
-    tier: str = "normal",
-    topic: str = "",
+    starred: bool = False,
     space: str = "personal",
+    topic: str | None = None,
+    tier: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     links: list[dict] | None = None,
 ) -> dict:
-    """存一条记忆，直接进库，返回编号 id，马上就能搜到。
+    """存一张新卡，直接进库，马上就能搜到，返回编号 id。
 
-    只记要紧的：重要的时刻、轩定下来的事、心情小日记；路过的闲聊、一次性的活不记。
-    date（必填）填事情发生的日子，不是保存这条记忆的日子（除非就发生在今天）：
-    写具体日期 YYYY-MM-DD（2026-10-18），也可以只写到月 YYYY-MM（2026-07）。
-    **不许写"最近""前几天""下周""昨天"这种相对说法**——先按今天的日期换算成具体日期再存。
-    content（必填）写原话 + 一句上下文。tags 逗号分隔。内容或日期缺一样都存不进去。
-    tier：anchor（长期锚点，慎用）/ normal（默认）/ process（过程性，可清理）。
-    topic 填主题或实体名，方便日后去重合并。存之前先 memory_search 一下，已有的就用 memory_edit 补，别存重复的。
-    区间型的事（一段状态/计划，非点事件）填 start_date / end_date（格式同 date，可只填一头：
-    只有 start = 进行中的开放区间，只有 end = 截止型），状态读时按今天现算。
-    links 连关系边：存之前你刚 memory_search 过，看到相关旧记忆就顺手连上——
-    [{"id": 目标记忆id, "relation": "led_to/same_as/contradicts/supersedes/related",
-      "dir": "out"(本条→目标，默认) 或 "in"(目标→本条)}]。
-    led_to 方向 = 因 → 果；supersedes 会把被压过的旧记忆标记 superseded_by。
+    只记要紧的：重要的时刻、轩定下来的事、心情小日记、饼；路过的闲聊、一次性的活不记。
+    存之前先 memory_search 一下：已经有这件事的卡，就用 memory_add_ring 在那张卡上补一圈，别再开一张。
+
+    - date（必填）：这件事发生的日子（第一圈的日子），不是今天存的日子；具体日子或只到月，不能写以后的日子。
+    - content（必填）：第一圈写什么——原话 + 一句前因后果，不要润色、压缩原话。
+    - title：标题，可以不写（网页上显示内容开头）；长期抽屉的卡写主题当标题（我、我们、家人、身体……）。
+    - tags：便利贴，逗号隔开。
+    - starred：点⭐收藏（轩可以在设置里关掉小克点⭐，关着时卡照常存，只是不点⭐）。
+    - space：抽屉，默认日常 personal；长期 longterm；项目写项目名。
+    - topic、tier、start_date、end_date、links 是以前的参数，传了也不用，直接忽略。
     """
     try:
+        memories._ring_date(date)  # 第一圈也守规矩 3：不能写以后的日子
         saved = memories.save_memory(
-            date=date, content=content, tags=tags, tier=tier, topic=topic, space=space,
-            start_date=start_date, end_date=end_date, links=links, by="ke",
+            date=date, content=content, tags=tags, title=title, space=space or "personal", by="ke",
         )
     except ValueError as err:
         return {"error": str(err)}
-    memory = memories.get_memory(saved["id"])
-    out = {
-        "id": saved["id"],
-        "date": memory["date"],
-        "status": "saved",
-        "message": f"存好了，编号 {saved['id']}，现在就能搜到。",
-    }
-    if "edges_written" in saved:
-        out["edges_written"] = saved["edges_written"]
+    out = {"id": saved["id"], "status": "saved", "message": f"存好了，编号 {saved['id']}，现在就能搜到。"}
+    if starred is True:
+        try:
+            memories.set_star(saved["id"], True, by="ke")
+        except ValueError as err:
+            out["message"] += f"⭐没点上：{err}"
+    out["date"] = memories.get_memory(saved["id"])["date"]
     return out
+
+
+@mcp.tool()
+def memory_add_ring(memory_id: int, date: str, content: str) -> dict:
+    """给一张卡补一圈：同一件事有了新进展（计划成了结果、想法变了、又发生了一次）。
+    补完卡片日子跟着变成最新一圈的；补之前的整张卡留作「上一版」，轩能在网页回退。
+
+    - date：这一圈的事发生（或说出口）的那天，具体日子或只到月，不能写以后的日子、不能写"最近"这种说法。
+    - content：这一圈写什么——原话 + 一句前因后果。
+    分量重的结果值得单独记时：先 memory_save 新存一张，再回原卡补一圈「见 #新编号」。
+    """
+    try:
+        result = memories.add_ring(memory_id, date, content, by="ke")
+    except ValueError as err:
+        return {"error": str(err)}
+    if result is None:
+        return {"error": f"记忆 {memory_id} 不存在（或已被删掉）"}
+    n = len(result["memory"]["rings"])
+    return {
+        "memory_id": memory_id,
+        "ring_id": result["ring_id"],
+        "date": result["memory"]["date"],
+        "status": "added",
+        "message": f"补好了，这张卡现在 {n} 圈；补之前的样子留作上一版，轩能在网页回退。",
+    }
 
 
 @mcp.tool()
 def memory_edit(
     memory_id: int,
+    ring_id: int | None = None,
     content: str | None = None,
-    tags: str | None = None,
-    topic: str | None = None,
     date: str | None = None,
+    title: str | None = None,
+    tags: str | None = None,
+    space: str | None = None,
+    starred: bool | None = None,
+    topic: str | None = None,
 ) -> dict:
-    """改一条记忆的 content / tags / topic / date，直接改、立刻生效；改前的旧内容自动留作「上一版」，轩能回退。
+    """改一张卡，直接改、立刻生效；改之前的样子自动留作「上一版」，轩能在网页回退。
 
-    先读后改：只给 memory_id、不给内容 = 读出当前的 content / tags / topic / date。
-    - content 是整段替换：在末尾补一句，就传「原文 + 新增」的完整全文；不要顺手润色、压缩原话。
-    - tags 也是整组替换（加标签要带上原有的）。tags / topic 不传或传空 = 不改，不能清空。
-    - date 规矩同 memory_save：具体日期或只到月，不写相对说法。
-    - 只用来改错字、补原话、补标签 / 主题 / 日期。事情本身变了（计划成了结果、想法变了），
-      用 memory_save 新存一条，links 连 supersedes 指向旧记忆，旧的留作历史。
-    返回里的 target 是改的那一条的日期和开头，核对一下没改错。
+    先看后改：只给 memory_id = 把整张卡（连每一圈的编号）读出来。
+    - 改某一圈：ring_id + content 和 / 或 date。content 是这一圈整段替换（补一句就传原文 + 新加的），
+      不要顺手润色、压缩原话；date 规矩同 memory_save。卡上只有一圈时可以不给 ring_id。
+    - 改卡头：title 标题、tags 便利贴（整组替换，加一张要带上原有的）、space 抽屉。不传或传空 = 不改，不能清空。
+    - starred：true 点⭐ / false 取消（轩可以在设置里关掉小克点⭐）。
+    - topic 是以前的参数，传了也不用。
+    只用来改错字、补原话、补便利贴 / 标题、挪抽屉。事情有了新进展用 memory_add_ring 补一圈，别改旧圈。
+    返回里的 target 是改的那张卡的日子和开头，核对一下没改错。
     """
-    fields = {}
-    if content is not None:
-        if not str(content).strip():
-            return {"error": "content 不能改成空"}
-        fields["content"] = content
-    if tags is not None and memories.normalize_tags(str(tags)):
-        fields["tags"] = tags
-    if topic is not None and str(topic).strip():
-        fields["topic"] = topic
-    if date is not None and str(date).strip():
-        fields["date"] = date
     memory = memories.get_memory(memory_id)
     if memory is None:
         return {"error": f"记忆 {memory_id} 不存在（或已被删掉）"}
-    if not fields:  # 只给编号 = 读
-        return {
-            "memory_id": memory_id,
-            "date": memory["date"],
-            "content": memory["content"],
-            "tags": memory["tags"],
-            "topic": memory["topic"],
-        }
-    try:
-        result = memories.update_memory(memory_id, fields, by="ke")
-    except ValueError as err:
-        return {"error": str(err)}
-    if result is None:
-        return {"error": f"记忆 {memory_id} 刚被删掉了，这次没改上"}
-    after = result["memory"]
-    target = {"date": after["date"], "preview": _preview(after["content"])}
-    if not result["changed"]:
+    card = {k: v for k, v in (("title", title), ("tags", tags), ("space", space)) if v is not None and str(v).strip()}
+    if "tags" in card and not memories.normalize_tags(str(card["tags"])):
+        del card["tags"]
+    touch_ring = content is not None or date is not None
+    if not card and not touch_ring and starred is None:  # 只给编号 = 读
+        return {"memory_id": memory_id, "memory": _card(memory)}
+    if touch_ring and ring_id is None:
+        if not memory["rings"]:
+            return {"error": "这张卡还没有圈（服务下次启动会自动补上），先别改内容和日子"}
+        if len(memory["rings"]) != 1:
+            return {"error": f"这张卡有 {len(memory['rings'])} 圈：{_rings_hint(memory)}，要改哪一圈传 ring_id"}
+        ring_id = memory["rings"][0]["id"]
+    changed: list[str] = []
+    after = memory
+    if card or touch_ring:
+        try:
+            result = memories.edit_card(
+                memory_id, card, ring_id if touch_ring else None, date=date, content=content, by="ke"
+            )
+        except ValueError as err:
+            return {"error": str(err)}
+        if result is None:
+            return {"error": f"记忆 {memory_id} 上没有圈 #{ring_id}（或刚被删掉了），先 memory_recall 看一下"}
+        changed, after = result["changed"], result["memory"]
+    note = ""
+    if starred is not None and bool(after["starred"]) != starred:
+        try:
+            memories.set_star(memory_id, starred, by="ke")
+            changed.append("starred")
+        except ValueError as err:
+            if not changed:
+                return {"error": str(err)}
+            note = f"⭐没改上：{err}"
+    target = {"date": after["date"], "preview": _preview(after["title"] or after["content"])}
+    if not changed:
         return {"memory_id": memory_id, "target": target, "status": "unchanged",
-                "message": "跟现在的内容一样，没有要改的。"}
+                "message": "跟现在的一样，没有要改的。"}
     return {
         "memory_id": memory_id,
         "target": target,
         "status": "updated",
-        "changed": result["changed"],
-        "message": "改好了，已经生效；改前的内容留作上一版，轩能在网页回退。",
+        "changed": changed,
+        "message": "改好了，已经生效；改之前的样子留作上一版，轩能在网页回退。" + note,
     }
 
 
@@ -194,23 +279,41 @@ def _preview(content: str, n: int = 40) -> str:
 
 
 @mcp.tool()
-def memory_delete(memory_id: int) -> dict:
-    """删一条记忆（比如存重复了、存错了）。删了先藏起来：搜不到、recall 不到，
-    但轩在网页「最近动静」里还能恢复，过了显示期限（默认 30 天）才真删。
-    只删确定不要的；内容有错用 memory_edit 改，事情变了用 memory_save 新存一条。
-    轩可以在设置里关掉小克删除的权限，关着时这里会报错。
+def memory_delete(memory_id: int, ring_id: int | None = None) -> dict:
+    """删记忆（比如存重复了、存错了）。只删确定不要的；内容有错用 memory_edit 改，有新进展用 memory_add_ring。
+
+    - 只给 memory_id = 删整张卡：先藏起来，搜不到、看不到，轩在网页「最近动静」里还能恢复，
+      过了显示期限（默认 30 天）才真删。
+    - 再给 ring_id = 只删这一圈：删之前的整张卡留作上一版，轩能在网页回退找回来。
+      最后一圈不能单独删（那等于删整张卡）。
+    轩可以在设置里关掉小克删除的权限，关着时整张卡和某一圈都删不了。
     """
     if not settings.get_settings()["ke_can_delete"]:
         return {"error": "轩在设置里关掉了小克删除记忆的权限；要删请告诉轩，由轩在网页上删"}
     memory = memories.get_memory(memory_id)
     if memory is None:
         return {"error": f"记忆 {memory_id} 不存在（或已经删掉了）"}
+    target = {"date": memory["date"], "preview": _preview(memory["title"] or memory["content"])}
+    if ring_id is not None:
+        try:
+            result = memories.delete_ring(memory_id, ring_id, by="ke")
+        except ValueError as err:
+            return {"error": str(err)}
+        if result is None:
+            return {"error": f"记忆 {memory_id} 上没有圈 #{ring_id}（或已经删掉了）；这张卡的圈：{_rings_hint(memory)}"}
+        return {
+            "memory_id": memory_id,
+            "ring_id": ring_id,
+            "target": target,
+            "status": "ring_deleted",
+            "message": f"删掉了这一圈，这张卡还剩 {len(result['memory']['rings'])} 圈；删之前的样子留作上一版，轩能在网页回退。",
+        }
     result = memories.delete_memory(memory_id, by="ke")
     if result is None:
         return {"error": f"记忆 {memory_id} 不存在（或已经删掉了）"}
     return {
         "memory_id": memory_id,
-        "target": {"date": memory["date"], "preview": _preview(memory["content"])},
+        "target": target,
         "status": "deleted",
         "message": f"删掉了。{result['restorable_days']} 天内轩能在网页「最近动静」里恢复。",
     }
@@ -225,44 +328,56 @@ def memory_list(
     tags: str | None = None,
     exclude_tags: str | None = None,
 ) -> dict:
-    """分页浏览记忆目录，先返回统计概览（总数、按空间、按层级），再给当页短条目。
+    """一页一页翻记忆目录（每页 20 张，日子新的在前），先给总数和每个抽屉各几张，再给这一页的卡。
 
-    永远分页（每页 20 条），不会一次吐出全库，按发生日期新的在前。
-    date_from / date_to 可只写到月或年：date_from="2026-08", date_to="2026-08" = 8 月发生的
-    （卡里任意一圈在范围里就算）。
-    space、tags / exclude_tags 与 memory_search 一致：不传 space = 日常 + 长期；
-    项目空间显式传（ember / vps / ...）；跨全库传 "all"。
-    列出还没兑现的饼：tags="饼", exclude_tags="吃到了"。
+    不会一次吐出全库。space、日子、便利贴的筛法跟 memory_search 一样：不传 space = 日常 + 长期；
+    项目传项目名；全库传 "all"。"8 月的事"传 date_from="2026-08", date_to="2026-08"（任意一圈在范围里就算）。
+    还没兑现的饼：tags="饼", exclude_tags="吃到了"。
     """
     try:
-        return memories.list_memories(
+        listing = memories.list_memories(
             space=space, date_from=date_from, date_to=date_to, page=page, tags=tags, exclude_tags=exclude_tags
         )
     except ValueError as err:
         return {"error": str(err)}
+    listing["stats"].pop("by_tier", None)
+    listing["items"] = [_lean(i) for i in listing["items"]]
+    return listing
 
 
 @mcp.tool()
 def memory_briefing(topic: str | None = None) -> dict:
-    """开场小抄（V6b 主动浮现）：会话开始时调一次，接住"进行中的事"。
+    """开场小抄：每次聊天开始时调一次，接住轩这边正在发生的事。
 
-    返回至多 8 条分层标注的记忆，每条带 reason（进行中的事 / 和眼下话题
-    相关 / 最近的事）+ 短内容 + id，细节用 memory_recall(id) 取。
-    topic 传用户开场聊的内容（原话或主题词都行），不传则只出
-    "进行中 + 近期"两层。
+    最多 8 张卡，每张带 reason：没吃到的饼（还没兑现的饼，条数轩在设置里定）/ 和眼下话题相关 / 最近的事，
+    再加开头一小段和编号，细节用 memory_recall(id) 看。topic 传轩开场聊的内容（原话或主题词都行），
+    不传就只给饼和最近的事。
 
-    分寸：这是背景记忆，不是任务清单。自然地主动提起其中一两件
-    最相关或最有温度的事，其余记在心里、话题碰到再用；
-    不念清单、不逐条汇报。同一条记忆 3 天内不会重复递给你，
-    没提的不算错过。
+    分寸：这是背景，不是任务清单。挑一两件最相关或最有温度的自然地提起，其余记在心里、话题碰到再用；
+    不念清单、不逐条汇报、不催饼。同一张卡 3 天内不会重复递给你，没提的不算错过。
     """
-    return briefing.build_briefing(topic=topic)
+    result = briefing.build_briefing(topic=topic)
+    result["items"] = [_lean(i) for i in result["items"]]
+    return result
 
 
 @mcp.tool()
 def memory_status() -> dict:
-    """ember 服务状态：活着吗、库里多少条记忆/边/来源、最近一次写入时间。连接调试用。"""
-    return memories.get_status()
+    """ember 的状态：服务活着没有、库里多少张卡、最近一次存是什么时候，还有按圈指纹齐不齐
+    （缺了 / 过时了的圈，按意思搜时暂时只能按整张卡比，要提醒轩在服务器上补算）。连接调试用。"""
+    status = memories.get_status()
+    rings = embeddings.ring_status()
+    if not rings["enabled"]:
+        rings["note"] = "按意思搜没开（没配 embedding），只按关键词搜"
+    elif rings["missing"] or rings["outdated"]:
+        rings["note"] = (
+            f"{rings['rings']} 圈里缺指纹 {rings['missing']} 圈、过时 {rings['outdated']} 圈："
+            "这些圈按意思搜时先按整张卡比，提醒轩在服务器上补算（python -m app.embeddings）"
+        )
+    else:
+        rings["note"] = f"{rings['rings']} 圈的指纹都齐了"
+    status["ring_fingerprints"] = rings
+    return status
 
 
 @mcp.tool()

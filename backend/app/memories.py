@@ -896,14 +896,22 @@ def _ring_input(date, content, empty_msg: str) -> tuple[str, str]:
     """这一圈的日子和内容：日子写具体的日子或只到月，不能写以后的（打算哪天做写进内容里）；内容不能空。"""
     if not isinstance(date, str) or not isinstance(content, str):
         raise ValueError("这一圈的日子和内容要是文字")
-    content = content.strip()
-    if not content:
-        raise ValueError(empty_msg)
+    return _ring_date(date), _ring_content(content, empty_msg)
+
+
+def _ring_date(date: str) -> str:
     date = normalize_date(date)
     today = _today()
     if date > (today if len(date) == 10 else today[:7]):
         raise ValueError("不能写以后的日子；打算哪天做，写进内容里")
-    return date, content
+    return date
+
+
+def _ring_content(content: str, empty_msg: str) -> str:
+    content = content.strip()
+    if not content:
+        raise ValueError(empty_msg)
+    return content
 
 
 def _live_row(c, memory_id: int, expect_updated_at):
@@ -970,6 +978,47 @@ def delete_ring(memory_id: int, ring_id: int, by: str = "xuan", expect_updated_a
         _follow_rings(c, row)
         activity.log(c, by, "edit", memory_id, row["title"] or ring["content"], history_id=hid)
     return {"id": memory_id, "ring_id": ring_id, "deleted": True, "history_id": hid, "memory": get_memory(memory_id)}
+
+
+CARD_FIELDS = ("title", "tags", "space")  # 卡头：标题 / 便利贴 / 抽屉；圈的日子和内容按圈改
+
+
+def edit_card(
+    memory_id: int, card: dict | None = None, ring_id: int | None = None, date=None, content=None, by: str = "ke"
+) -> dict | None:
+    """小克改一张卡（MCP，年轮卡 PR3）：卡头（card 里的标题 / 便利贴 / 抽屉）和某一圈（date / content，
+    只给一样另一样照旧）一次改完，只进一版上一版、记一行动静——分两次改的话，只留 1 版时第一次改前的样子
+    就被挤掉了，回退不回去。返回 {"id", "changed": [...], "memory"}，改了圈 changed 里有 "ring"；
+    没变化 changed 为空、什么都不记。卡或这一圈不在了返回 None。"""
+    fields = _clean_fields({k: v for k, v in (card or {}).items() if k in CARD_FIELDS})
+    for name, v in (("date", date), ("content", content)):
+        if v is not None and not isinstance(v, str):
+            raise ValueError(f"这一圈的{'日子' if name == 'date' else '内容'}要是文字")
+    with _write_tx() as c:
+        row = _live_row(c, memory_id, _UNSET)
+        ring = rings.find(c, memory_id, ring_id) if row is not None and ring_id is not None else None
+        if row is None or (ring_id is not None and ring is None):
+            return None
+        header = {k: v for k, v in fields.items() if v != _stored_norm(k, row[k])}
+        new_ring = None
+        if ring is not None:  # 只给内容时日子照旧：老数据里写了以后日子的圈也能改错字
+            new_ring = (
+                ring["date"] if date is None else _ring_date(date),
+                ring["content"] if content is None else _ring_content(content, "这一圈不能改成空的；不要了就删掉它"),
+            )
+            if new_ring == (ring["date"], ring["content"]):
+                new_ring = None
+        if header or new_ring:
+            hid = history.push(c, row, by, "edit")
+            if header:
+                _apply(c, row, header)
+            if new_ring:
+                rings.change(c, ring_id, *new_ring)
+                _follow_rings(c, c.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone())
+            summary = new_ring[1] if new_ring else row["content"]
+            activity.log(c, by, "edit", memory_id, row["title"] or summary, history_id=hid)
+    changed = list(header) + (["ring"] if new_ring else [])
+    return {"id": memory_id, "changed": changed, "memory": get_memory(memory_id)}
 
 
 def set_star(memory_id: int, starred, by: str = "xuan") -> dict | None:
