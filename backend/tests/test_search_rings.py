@@ -795,3 +795,48 @@ def test_float32_overflow_packed_as_infinity_is_still_a_soft_failure(monkeypatch
     assert memories.get_memory(saved["id"]) is not None and _ring_rows() == []
     with get_conn() as c:
         assert c.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()[0] == 0
+
+
+# ---------- 网页的补 / 改 / 删圈、回退、改标题（#26 合进来后）：按圈指纹照样齐 ----------
+
+
+def _rings_missing() -> int:
+    return embeddings.rebuild_embeddings(dry_run=True)["rings_to_embed"]
+
+
+def test_web_add_edit_delete_ring_keep_ring_fingerprints_complete():
+    mid = _save("编的：去服务器机房搬了一天箱子")
+    added = memories.add_ring(mid, "2026-10-02", "编的：搬完坐在台阶上哭了一会儿")["ring_id"]
+    assert _rings_missing() == 0
+    [hit] = memories.search_memories("伤心")
+    assert hit["id"] == mid and hit["ring"]["id"] == added
+
+    memories.edit_ring(mid, added, "2026-10-02", "编的：搬完坐在台阶上笑了一会儿")
+    assert _rings_missing() == 0
+    assert memories.search_memories("高兴")[0]["ring"]["id"] == added
+
+    deleted = memories.delete_ring(mid, added)
+    assert _rings_missing() == 0
+    assert all(h.get("ring", {}).get("id") != added for h in memories.search_memories("高兴"))
+
+    memories.revert_memory(mid, deleted["history_id"])  # 网页提示条上的「撤回」
+    assert _rings_missing() == 0
+    assert memories.search_memories("高兴")[0]["ring"]["id"] == added
+
+
+def test_title_edit_and_its_revert_refresh_ring_fingerprints():
+    mid = _save("编的：去看了一场雨")
+    memories.update_memory(mid, {"title": "那天哭了"})  # 标题拼在每一段前面：改了要马上重算，不留给补算
+    assert _rings_missing() == 0
+    assert memories.search_memories("伤心")[0]["ring"]["id"] == _first_ring(mid)
+    with get_conn() as c:
+        hid = c.execute("SELECT MAX(id) FROM memory_history WHERE memory_id = ?", (mid,)).fetchone()[0]
+    memories.revert_memory(mid, hid)  # 退回没有标题的那一版，内容没变
+    assert _rings_missing() == 0
+
+
+def test_star_does_not_touch_fingerprints():
+    mid = _save("编的：去看了一场雨")
+    CALLS.clear()
+    memories.set_star(mid, True)
+    assert CALLS == [] and _rings_missing() == 0

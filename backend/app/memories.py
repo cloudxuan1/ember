@@ -792,7 +792,7 @@ def _touch(c, memory_id: int) -> None:
 
 
 def _apply(c, row, fields: dict) -> None:
-    """写入新值、记修改时间；content/topic/tags 变了就重算语义指纹（整条 + 过时的分段，见 embed_card）。
+    """写入新值、记修改时间；content/topic/tags 变了就重算语义指纹（整条 + 过时的分段，见 embed_card），只改了标题补分段指纹。
     指纹算不出来时删掉旧指纹——留着它语义检索会按改前的意思召回这条，而 rebuild 只补缺席/换模型的行，
     补不回"同模型但过时"的；删了就回到缺指纹状态，关键词照常、rebuild 能补。"""
     sets = ", ".join(f"{k} = ?" for k in fields)
@@ -805,6 +805,8 @@ def _apply(c, row, fields: dict) -> None:
         rings.follow_card(c, row["id"])
     if any(k in fields and fields[k] != row[k] for k in ("content", "topic", "tags")):
         embeddings.embed_card(c, row["id"])
+    elif "title" in fields and fields["title"] != row["title"]:  # 标题只拼在分段前面（触发器已作废旧的）：补分段就够
+        embeddings.embed_card(c, row["id"], whole=False)
 
 
 _UNSET = object()
