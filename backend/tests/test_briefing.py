@@ -42,26 +42,27 @@ def test_uneaten_pie_surfaces_eaten_and_dough_do_not():
     result = briefing.build_briefing()
     pies = [i["id"] for i in result["items"] if i["reason"] == briefing.REASON_PIE]
     assert pies == [pie]
-    assert eaten not in pies and dough not in pies
+    assert eaten not in pies
+    # 面团哪一层都不递：最近层、话题层也不行；主动搜索照样找得到
+    assert dough not in _ids(result) and dough not in _ids(briefing.build_briefing(topic="养只猫"))
+    assert dough in [r["id"] for r in memories.search_memories("养只猫")]
 
 
 def test_pies_newest_ring_first_and_count_is_a_setting():
     old = _save("编的：想学游泳", date="2026-03-01", tags="养成饼")
     new = _save("编的：想去海边住几天", date="2026-06-01", tags="远方饼")
     memories.add_ring(old, "2026-07-02", "编的：报了游泳课")  # 补了一圈 → 最新一圈更近，排到前面
-    _save("编的：想把阳台种满", date="2026-05-01", tags="筑巢饼")
+    third = _save("编的：想把阳台种满", date="2026-05-01", tags="筑巢饼")
     pies = [i["id"] for i in briefing.build_briefing()["items"] if i["reason"] == briefing.REASON_PIE]
-    assert pies[:2] == [old, new] and len(pies) == 3
+    assert pies == [old, new, third]
 
-    with get_conn() as conn:
-        conn.execute("DELETE FROM briefing_log")
-    settings.update_settings({"briefing_pies": 1})
-    pies = [i["id"] for i in briefing.build_briefing()["items"] if i["reason"] == briefing.REASON_PIE]
-    assert pies == [old]
-    with get_conn() as conn:
-        conn.execute("DELETE FROM briefing_log")
-    settings.update_settings({"briefing_pies": 0})
-    assert all(i["reason"] != briefing.REASON_PIE for i in briefing.build_briefing()["items"])
+    # 设置管整份开场：饼不能换成「最近的事」「和眼下话题相关」再溜进来
+    for n, want in ((1, [old]), (0, [])):
+        settings.update_settings({"briefing_pies": n})
+        for topic in (None, "想"):
+            with get_conn() as conn:  # 每次都当第一次开场，不让上一次的冷却挡住
+                conn.execute("DELETE FROM briefing_log")
+            assert [i for i in _ids(briefing.build_briefing(topic=topic)) if i in (old, new, third)] == want
 
 
 def test_interval_fields_no_longer_surface_as_unfinished():

@@ -5,6 +5,7 @@
 V5 hybrid 检索（语义腿挂了自动退关键词）；③ 近期——事件时间最近
 （按 date 排不按 created_at 排：刚审完入库的四月旧事不算"最近"）。
 合并去重、sensitive 剔除、superseded 剔除、已删（藏起来的）剔除，总上限 8 条。
+贴了「面团」的（还没决定做不做的灵感）哪一层都不递；没吃到的饼不管从哪层来，一共不超过设置的张数。
 冷却：①③ 层同一条记忆 3 天内不重复递（briefing_log）；② 层不冷却——
 主动聊到相关的事，相关记忆永远该到场。
 只看 personal 核心层——briefing 是关系连续性的开场，不是项目看板。
@@ -22,12 +23,14 @@ COOLDOWN_DAYS = 3
 
 REASON_PIE = "没吃到的饼"
 EATEN = "吃到了"
+DOUGH = "面团"
 REASON_TOPIC = "和眼下话题相关"
 REASON_RECENT = "最近的事"
 
 
-def _is_sensitive(tags: str) -> bool:
-    return "sensitive" in {t.strip() for t in tags.split(",")}
+def _tag_set(tags: str | None) -> set[str]:
+    """便利贴整张比（不做子串匹配）。"""
+    return {t for t in memories.normalize_tags(tags or "").split(",") if t}
 
 
 def _recently_surfaced(conn) -> set[int]:
@@ -39,10 +42,13 @@ def _recently_surfaced(conn) -> set[int]:
     return {r["memory_id"] for r in rows}
 
 
-def _pies(conn) -> list:
-    """① 没吃到的饼：便利贴整张比（memories.tag_filter_ids，口令「饼」= 四张饼任一；只贴了「面团」的不算饼），
-    卡片日期（= 最新一圈的日子）新的在前。"""
-    ids = memories.tag_filter_ids(conn, "饼", EATEN)
+def _uneaten(conn) -> list[int]:
+    """没吃到的饼：便利贴整张比（memories.tag_filter_ids，口令「饼」= 四张饼任一），没贴「吃到了」。"""
+    return memories.tag_filter_ids(conn, "饼", EATEN)
+
+
+def _pies(conn, ids: list[int]) -> list:
+    """① 没吃到的饼，卡片日期（= 最新一圈的日子）新的在前。"""
     return conn.execute(
         """SELECT * FROM memories
            WHERE space = 'personal' AND superseded_by IS NULL AND deleted_at IS NULL
@@ -82,14 +88,22 @@ def build_briefing(topic: str | None = None) -> dict:
     picked: list[dict] = []
     seen: set[int] = set()
     to_log: list[int] = []  # ①③ 层实际递出去的才记冷却
+    uneaten: set[int] = set()
+    pie_cap = pies_taken = 0
 
     def take(rows, reason: str, cap: int, skip: set[int], cooled: bool) -> None:
+        nonlocal pies_taken
         added = 0
         for row in rows:
             if added >= cap or len(picked) >= TOTAL_CAP:
                 return
-            if row["id"] in seen or row["id"] in skip or _is_sensitive(row["tags"]):
+            tags = _tag_set(row["tags"])
+            if row["id"] in seen or row["id"] in skip or "sensitive" in tags or DOUGH in tags:
                 continue
+            if row["id"] in uneaten:  # 话题 / 近期层带出来的饼也算进「开场带几张饼」
+                if pies_taken >= pie_cap:
+                    continue
+                pies_taken += 1
             item = memories._short(row)
             item["reason"] = reason
             picked.append(item)
@@ -100,7 +114,10 @@ def build_briefing(topic: str | None = None) -> dict:
 
     with get_conn() as conn:
         cooldown = _recently_surfaced(conn)
-        take(_pies(conn), REASON_PIE, settings.get_settings(conn)["briefing_pies"], skip=cooldown, cooled=True)
+        pie_cap = settings.get_settings(conn)["briefing_pies"]
+        ids = _uneaten(conn)
+        uneaten = set(ids)
+        take(_pies(conn, ids), REASON_PIE, pie_cap, skip=cooldown, cooled=True)
         if topic:
             take(_topic_rows(conn, topic), REASON_TOPIC, TOPIC_CAP, skip=set(), cooled=False)
         take(_recent(conn), REASON_RECENT, RECENT_CAP, skip=cooldown, cooled=True)
