@@ -4,7 +4,7 @@
 - activity_days：最近动静显示多少天（默认 30），也是删掉的记忆还能恢复的期限，过了才真删。
 - ke_can_delete：小克能不能用 memory_delete 删记忆（默认开）。
 - ke_can_star：小克能不能给卡点⭐（默认开，轩 2026-10-20 定）。
-- briefing_pies：开场简报最多带几张没吃到的饼（默认 4，沿用原来「没完的事」的条数；0 = 不带）。
+- briefing_pies：开场简报最多带几张没吃到的饼（0–4，默认 4，沿用原来「没完的事」的条数；0 = 不带）。
 """
 
 import json
@@ -15,7 +15,7 @@ DEFAULTS = {"history_keep": 1, "activity_days": 30, "ke_can_delete": True, "ke_c
 SWITCHES = ("ke_can_delete", "ke_can_star")  # 开 / 关两种值的设置
 HISTORY_KEEP_CHOICES = (1, 2)
 ACTIVITY_DAYS_RANGE = (1, 365)
-BRIEFING_PIES_RANGE = (0, 8)  # 开场一共最多 8 条（briefing.TOTAL_CAP）
+BRIEFING_PIES_RANGE = (0, 4)  # 轩定最多 4 张
 
 
 def get_settings(conn=None) -> dict:

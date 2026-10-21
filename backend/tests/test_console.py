@@ -262,7 +262,7 @@ def test_settings_defaults_and_validation(client):
     assert client.patch("/api/settings", json={"activity_days": 0}).status_code == 400
     assert client.patch("/api/settings", json={"ke_can_delete": "no"}).status_code == 400
     assert client.patch("/api/settings", json={"ke_can_star": 1}).status_code == 400
-    for bad in (-1, 9, 2.5, True, "4"):
+    for bad in (-1, 5, 2.5, True, "4"):
         assert client.patch("/api/settings", json={"briefing_pies": bad}).status_code == 400, bad
     assert client.patch("/api/settings", json={"nope": 1}).status_code == 400
     assert client.patch("/api/settings", json={}).status_code == 400

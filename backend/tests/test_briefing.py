@@ -128,10 +128,9 @@ def test_project_space_stays_out():
 
 
 def test_total_cap_is_eight():
-    settings.update_settings({"briefing_pies": 8})
     for i in range(12):
         _save(f"记忆 {i}", tags="远方饼")
-    assert briefing.build_briefing()["count"] <= briefing.TOTAL_CAP
+    assert briefing.build_briefing(topic="记忆")["count"] == briefing.TOTAL_CAP  # 饼 4 + 话题 4 + 近期 3，截到 8
 
 
 # ---------- 冷却 ----------

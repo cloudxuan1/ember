@@ -610,9 +610,9 @@
   // =====================================================================
   // 设置
   // =====================================================================
-  // 开场带几张饼：0（不带）到 8（开场一共最多 8 条），跟后端 settings.BRIEFING_PIES_RANGE 一致
+  // 开场带几张饼：0（不带）到 4，跟后端 settings.BRIEFING_PIES_RANGE 一致
   var PIES_MIN = 0;
-  var PIES_MAX = 8;
+  var PIES_MAX = 4;
 
   function loadSettings() {
     return api('GET', '/api/settings').then(function (data) {
