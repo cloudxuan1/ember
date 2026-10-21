@@ -256,16 +256,19 @@ def test_older_edit_shows_superseded(client):
 
 def test_settings_defaults_and_validation(client):
     assert client.get("/api/settings").json() == {
-        "history_keep": 1, "activity_days": 30, "ke_can_delete": True, "ke_can_star": True,
+        "history_keep": 1, "activity_days": 30, "ke_can_delete": True, "ke_can_star": True, "briefing_pies": 4,
     }
     assert client.patch("/api/settings", json={"history_keep": 3}).status_code == 400
     assert client.patch("/api/settings", json={"activity_days": 0}).status_code == 400
     assert client.patch("/api/settings", json={"ke_can_delete": "no"}).status_code == 400
     assert client.patch("/api/settings", json={"ke_can_star": 1}).status_code == 400
+    for bad in (-1, 9, 2.5, True, "4"):
+        assert client.patch("/api/settings", json={"briefing_pies": bad}).status_code == 400, bad
     assert client.patch("/api/settings", json={"nope": 1}).status_code == 400
     assert client.patch("/api/settings", json={}).status_code == 400
     ok = client.patch("/api/settings", json={"activity_days": 7, "ke_can_delete": False}).json()
-    assert ok == {"history_keep": 1, "activity_days": 7, "ke_can_delete": False, "ke_can_star": True}
+    assert ok == {"history_keep": 1, "activity_days": 7, "ke_can_delete": False, "ke_can_star": True, "briefing_pies": 4}
+    assert client.patch("/api/settings", json={"briefing_pies": 0}).json()["briefing_pies"] == 0
     assert client.patch("/api/settings", json={"ke_can_star": False}).json()["ke_can_star"] is False
 
 

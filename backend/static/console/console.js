@@ -610,6 +610,10 @@
   // =====================================================================
   // 设置
   // =====================================================================
+  // 开场带几张饼：0（不带）到 8（开场一共最多 8 条），跟后端 settings.BRIEFING_PIES_RANGE 一致
+  var PIES_MIN = 0;
+  var PIES_MAX = 8;
+
   function loadSettings() {
     return api('GET', '/api/settings').then(function (data) {
       S.settings = data;
@@ -629,6 +633,12 @@
     $('keep-plus').disabled = !st || keep >= 2;
     $('keep-minus').setAttribute('aria-disabled', busy);
     $('keep-plus').setAttribute('aria-disabled', busy);
+    var pies = st ? st.briefing_pies : null;
+    $('pies-val').textContent = pies == null ? '– 张' : (pies ? pies + ' 张' : '不带');
+    $('pies-minus').disabled = !st || pies <= PIES_MIN;
+    $('pies-plus').disabled = !st || pies >= PIES_MAX;
+    $('pies-minus').setAttribute('aria-disabled', busy);
+    $('pies-plus').setAttribute('aria-disabled', busy);
     document.querySelectorAll('#days-seg .segbtn').forEach(function (b) {
       var on = !!st && Number(b.getAttribute('data-days')) === st.activity_days;
       b.classList.toggle('seg-on', on);
@@ -658,7 +668,7 @@
     if (!from || !L.focusLost()) {
       return;
     }
-    var alt = { 'keep-minus': 'keep-plus', 'keep-plus': 'keep-minus' }[from.id];
+    var alt = { 'keep-minus': 'keep-plus', 'keep-plus': 'keep-minus', 'pies-minus': 'pies-plus', 'pies-plus': 'pies-minus' }[from.id];
     var el = from.disabled && alt ? $(alt) : from;
     if (el && !el.disabled && document.contains(el)) {
       el.focus({ preventScroll: true });
@@ -703,6 +713,17 @@
       return;
     }
     patchSettings({ history_keep: next }, '以后每条留 ' + next + ' 版');
+  }
+
+  function changePies(delta) {
+    if (!settingsReady()) {
+      return;
+    }
+    var next = S.settings.briefing_pies + delta;
+    if (next < PIES_MIN || next > PIES_MAX) {
+      return;
+    }
+    patchSettings({ briefing_pies: next }, next ? '开场最多带 ' + next + ' 张饼' : '开场不带饼了');
   }
 
   function changeDays(d) {
@@ -758,6 +779,8 @@
   function bindSettings() {
     $('keep-minus').addEventListener('click', function () { changeKeep(-1); });
     $('keep-plus').addEventListener('click', function () { changeKeep(1); });
+    $('pies-minus').addEventListener('click', function () { changePies(-1); });
+    $('pies-plus').addEventListener('click', function () { changePies(1); });
     document.querySelectorAll('#days-seg .segbtn').forEach(function (b) {
       b.addEventListener('click', function () { changeDays(Number(b.getAttribute('data-days'))); });
     });
