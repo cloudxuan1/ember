@@ -22,4 +22,4 @@ jobs:
       - run: python -m pytest -q
       - name: Check deployment scripts
         working-directory: .
-        run: bash -n scripts/autodeploy.sh scripts/install-autodeploy.sh
+        run: bash -n scripts/autodeploy.sh scripts/install-autodeploy.sh scripts/remote-op.sh
