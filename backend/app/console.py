@@ -1,4 +1,5 @@
-"""记忆库网页（2026-10 单库改造后替掉旧审核台）：轩在手机上看、搜、写、改、删、回退、恢复、调设置。
+"""记忆库网页（2026-10 单库改造后替掉旧审核台）：轩在手机上看、搜、写、改、删、回退、恢复、调设置；
+年轮卡（PR4）起还能补一圈 / 改某一圈 / 删某一圈、点⭐、只看⭐ / 只看饼。
 
 鉴权与 MCP 的 token **彻底分开**（PR #6 评审 P1）：持有 EMBER_OAUTH_ACCESS_TOKEN
 的一方（含正常 OAuth 后的 claude.ai 后端）只该有 MCP 的权限，不该开得了网页。
@@ -14,6 +15,7 @@
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import sqlite3
 import tempfile
@@ -37,7 +39,10 @@ LOCK_AFTER_FAILS = 5
 LOCK_SECONDS = 60
 
 # 网页本体（第二步）：backend/static/console/index.html；还没有时给个占位页
-PAGE_FILE = Path(__file__).resolve().parent.parent / "static" / "console" / "index.html"
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+PAGE_FILE = STATIC_DIR / "console" / "index.html"
+# 网页里引用的 css / js（/static/… 开头）
+_ASSET_RE = re.compile(r'"(/static/[\w./-]+\.(?:css|js))"')
 
 _login_guard = {"fails": 0, "locked_until": 0.0}
 
@@ -188,11 +193,26 @@ def _login_page(error: str = "") -> HTMLResponse:
     )
 
 
+def _with_versions(page: str) -> str:
+    """css / js 地址后面带上「文件内容的指纹」当版本号（?v=前 10 位）：文件一变地址就变，
+    Cloudflare 和手机存着的旧版对不上，只能去拿新的；没变的文件地址不变，照样用存着的。
+    不然部署后会拼出一半新一半旧的网页（新加的文件是新的，原来就有的还是旧版）。"""
+    def stamp(m: re.Match) -> str:
+        path = STATIC_DIR / m.group(1).removeprefix("/static/")
+        try:
+            v = hashlib.sha256(path.read_bytes()).hexdigest()[:10]
+        except OSError:
+            return m.group(0)  # 文件不在就原样留着，跟以前一样
+        return f'"{m.group(1)}?v={v}"'
+
+    return _ASSET_RE.sub(stamp, page)
+
+
 @router.get("/")
 def console_page(request: Request):
     if not _is_xuan(request):
         return _login_page()
-    page = PAGE_FILE.read_text(encoding="utf-8") if PAGE_FILE.exists() else PLACEHOLDER_PAGE
+    page = _with_versions(PAGE_FILE.read_text(encoding="utf-8")) if PAGE_FILE.exists() else PLACEHOLDER_PAGE
     return HTMLResponse(page, headers={"Cache-Control": "no-store"})
 
 
@@ -239,15 +259,18 @@ def api_browse(
     date_to: str | None = None,
     tag: str | None = None,
     space: str | None = None,
+    starred: bool = False,
+    pie: bool = False,
 ):
-    """记忆库列表：默认跨全库，按发生日期新的在前，content 不截断，带 history_count。"""
+    """记忆库列表：默认跨全库，按发生日期新的在前，content 不截断，带圈和 history_count。
+    按月份筛看圈（哪张卡那个月有圈就在）；starred=1 只看⭐，pie=1 只看饼。"""
     if not _is_xuan(request):
         return _unauthorized()
     _housekeep()
     try:
         return memories.browse_memories(
             q=q, space=space, page=page, page_size=page_size,
-            date_from=date_from, date_to=date_to, tag=tag,
+            date_from=date_from, date_to=date_to, tag=tag, starred=starred, pie=pie,
         )
     except ValueError as e:
         return _bad(str(e))
@@ -309,6 +332,94 @@ async def api_update(memory_id: RowId, request: Request):
     memory = result["memory"]
     memory["history"] = history.list_for(memory_id)
     return {"changed": result["changed"], "memory": memory}
+
+
+# ---------- 年轮 / ⭐ ----------
+
+
+def _ring_body(body) -> tuple[dict, dict] | JSONResponse:
+    """{"date", "content", "expect_updated_at"（打开时看到的修改时间，可选）} → (圈的字段, 防冲掉的参数)"""
+    if not isinstance(body, dict):
+        return _bad("要存的这一圈要是 JSON 对象")
+    kwargs = {"expect_updated_at": body["expect_updated_at"]} if "expect_updated_at" in body else {}
+    return {"date": body.get("date"), "content": body.get("content")}, kwargs
+
+
+def _ring_result(result, memory_id: int):
+    if result is None:
+        return _not_found("这张卡或这一圈不在了，已刷新")
+    memory = result["memory"]
+    memory["history"] = history.list_for(memory_id)
+    return result
+
+
+@router.post("/api/memories/{memory_id}/rings", status_code=201)
+async def api_add_ring(memory_id: RowId, request: Request):
+    """补一圈。改前的整张卡进上一版、记动静，能回退。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    parsed = _ring_body(await _json_body(request))
+    if isinstance(parsed, JSONResponse):
+        return parsed
+    fields, kwargs = parsed
+    try:
+        result = memories.add_ring(memory_id, fields["date"], fields["content"], by="xuan", **kwargs)
+    except memories.Conflict:
+        return _conflict()
+    except ValueError as e:
+        return _bad(str(e), "invalid_ring")
+    return _ring_result(result, memory_id)
+
+
+@router.patch("/api/memories/{memory_id}/rings/{ring_id}")
+async def api_edit_ring(memory_id: RowId, ring_id: RowId, request: Request):
+    """改某一圈的日子 / 内容。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    parsed = _ring_body(await _json_body(request))
+    if isinstance(parsed, JSONResponse):
+        return parsed
+    fields, kwargs = parsed
+    try:
+        result = memories.edit_ring(memory_id, ring_id, fields["date"], fields["content"], by="xuan", **kwargs)
+    except memories.Conflict:
+        return _conflict()
+    except ValueError as e:
+        return _bad(str(e), "invalid_ring")
+    return _ring_result(result, memory_id)
+
+
+@router.delete("/api/memories/{memory_id}/rings/{ring_id}")
+async def api_delete_ring(memory_id: RowId, ring_id: RowId, request: Request):
+    """删某一圈（藏起来，最近动静里能回退）。可带 {"expect_updated_at"}。最后一圈不让删。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    body = await _json_body(request)
+    if not isinstance(body, dict):
+        return _bad("要是 JSON 对象")
+    kwargs = {"expect_updated_at": body["expect_updated_at"]} if "expect_updated_at" in body else {}
+    try:
+        result = memories.delete_ring(memory_id, ring_id, by="xuan", **kwargs)
+    except memories.Conflict:
+        return _conflict()
+    except ValueError as e:
+        return _bad(str(e), "invalid_ring")
+    return _ring_result(result, memory_id)
+
+
+@router.post("/api/memories/{memory_id}/star")
+async def api_star(memory_id: RowId, request: Request):
+    """点⭐ / 取消⭐：{"starred": true / false}。不进上一版、不记动静。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    body = await _json_body(request)
+    try:
+        result = memories.set_star(memory_id, body.get("starred") if isinstance(body, dict) else None, by="xuan")
+    except ValueError as e:
+        return _bad(str(e))
+    if result is None:
+        return _not_found("这条记忆不存在或已经删掉了")
+    return result
 
 
 @router.delete("/api/memories/{memory_id}")

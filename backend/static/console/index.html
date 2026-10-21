@@ -10,6 +10,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%23D9775B'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/fonts/fonts.css">
 <link rel="stylesheet" href="/static/console/console.css">
+<link rel="stylesheet" href="/static/console/console-rings.css">
 <!-- 先定配色，免得打开时闪一下默认色 -->
 <script src="/static/console/console-lib.js"></script>
 </head>
@@ -148,12 +149,13 @@
     </div>
   </nav>
 
-  <button class="glass press fab" id="fab" type="button" aria-label="写一条新的记忆"><svg class="ico" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+  <button class="glass press fab" id="fab" type="button" aria-label="写一张新卡"><svg class="ico" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
 
   <div class="layer" id="sheet-layer" hidden>
     <button class="scrim" id="scrim" type="button" aria-label="关闭" tabindex="-1"></button>
     <section class="glass glass-strong sheet" id="sheet-dialog" role="dialog" aria-modal="true" aria-label="记忆" tabindex="-1">
       <span class="grabber" aria-hidden="true"></span>
+      <div class="shead" id="sheet-head" hidden></div>
       <div class="sheet-in" id="sheet"></div>
     </section>
   </div>
@@ -174,6 +176,8 @@
   <div class="toastwrap" id="toastwrap" role="status" aria-live="polite"></div>
 </div>
 <script src="/static/console/console.js"></script>
+<script src="/static/console/console-rings.js"></script>
 <script src="/static/console/console-sheet.js"></script>
+<script src="/static/console/console-sheet-drag.js"></script>
 </body>
 </html>
