@@ -1,0 +1,61 @@
+# 「VPS 操作」按钮：手机 GitHub app → ember 仓库 → Actions → VPS 操作 → Run workflow，选一件事。
+# 经 SSH 连 VPS；那把专用钥匙在 VPS 上被锁死成只能跑 scripts/remote-op.sh 的五个操作（见那个脚本开头）。
+# 只有对仓库有写权限的人能点；fork 和 PR 拿不到这里的 Secrets。仓库公开、日志谁都能看，脚本只打印状态和数字。
+# 要在仓库 Settings → Secrets and variables → Actions 里填：
+#   VPS_SSH_KEY      专用私钥全文（-----BEGIN … END-----）
+#   VPS_HOST         VPS 地址（ssh ember 连的那个 IP / 域名）
+#   VPS_KNOWN_HOSTS  VPS 的主机公钥那一行：「地址 ssh-ed25519 AAAA…」，防连到冒牌机器
+name: VPS 操作
+
+on:
+  workflow_dispatch:
+    inputs:
+      op:
+        description: 做哪件事
+        type: choice
+        default: 查部署状态
+        options:
+          - 查部署状态
+          - 备份数据库
+          - 补算 dry-run（只数，不花钱）
+          - 补算（先备份再真算，花一点 embedding 费用）
+          - 手动重新部署
+
+permissions:
+  contents: read
+
+# 同时点了好几次就排队，一次只跑一件
+concurrency:
+  group: vps-op
+  cancel-in-progress: false
+
+jobs:
+  op:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: ${{ inputs.op }}
+        env:
+          OP_LABEL: ${{ inputs.op }}
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          SSH_HOST: ${{ secrets.VPS_HOST }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          case "$OP_LABEL" in
+            "查部署状态") op=status ;;
+            "备份数据库") op=backup ;;
+            "补算 dry-run（只数，不花钱）") op=embed-dry-run ;;
+            "补算（先备份再真算，花一点 embedding 费用）") op=embed ;;
+            "手动重新部署") op=redeploy ;;
+            *) echo "不认识的操作"; exit 2 ;;
+          esac
+          if [ -z "$SSH_KEY" ] || [ -z "$SSH_HOST" ] || [ -z "$KNOWN_HOSTS" ]; then
+            echo "还没在仓库 Settings → Secrets and variables → Actions 里填齐 VPS_SSH_KEY / VPS_HOST / VPS_KNOWN_HOSTS"
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/vps_op
+          chmod 600 ~/.ssh/vps_op
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/vps_op -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 "root@$SSH_HOST" "$op"
