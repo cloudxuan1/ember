@@ -22,6 +22,7 @@
   --glass-hi: rgba(248, 255, 236, .95);
   --glass-lo: rgba(236, 246, 220, .14);
   --glass-shadow: 0 12px 32px rgba(60, 80, 40, .14), 0 2px 8px rgba(60, 80, 40, .06);
+  --glass-shadow-sm: 0 4px 12px rgba(60, 80, 40, .14), 0 1px 4px rgba(60, 80, 40, .06);
   --glass-sat: 170%;
   --glass-bright: 1.04;
   --bubble: rgba(255, 255, 255, .82);
@@ -67,6 +68,7 @@
   --glass-hi: rgba(255, 255, 255, .95);
   --glass-lo: rgba(255, 255, 255, .12);
   --glass-shadow: 0 12px 32px rgba(170, 70, 105, .16), 0 2px 8px rgba(170, 70, 105, .07);
+  --glass-shadow-sm: 0 4px 12px rgba(170, 70, 105, .16), 0 1px 4px rgba(170, 70, 105, .07);
   --glass-sat: 175%;
   --glass-bright: 1.06;
   --bubble: rgba(255, 255, 255, .84);
@@ -112,6 +114,7 @@
   --glass-hi: rgba(255, 255, 255, .95);
   --glass-lo: rgba(255, 255, 255, .12);
   --glass-shadow: 0 12px 32px rgba(50, 100, 160, .16), 0 2px 8px rgba(50, 100, 160, .07);
+  --glass-shadow-sm: 0 4px 12px rgba(50, 100, 160, .16), 0 1px 4px rgba(50, 100, 160, .07);
   --glass-sat: 170%;
   --glass-bright: 1.05;
   --bubble: rgba(255, 255, 255, .84);
@@ -157,6 +160,7 @@
   --glass-hi: rgba(255, 255, 255, .32);
   --glass-lo: rgba(255, 255, 255, .05);
   --glass-shadow: 0 14px 36px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
+  --glass-shadow-sm: 0 5px 14px rgba(0, 0, 0, .5), 0 1px 4px rgba(0, 0, 0, .3);
   --glass-sat: 150%;
   --glass-bright: 1;
   --bubble: rgba(255, 255, 255, .16);
@@ -412,7 +416,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .stick-sentinel { height: 1px; margin-bottom: -1px; }
 /* 透明的边角（渐隐区、月份行下面给阴影留的空）不挡手指，点得到下面的卡片 */
 .sticky { position: sticky; top: 0; z-index: 20; padding: max(8px, env(safe-area-inset-top)) 16px 14px; pointer-events: none; }
-.sticky .searchwrap, .sticky .chip { pointer-events: auto; }
+/* .chips 也要收得到手势：滚动的是它，它跟着 none 的话月份那一排横着滑不动（iPhone 实测） */
+.sticky .searchwrap, .sticky .chips, .sticky .chip { pointer-events: auto; }
 .sticky::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; background: linear-gradient(to bottom, var(--fade) 0%, var(--fade) 40%, var(--fade0) 100%); opacity: 0; transition: opacity .25s ease; }
 .sticky.stuck::before { opacity: 1; }
 .searchwrap { display: flex; align-items: center; gap: 8px; height: 46px; padding: 0 8px 0 14px; border-radius: 999px; box-sizing: border-box; color: var(--ink2); cursor: text; }
@@ -422,10 +427,13 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .search::-webkit-search-cancel-button, .search::-webkit-search-decoration { -webkit-appearance: none; appearance: none; display: none; }
 .clearq { flex: none; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--seg); color: var(--ink2); }
 
-/* 横向滚动会裁掉玻璃按钮的阴影：四周多留空、再用负 margin 抵回去，阴影不被切出一道硬边。
-   玻璃阴影往下拖 12+32=44px，所以底下留 46px（版面上净多 4px，和原来一样） */
-.chips { display: flex; gap: 8px; margin: 2px -16px -42px; padding: 8px 16px 46px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; scroll-padding: 0 16px; }
+/* 横向滚动会裁掉按钮的阴影：底下多留空、再用负 margin 抵回去，阴影不被切出一道硬边。
+   这块空收得到手指（见上面 .sticky .chips），会挡住下面卡片的点击，所以这一排换小一号的阴影
+   （--glass-shadow-sm 往下拖最多 5+14=19px），底下只留 20px（版面上净多 4px，和原来一样） */
+.chips { display: flex; gap: 8px; margin: 2px -16px -16px; padding: 8px 16px 20px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; scroll-padding: 0 16px; }
 .chips::-webkit-scrollbar { display: none; }
+.chips .glass { box-shadow: inset 0 1px 0 var(--glass-hi), inset 0 -1px 0 var(--glass-lo), var(--glass-shadow-sm); }
+.chips .chip-sel { box-shadow: 0 4px 12px rgba(0, 0, 0, .12); }
 .chip { position: relative; flex: none; height: 40px; padding: 0 16px; border-radius: 999px; font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; }
 .chip-sel { background: var(--btn); color: var(--btn-ink); box-shadow: 0 6px 16px rgba(0, 0, 0, .12); }
 
