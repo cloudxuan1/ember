@@ -67,7 +67,6 @@ async def image_generate(prompt: str, request_id: str = "", model: str = "",
     - openai/gpt-image-2.5-flare（Flare）：日常、快
     - openai/gpt-image-2.5-sunburst（Sunburst）：定稿、精准
     - google/gemini-3.1-flash-image（Nano Banana 2）
-    - google/gemini-nano-banana-2.1（Nano Banana 2.1）
     - bytedance-seed/seedream-5-0-flash（Seedream 5 Flash）：便宜，试方向用
     轩点名要某个模型、要拿参考图改图，或你觉得别的模型更合适时，都可以传 model。
     走 OpenRouter 的图，交图时顺口说一声是哪个模型画的，比如「这张是 Sunburst 画的」。

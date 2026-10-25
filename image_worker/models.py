@@ -11,7 +11,6 @@ OPENROUTER_MODELS = {
     "openai/gpt-image-2.5-flare": {"label": "Flare", "use": "日常、快", "quality": True, "references": True},
     "openai/gpt-image-2.5-sunburst": {"label": "Sunburst", "use": "定稿、精准", "quality": True, "references": True},
     "google/gemini-3.1-flash-image": {"label": "Nano Banana 2", "use": "Gemini 3.1 Flash Image", "quality": False, "references": True},
-    "google/gemini-nano-banana-2.1": {"label": "Nano Banana 2.1", "use": "Gemini", "quality": False, "references": True},
     "bytedance-seed/seedream-5-0-flash": {"label": "Seedream 5 Flash", "use": "便宜，试方向用", "quality": False, "references": True},
 }
 
