@@ -98,6 +98,13 @@ def test_worker_network_failure_does_not_repeat_submission(worker, monkeypatch):
     assert len(calls) == 1 and "先查最近任务" in result["error"]
 
 
+def test_worker_validation_error_is_not_reported_as_broken_connection(worker, monkeypatch):
+    transport = httpx.MockTransport(lambda request: httpx.Response(422, json={"detail": [{"msg": "too long"}]}))
+    monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
+    result = asyncio.run(mcp_server.image_generate("猫" * 9000))
+    assert "8000" in result["error"] and "连接" not in result["error"]
+
+
 def test_tool_descriptions_cover_queue_retry_privacy_and_subscription():
     assert "订阅" in mcp_server.image_generate.__doc__ and "不自动重试" in mcp_server.image_generate.__doc__
     assert "整段聊天" in mcp_server.image_generate.__doc__ and "不要重新生成" in mcp_server.image_get.__doc__

@@ -47,6 +47,8 @@ async def request(method, path, **kwargs):
             return {"error": "生图服务暂时不可用，已有任务不会因查进度而重新提交。"}
         if response.status_code in (400, 404, 409, 429):
             return {"error": response.json().get("detail", "画图请求未完成。")}
+        if response.status_code == 422:
+            return {"error": "画图请求不合规：提示词要 1–8000 字，request_id 最多 128 字。改好后再提交，任务没有排队。"}
         if response.status_code != 200:
             return {"error": "生图服务连接配置有误，请让轩检查内部连接。"}
         return response.json()
