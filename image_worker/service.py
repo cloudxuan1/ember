@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from image_worker.openrouter import OpenRouterRunner
 from image_worker.runner import CodexRunner, GenerationError
 from image_worker.store import Conflict, QueueFull, Store
 
@@ -17,11 +18,16 @@ from image_worker.store import Conflict, QueueFull, Store
 class Submission(BaseModel):
     prompt: str = Field(min_length=1, max_length=8000)
     request_id: str = Field(default="", max_length=128)
+    # Checked by the store, so a bad value gets a readable 400 instead of a validation 422.
+    model: str = ""
+    reference_job_ids: list = Field(default_factory=list)
 
 
-def create_app(store=None, runner=None, token=None, run_queue=True):
+def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=None):
     store = store or Store(Path(os.environ.get("IMAGE_DATA_DIR", "/var/lib/ember-images")))
-    runner = runner or CodexRunner(store, os.environ.get("CODEX_HOME", "/home/node/.codex"), int(os.environ.get("IMAGE_TIMEOUT_SECONDS", "420")))
+    timeout = int(os.environ.get("IMAGE_TIMEOUT_SECONDS", "420"))
+    runner = runner or CodexRunner(store, os.environ.get("CODEX_HOME", "/home/node/.codex"), timeout)
+    openrouter = openrouter or OpenRouterRunner(store, os.environ.get("OPENROUTER_IMAGE_KEY", ""), timeout)
     token = token if token is not None else os.environ.get("IMAGE_WORKER_TOKEN", "")
     stop = threading.Event()
 
@@ -32,10 +38,11 @@ def create_app(store=None, runner=None, token=None, run_queue=True):
                 stop.wait(0.25)
                 continue
             try:
-                metadata = runner.generate(job, stop)
+                # No model = the Codex subscription, exactly as before; never falls through to the other path.
+                metadata = (openrouter if job["model"] else runner).generate(job, stop)
                 store.finish(job["id"], metadata=metadata)
             except GenerationError as error:
-                store.finish(job["id"], error=error.code)
+                store.finish(job["id"], error=error.code, detail=error.detail)
             except Exception:
                 # No traceback containing prompts, model output, or authentication data.
                 store.finish(job["id"], error="generation_failed")
@@ -66,12 +73,13 @@ def create_app(store=None, runner=None, token=None, run_queue=True):
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "login_cache_present": (runner.auth_home / "auth.json").is_file()}
+        return {"status": "ok", "login_cache_present": (runner.auth_home / "auth.json").is_file(),
+                "openrouter_key_present": bool(openrouter.key)}
 
     @app.post("/jobs", dependencies=[Depends(authorize)])
     def submit(body: Submission):
         try:
-            job, reused = store.submit(body.prompt, body.request_id)
+            job, reused = store.submit(body.prompt, body.request_id, body.model, body.reference_job_ids)
         except Conflict as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except QueueFull as error:

@@ -54,8 +54,16 @@ async def request(method, path, **kwargs):
         return {"error": "暂时连不上生图服务；提交结果可能尚未返回，请先查最近任务，不要换标记重复提交。"}
 
 
-async def generate(prompt, request_id=""):
-    result = await request("POST", "/jobs", json={"prompt": prompt, "request_id": request_id})
+async def generate(prompt, request_id="", model="", reference_job_ids=None):
+    body = {"prompt": prompt, "request_id": request_id}
+    # Without model / references the request is byte-for-byte the original Codex submission.
+    if model:
+        body["model"] = model
+    if reference_job_ids:
+        if not isinstance(reference_job_ids, list) or not all(valid_id(r) for r in reference_job_ids):
+            return {"error": "reference_job_ids 要用之前画图任务返回的 id 列表。"}
+        body["reference_job_ids"] = reference_job_ids
+    result = await request("POST", "/jobs", json=body)
     if "job" in result:
         result["message"] = "任务已存在，继续查进度，不会重复生成。" if result.get("reused") else "已排队；用 image_status 查进度，完成后用 image_get 取图。不要反复提交。"
     return result
@@ -116,9 +124,11 @@ async def get_image(job_id):
         url = download_url(job_id)
     except ValueError as error:
         return CallToolResult(content=[TextContent(type="text", text=str(error))], isError=True)
+    message = "图片已生成，附带预览。请把原图链接发给轩；链接 24 小时有效，过期后用同一任务重新取链接，无需重画。"
+    if job.get("engine") == "openrouter":
+        message += f"这张是 {job.get('model_label')} 画的（OpenRouter），交图时顺口告诉轩。"
     return CallToolResult(content=[
-        TextContent(type="text", text=json.dumps({"job": job, "download_url": url,
-                    "message": "图片已生成，附带预览。请把原图链接发给轩；链接 24 小时有效，过期后用同一任务重新取链接，无需重画。"}, ensure_ascii=False)),
+        TextContent(type="text", text=json.dumps({"job": job, "download_url": url, "message": message}, ensure_ascii=False)),
         ImageContent(type="image", mimeType="image/png", data=base64.b64encode(preview).decode(),
                      annotations={"audience": ["user", "assistant"]}),
     ])

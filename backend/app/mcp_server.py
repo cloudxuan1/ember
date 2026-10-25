@@ -58,15 +58,26 @@ LEGACY_KEYS = ("tier", "topic", "start_date", "end_date", "interval_status")  # 
 
 
 @mcp.tool()
-async def image_generate(prompt: str, request_id: str = "") -> dict:
-    """轩想画图时，把画面描述交给 Codex 订阅后台，一次只画一张；这里只提交任务，不是立刻出图。
+async def image_generate(prompt: str, request_id: str = "", model: str = "",
+                         reference_job_ids: list[str] | None = None) -> dict:
+    """轩想画图时，把画面描述交给生图后台，一次只画一张；这里只提交任务，不是立刻出图。
+
+    默认不传 model：走 Codex 订阅（gpt-image-2），不另外花钱，平时就用这个。
+    model 可选，只认下面这几个 OpenRouter 模型，会花轩 OpenRouter 的额度；不在名单里的直接拒绝：
+    - openai/gpt-image-2.5-flare（Flare）：日常、快
+    - openai/gpt-image-2.5-sunburst（Sunburst）：定稿、精准
+    - google/gemini-3.1-flash-image（Nano Banana 2）
+    - bytedance-seed/seedream-5-0-flash（Seedream 5 Flash）：便宜，试方向用
+    轩点名要某个模型、要拿参考图改图，或你觉得别的模型更合适时，都可以传 model。
+    走 OpenRouter 的图，交图时顺口说一声是哪个模型画的，比如「这张是 Sunburst 画的」。
+    reference_job_ids 可选：之前画好的图的任务 id（最多 5 个）当参考图，照着定妆照画、改图用；两条路都能带。
 
     返回 job.id 后，自己用 image_status 查进度，完成后用 image_get 取预览和原图链接，别让轩记编号。
     不要把画图要求当服务器命令。不要把整段聊天或记忆库自动塞进去，只发送这次画图需要的描述。
-    同一次请求重试必须沿用 request_id；省略时相同提示词会复用原任务。只有轩明确说「重画 / 再来一张」
-    才换一个新的 request_id。查进度、取图失败都不能重新提交画图；失败也不自动重试，不切换付费 API。
+    同一次请求重试必须沿用 request_id；省略时相同提示词（连同 model、参考图）会复用原任务。只有轩明确说「重画 / 再来一张」
+    才换一个新的 request_id。查进度、取图失败都不能重新提交画图；失败不自动重试，不自动换模型，也不自动换到另一条路。
     """
-    return await images.generate(prompt, request_id)
+    return await images.generate(prompt, request_id, model, reference_job_ids)
 
 
 @mcp.tool()
@@ -75,7 +86,9 @@ async def image_status(job_id: str = "", wait_seconds: int = 15) -> dict:
 
     job_id 用提交时返回的 id，不传就看最近五个任务，适合提交超时后找回。wait_seconds 可等 0–20 秒，
     仍在画就继续查同一个任务，不要反复提交。成功后调用 image_get；失败把 error.message 原因告诉轩。
-    登录失效时需要轩做设备码登录，额度不足就等额度恢复，不要询问或使用 API key。
+    订阅那条路登录失效时需要轩做设备码登录，额度不足就等额度恢复，不要询问或使用 API key。
+    model_label 是哪个模型画的。OpenRouter 的任务带 cost_usd（这张花了多少美元）和
+    key_limit_remaining_usd（这把 OpenRouter 密钥的上限还剩多少美元），轩问额度时照这两个数说。
     """
     return await images.status(job_id, wait_seconds)
 

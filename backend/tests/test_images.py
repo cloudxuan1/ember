@@ -102,6 +102,9 @@ def test_tool_descriptions_cover_queue_retry_privacy_and_subscription():
     assert "订阅" in mcp_server.image_generate.__doc__ and "不自动重试" in mcp_server.image_generate.__doc__
     assert "整段聊天" in mcp_server.image_generate.__doc__ and "不要重新生成" in mcp_server.image_get.__doc__
     assert "设备码" in mcp_server.image_status.__doc__
+    doc = mcp_server.image_generate.__doc__
+    assert "默认不传 model：走 Codex 订阅" in doc and "不自动换模型" in doc and "Sunburst 画的" in doc
+    assert "reference_job_ids" in doc and "cost_usd" in mcp_server.image_status.__doc__
 
 
 def test_mcp_registers_the_three_image_tools():
@@ -109,3 +112,27 @@ def test_mcp_registers_the_three_image_tools():
     names = {tool.name for tool in tools}
     assert {"image_generate", "image_status", "image_get"} <= names
 
+
+def test_model_and_references_pass_through_and_bad_references_stay_local(worker):
+    ref = str(uuid.uuid4())
+    asyncio.run(mcp_server.image_generate("同一个角色换冬装", "r1", "openai/gpt-image-2.5-sunburst", [ref]))
+    assert json.loads(worker["calls"][0].content) == {"prompt": "同一个角色换冬装", "request_id": "r1",
+                                                      "model": "openai/gpt-image-2.5-sunburst", "reference_job_ids": [ref]}
+    result = asyncio.run(mcp_server.image_generate("改图", "", "", ["../../auth.json"]))
+    assert "reference_job_ids" in result["error"] and len(worker["calls"]) == 1
+
+
+def test_openrouter_image_names_its_model_and_carries_cost(worker, monkeypatch):
+    job = {"id": JOB_ID, "status": "succeeded", "engine": "openrouter", "model": "openai/gpt-image-2.5-sunburst",
+           "model_label": "Sunburst", "cost_usd": 0.19, "key_limit_remaining_usd": 4.81}
+
+    def handle(request):
+        if request.url.path.endswith("/image"):
+            return httpx.Response(200, content=PNG)
+        return httpx.Response(200, json={"job": job})
+
+    transport = httpx.MockTransport(handle)
+    monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
+    metadata = json.loads(asyncio.run(mcp_server.image_get(JOB_ID)).content[0].text)
+    assert "Sunburst 画的" in metadata["message"]
+    assert metadata["job"]["cost_usd"] == 0.19 and metadata["job"]["key_limit_remaining_usd"] == 4.81
