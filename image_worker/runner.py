@@ -53,10 +53,10 @@ class CodexRunner:
         for feature in DISABLED_FEATURES:
             args += ["--disable", feature]
         return args + [
-            "--enable", "image_generation", "exec", "--ignore-user-config", "--ignore-rules",
+            "--enable", "image_generation", "exec", "--model", "gpt-6.1-sol", "--ignore-user-config", "--ignore-rules",
             "--ephemeral", "--skip-git-repo-check", "--sandbox", "workspace-write", "-C", str(work),
             "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
-            "-c", 'shell_environment_policy.inherit="none"', "-c", 'model_reasoning_effort="low"',
+            "-c", 'shell_environment_policy.inherit="none"', "-c", 'model_reasoning_effort="xhigh"',
             "-c", 'cli_auth_credentials_store="file"', "--json", "--color", "never", "-",
         ]
 
