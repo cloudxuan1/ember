@@ -2,7 +2,7 @@ FROM node:22-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install --global @openai/codex@0.145.0 \
+    && npm install --global @openai/codex@0.164.0 \
     && npm cache clean --force
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
