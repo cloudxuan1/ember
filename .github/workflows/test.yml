@@ -20,6 +20,11 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
+      - name: Image worker tests
+        working-directory: .
+        run: |
+          pip install -r image_worker/requirements.txt
+          python -m pytest -q image_worker/tests
       - name: Check deployment scripts
         working-directory: .
         run: for script in scripts/autodeploy.sh scripts/install-autodeploy.sh scripts/remote-op.sh; do bash -n "$script" || exit; done

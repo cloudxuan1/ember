@@ -1,5 +1,8 @@
 # 密钥与环境 —— 永不入库
 .env
+.env.*
+!.env.example
+auth.json
 
 # 记忆数据 —— 本仓库公开，数据永不入库
 *.db

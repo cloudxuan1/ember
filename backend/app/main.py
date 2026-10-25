@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app import chat_api, console, memories, oauth, words_api
+from app import chat_api, console, images, memories, oauth, words_api
 from app.db import init_db
 from app.mcp_server import mcp
 
@@ -34,6 +34,7 @@ app.include_router(oauth.router)
 app.include_router(console.router)
 app.include_router(chat_api.router)
 app.include_router(words_api.router)
+app.include_router(images.router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount(f"/{MCP_PATH}", mcp.streamable_http_app())
 app.add_middleware(
