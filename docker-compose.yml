@@ -51,6 +51,8 @@ services:
     environment:
       - IMAGE_WORKER_TOKEN=${IMAGE_WORKER_TOKEN:-}
       - IMAGE_TIMEOUT_SECONDS=420
+      # 只有 image-worker 拿这把 OpenRouter 生图 key；ember 容器不加。留空 = 只能走 Codex 订阅。
+      - OPENROUTER_IMAGE_KEY=${OPENROUTER_IMAGE_KEY:-}
     volumes:
       - image-data:/var/lib/ember-images
       - image-auth:/home/node/.codex
