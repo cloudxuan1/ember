@@ -98,6 +98,21 @@ def test_worker_network_failure_does_not_repeat_submission(worker, monkeypatch):
     assert len(calls) == 1 and "先查最近任务" in result["error"]
 
 
+def test_tool_descriptions_cover_queue_retry_privacy_and_subscription():
+    assert "订阅" in mcp_server.image_generate.__doc__ and "不自动重试" in mcp_server.image_generate.__doc__
+    assert "整段聊天" in mcp_server.image_generate.__doc__ and "不要重新生成" in mcp_server.image_get.__doc__
+    assert "设备码" in mcp_server.image_status.__doc__
+    doc = mcp_server.image_generate.__doc__
+    assert "默认不传 model：走 Codex 订阅" in doc and "不自动换模型" in doc and "Sunburst 画的" in doc
+    assert "reference_job_ids" in doc and "cost_usd" in mcp_server.image_status.__doc__
+
+
+def test_mcp_registers_the_three_image_tools():
+    tools = asyncio.run(mcp_server.mcp.list_tools())
+    names = {tool.name for tool in tools}
+    assert {"image_generate", "image_status", "image_get"} <= names
+
+
 def test_model_and_references_pass_through_and_bad_references_stay_local(worker):
     ref = str(uuid.uuid4())
     asyncio.run(mcp_server.image_generate("同一个角色换冬装", "r1", "openai/gpt-image-2.5-sunburst", [ref]))
@@ -121,19 +136,3 @@ def test_openrouter_image_names_its_model_and_carries_cost(worker, monkeypatch):
     metadata = json.loads(asyncio.run(mcp_server.image_get(JOB_ID)).content[0].text)
     assert "Sunburst 画的" in metadata["message"]
     assert metadata["job"]["cost_usd"] == 0.19 and metadata["job"]["key_limit_remaining_usd"] == 4.81
-
-
-def test_tool_descriptions_cover_queue_retry_privacy_and_subscription():
-    assert "订阅" in mcp_server.image_generate.__doc__ and "不自动重试" in mcp_server.image_generate.__doc__
-    assert "整段聊天" in mcp_server.image_generate.__doc__ and "不要重新生成" in mcp_server.image_get.__doc__
-    assert "设备码" in mcp_server.image_status.__doc__
-    doc = mcp_server.image_generate.__doc__
-    assert "默认不传 model：走 Codex 订阅" in doc and "不自动换模型" in doc and "Sunburst 画的" in doc
-    assert "reference_job_ids" in doc and "cost_usd" in mcp_server.image_status.__doc__
-
-
-def test_mcp_registers_the_three_image_tools():
-    tools = asyncio.run(mcp_server.mcp.list_tools())
-    names = {tool.name for tool in tools}
-    assert {"image_generate", "image_status", "image_get"} <= names
-
