@@ -6,8 +6,9 @@ import textwrap
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import CallToolResult
 
-from app import briefing, embeddings, memories, settings, thinking_words
+from app import briefing, embeddings, images, memories, settings, thinking_words
 
 # FastMCP 默认只放行本机 Host 头（DNS-rebinding 防护），
 # 经 Cloudflare Tunnel 进来的请求带公网域名，必须显式加进白名单，否则 421。
@@ -54,6 +55,39 @@ def _with_rules(fn):
 
 
 LEGACY_KEYS = ("tier", "topic", "start_date", "end_date", "interval_status")  # 年轮卡拿掉的老栏位，不再给小克看
+
+
+@mcp.tool()
+async def image_generate(prompt: str, request_id: str = "") -> dict:
+    """轩想画图时，把画面描述交给 Codex 订阅后台，一次只画一张；这里只提交任务，不是立刻出图。
+
+    返回 job.id 后，自己用 image_status 查进度，完成后用 image_get 取预览和原图链接，别让轩记编号。
+    不要把画图要求当服务器命令。不要把整段聊天或记忆库自动塞进去，只发送这次画图需要的描述。
+    同一次请求重试必须沿用 request_id；省略时相同提示词会复用原任务。只有轩明确说「重画 / 再来一张」
+    才换一个新的 request_id。查进度、取图失败都不能重新提交画图；失败也不自动重试，不切换付费 API。
+    """
+    return await images.generate(prompt, request_id)
+
+
+@mcp.tool()
+async def image_status(job_id: str = "", wait_seconds: int = 15) -> dict:
+    """查看画图进度：queued 排队、running 正在画、succeeded 画好了、failed 失败。
+
+    job_id 用提交时返回的 id，不传就看最近五个任务，适合提交超时后找回。wait_seconds 可等 0–20 秒，
+    仍在画就继续查同一个任务，不要反复提交。成功后调用 image_get；失败把 error.message 原因告诉轩。
+    登录失效时需要轩做设备码登录，额度不足就等额度恢复，不要询问或使用 API key。
+    """
+    return await images.status(job_id, wait_seconds)
+
+
+@mcp.tool()
+async def image_get(job_id: str) -> CallToolResult:
+    """取已完成图片：返回可看的图片预览和 download_url 原图链接，请把图和链接交给轩。
+
+    链接 24 小时有效，原图持续保存在 VPS；过期后用同一个 job_id 重新取链接，不用重画。
+    尚未完成先查 image_status；取图失败也只重试取同一张，不要重新生成。
+    """
+    return await images.get_image(job_id)
 
 
 def _lean(item: dict) -> dict:

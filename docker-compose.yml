@@ -22,6 +22,9 @@ services:
       - EMBEDDING_API_BASE=${EMBEDDING_API_BASE:-https://openrouter.ai/api/v1}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen/qwen3-embedding-8b}
+      # 独立订阅生图服务；这把随机内部口令不具备记忆库权限。
+      - IMAGE_WORKER_URL=http://image-worker:8311
+      - IMAGE_WORKER_TOKEN=${IMAGE_WORKER_TOKEN:-}
     volumes:
       # V2 起 SQLite 数据库放这里（data/ 已 gitignore，永不入库）
       - ./data:/app/data
@@ -31,6 +34,34 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  image-worker:
+    build: ./image_worker
+    container_name: ember-image-worker
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    mem_limit: 768m
+    cpus: 0.75
+    pids_limit: 192
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # 无公网端口、无正式 data/.env/Docker socket；只给两份独立卷。
+    environment:
+      - IMAGE_WORKER_TOKEN=${IMAGE_WORKER_TOKEN:-}
+      - IMAGE_TIMEOUT_SECONDS=420
+    volumes:
+      - image-data:/var/lib/ember-images
+      - image-auth:/home/node/.codex
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8311/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    logging: *log-rotate
 
   # ember 自己的 Cloudflare Tunnel，与旧系统的 ombre-tunnel 完全独立，互不影响
   tunnel:
@@ -43,3 +74,9 @@ services:
     depends_on:
       - ember
     logging: *log-rotate
+
+volumes:
+  image-data:
+    name: ember-image-data
+  image-auth:
+    name: ember-image-auth

@@ -111,7 +111,7 @@ if [ "$force" = "1" ]; then
 else
   while IFS= read -r changed_file; do
     case "$changed_file" in
-      backend/*|docker-compose.yml)
+      backend/*|image_worker/*|docker-compose.yml)
         needs_rebuild=1
         break
         ;;
