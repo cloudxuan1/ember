@@ -84,7 +84,7 @@ async def image_generate(prompt: str, request_id: str = "", model: str = "",
 async def image_status(job_id: str = "", wait_seconds: int = 15) -> dict:
     """查看画图进度：queued 排队、running 正在画、succeeded 画好了、failed 失败。
 
-    job_id 用提交时返回的 id，不传就看最近五个任务，适合提交超时后找回。wait_seconds 可等 0–20 秒，
+    job_id 用提交时返回的 id，不传就看最近五个任务，适合提交超时后找回。wait_seconds 可等 0–60 秒，
     仍在画就继续查同一个任务，不要反复提交。成功后调用 image_get；失败把 error.message 原因告诉轩。
     订阅那条路登录失效时需要轩做设备码登录，额度不足就等额度恢复，不要询问或使用 API key。
     model_label 是哪个模型画的。OpenRouter 的任务带 cost_usd（这张花了多少美元）和
@@ -96,6 +96,7 @@ async def image_status(job_id: str = "", wait_seconds: int = 15) -> dict:
 @mcp.tool()
 async def image_get(job_id: str) -> CallToolResult:
     """取已完成图片：返回可看的图片预览和 download_url 原图链接，请把图和链接交给轩。
+    job.prompt 是这张图当时的完整提示词（image_status 只给开头），改图 / 重画时照着它改。
 
     链接 24 小时有效，原图持续保存在 VPS；过期后用同一个 job_id 重新取链接，不用重画。
     尚未完成先查 image_status；取图失败也只重试取同一张，不要重新生成。

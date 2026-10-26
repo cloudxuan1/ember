@@ -149,9 +149,12 @@ class Store:
             raise ValueError(f"参考图最多 {MAX_REFERENCES} 张。")
         return references
 
-    def public(self, row, conn):
+    def public(self, row, conn, full_prompt=False):
         out = {k: row[k] for k in ("id", "status", "created_at", "started_at", "finished_at", "width", "height", "image_bytes", "command_events")}
-        out["prompt_preview"] = row["prompt"][:80]
+        if full_prompt:
+            out["prompt"] = row["prompt"]
+        else:
+            out["prompt_preview"] = row["prompt"][:80]
         out["engine"] = "openrouter" if row["model"] else "codex_subscription"
         out["model"] = row["model"]
         out["model_label"] = label(row["model"])
@@ -168,10 +171,10 @@ class Store:
                 out["error"]["detail"] = row["error_detail"]
         return out
 
-    def get(self, job_id):
+    def get(self, job_id, full_prompt=False):
         with self.connection() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-            return self.public(row, conn) if row else None
+            return self.public(row, conn, full_prompt) if row else None
 
     def recent(self):
         with self.connection() as conn:
@@ -210,4 +213,10 @@ class Store:
         canonical = str(uuid.UUID(job_id))
         if canonical != job_id:
             raise ValueError("invalid image id")
-        return self.images / (canonical + (".preview.png" if preview else ".png"))
+        return self.images / (canonical + (".preview.jpg" if preview else ".png"))
+
+    def preview_file(self, job_id):
+        """The JPEG preview, or the PNG preview that images made before the switch still have."""
+        path = self.image_path(job_id, preview=True)
+        legacy = path.with_name(path.name.replace(".preview.jpg", ".preview.png"))
+        return path if path.is_file() or not legacy.is_file() else legacy

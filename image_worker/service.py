@@ -15,6 +15,9 @@ from image_worker.runner import CodexRunner, GenerationError
 from image_worker.store import Conflict, QueueFull, Store
 
 
+WAIT_LIMIT = 60  # image_status may hold one request this long; the backend's HTTP timeout sits above it.
+
+
 class Submission(BaseModel):
     prompt: str = Field(min_length=1, max_length=8000)
     request_id: str = Field(default="", max_length=128)
@@ -93,10 +96,10 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
         return {"jobs": store.recent()}
 
     @app.get("/jobs/{job_id}", dependencies=[Depends(authorize)])
-    async def status(job_id: str, wait: int = 0):
-        deadline = asyncio.get_running_loop().time() + max(0, min(wait, 20))
+    async def status(job_id: str, wait: int = 0, full_prompt: bool = False):
+        deadline = asyncio.get_running_loop().time() + max(0, min(wait, WAIT_LIMIT))
         while True:
-            job = store.get(job_id)
+            job = store.get(job_id, full_prompt)
             if not job:
                 raise HTTPException(status_code=404, detail="找不到这个画图任务。")
             if job["status"] in ("succeeded", "failed") or asyncio.get_running_loop().time() >= deadline:
@@ -111,11 +114,12 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
         if job["status"] != "succeeded":
             raise HTTPException(status_code=409, detail="图片还没准备好，请先查任务进度。")
         try:
-            path = store.image_path(job_id, preview=preview)
+            path = store.preview_file(job_id) if preview else store.image_path(job_id)
         except ValueError:
             raise HTTPException(status_code=404, detail="找不到图片。") from None
         if not path.is_file():
             raise HTTPException(status_code=404, detail="图片文件不存在。")
-        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+        media_type = "image/jpeg" if path.suffix == ".jpg" else "image/png"
+        return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-store"})
 
     return app
