@@ -224,7 +224,7 @@ def test_full_prompt_only_when_asked_and_wait_is_capped(tmp_path, monkeypatch):
     headers = {"Authorization": "Bearer " + TOKEN}
     prompt = "编的长提示词：" + "一只橘猫在雨里撑伞，" * 20
     job, _ = store.submit(prompt)
-    assert service.WAIT_LIMIT == 60
+    assert service.WAIT_LIMIT == 50
     monkeypatch.setattr(service, "WAIT_LIMIT", 0.5)
     with TestClient(app) as client:
         short = client.get(f"/jobs/{job['id']}", headers=headers).json()["job"]
