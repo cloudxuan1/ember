@@ -15,7 +15,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 
 router = APIRouter()
 LINK_SECONDS = 24 * 60 * 60
-WAIT_LIMIT = 60  # image_status 一次最多等这么久；worker 那边同一个上限
+WAIT_LIMIT = 50  # image_status 一次最多等这么久；worker 那边同一个上限。60 实测会被 MCP 客户端 60 秒超时掐断
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 

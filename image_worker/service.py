@@ -15,7 +15,7 @@ from image_worker.runner import CodexRunner, GenerationError
 from image_worker.store import Conflict, QueueFull, Store
 
 
-WAIT_LIMIT = 60  # image_status may hold one request this long; the backend's HTTP timeout sits above it.
+WAIT_LIMIT = 50  # image_status may hold one request this long (60 hit the MCP client's 60 s timeout); the backend's HTTP timeout sits above it.
 
 
 class Submission(BaseModel):

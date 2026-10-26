@@ -168,10 +168,10 @@ def test_original_download_still_requires_png(worker, monkeypatch):
         asyncio.run(images.image_bytes(JOB_ID))
 
 
-def test_status_wait_is_capped_at_60_and_http_timeout_outlasts_it(worker):
+def test_status_wait_is_capped_at_50_and_http_timeout_outlasts_it(worker):
     asyncio.run(mcp_server.image_status(JOB_ID, 100))
-    assert worker["calls"][-1].url.params["wait"] == "60"
+    assert worker["calls"][-1].url.params["wait"] == "50"
     asyncio.run(mcp_server.image_status(JOB_ID, 45))
     assert worker["calls"][-1].url.params["wait"] == "45"
-    assert images.WAIT_LIMIT == 60 and "0–60" in mcp_server.image_status.__doc__
+    assert images.WAIT_LIMIT == 50 and "0–50" in mcp_server.image_status.__doc__
     assert REAL_CLIENT().timeout.read > images.WAIT_LIMIT  # the fixture swaps client(); check the production one
