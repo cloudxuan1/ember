@@ -13,6 +13,7 @@ import pytest
 from app import images, mcp_server
 
 JOB_ID = str(uuid.uuid4())
+REAL_CLIENT = images.client
 PNG = b"\x89PNG\r\n\x1a\nsynthetic-test-bytes"
 
 
@@ -136,3 +137,41 @@ def test_openrouter_image_names_its_model_and_carries_cost(worker, monkeypatch):
     metadata = json.loads(asyncio.run(mcp_server.image_get(JOB_ID)).content[0].text)
     assert "Sunburst 画的" in metadata["message"]
     assert metadata["job"]["cost_usd"] == 0.19 and metadata["job"]["key_limit_remaining_usd"] == 4.81
+
+
+def test_image_get_carries_full_prompt_and_jpeg_preview(worker, monkeypatch):
+    prompt = "编的长提示词：" + "雨里撑伞的橘猫，" * 30
+    jpeg = b"\xff\xd8\xff\xe0synthetic-jpeg"
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        if request.url.path.endswith("/image"):
+            return httpx.Response(200, content=jpeg if request.url.params["preview"] == "true" else PNG)
+        return httpx.Response(200, json={"job": {"id": JOB_ID, "status": "succeeded", "prompt": prompt}})
+
+    transport = httpx.MockTransport(handle)
+    monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
+    result = asyncio.run(mcp_server.image_get(JOB_ID))
+    assert calls[0].url.params["full_prompt"] == "true"
+    assert json.loads(result.content[0].text)["job"]["prompt"] == prompt
+    image = next(c for c in result.content if c.type == "image")
+    assert image.mimeType == "image/jpeg" and base64.b64decode(image.data) == jpeg
+    asyncio.run(mcp_server.image_status(JOB_ID, 5))
+    assert "full_prompt" not in calls[-1].url.params  # image_status keeps the short preview
+
+
+def test_original_download_still_requires_png(worker, monkeypatch):
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"\xff\xd8\xff\xe0not-a-png-original"))
+    monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
+    with pytest.raises(ValueError):
+        asyncio.run(images.image_bytes(JOB_ID))
+
+
+def test_status_wait_is_capped_at_60_and_http_timeout_outlasts_it(worker):
+    asyncio.run(mcp_server.image_status(JOB_ID, 100))
+    assert worker["calls"][-1].url.params["wait"] == "60"
+    asyncio.run(mcp_server.image_status(JOB_ID, 45))
+    assert worker["calls"][-1].url.params["wait"] == "45"
+    assert images.WAIT_LIMIT == 60 and "0–60" in mcp_server.image_status.__doc__
+    assert REAL_CLIENT().timeout.read > images.WAIT_LIMIT  # the fixture swaps client(); check the production one

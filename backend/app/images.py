@@ -15,6 +15,8 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 
 router = APIRouter()
 LINK_SECONDS = 24 * 60 * 60
+WAIT_LIMIT = 60  # image_status 一次最多等这么久；worker 那边同一个上限
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 def config():
@@ -26,7 +28,7 @@ def config():
 def client():
     url, token = config()
     return httpx.AsyncClient(base_url=url, headers={"Authorization": "Bearer " + token},
-                             timeout=httpx.Timeout(25, connect=3), follow_redirects=False)
+                             timeout=httpx.Timeout(WAIT_LIMIT + 15, connect=3), follow_redirects=False)
 
 
 def valid_id(value):
@@ -69,12 +71,15 @@ async def generate(prompt, request_id="", model="", reference_job_ids=None):
     return result
 
 
-async def status(job_id="", wait_seconds=15):
+async def status(job_id="", wait_seconds=15, full_prompt=False):
     if not job_id:
         return await request("GET", "/jobs")
     if not valid_id(job_id):
         return {"error": "画图任务编号无效，请使用提交时返回的 id。"}
-    return await request("GET", "/jobs/" + job_id, params={"wait": max(0, min(wait_seconds, 20))})
+    params = {"wait": max(0, min(wait_seconds, WAIT_LIMIT))}
+    if full_prompt:
+        params["full_prompt"] = "true"
+    return await request("GET", "/jobs/" + job_id, params=params)
 
 
 def link_signature(job_id, expires):
@@ -108,13 +113,14 @@ async def image_bytes(job_id, preview=False):
                     data.extend(chunk)
     except httpx.HTTPError:
         raise ValueError("暂时取不到图片，请稍后用同一任务编号取图；不要重新生成。") from None
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise ValueError("服务没有交回有效 PNG 图片。")
+    # 原图一律 PNG；预览新图是 JPEG，改版前画的图还是 PNG。
+    if not data.startswith(PNG_MAGIC) and not (preview and data.startswith(b"\xff\xd8\xff")):
+        raise ValueError("服务没有交回有效图片。")
     return bytes(data)
 
 
 async def get_image(job_id):
-    result = await status(job_id, wait_seconds=0)
+    result = await status(job_id, wait_seconds=0, full_prompt=True)
     job = result.get("job")
     if not job or job["status"] != "succeeded":
         return CallToolResult(content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False))],
@@ -129,7 +135,8 @@ async def get_image(job_id):
         message += f"这张是 {job.get('model_label')} 画的（OpenRouter），交图时顺口告诉轩。"
     return CallToolResult(content=[
         TextContent(type="text", text=json.dumps({"job": job, "download_url": url, "message": message}, ensure_ascii=False)),
-        ImageContent(type="image", mimeType="image/png", data=base64.b64encode(preview).decode(),
+        ImageContent(type="image", mimeType="image/png" if preview.startswith(PNG_MAGIC) else "image/jpeg",
+                     data=base64.b64encode(preview).decode(),
                      annotations={"audience": ["user", "assistant"]}),
     ])
 

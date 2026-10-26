@@ -41,8 +41,25 @@ def reference_files(store, job):
     return paths
 
 
+PREVIEW_SIDE = 1024
+# Same ceiling the PNG previews had. Even pure noise at 1024 px / q85 is ~330 KB, so one save always fits.
+PREVIEW_LIMIT = 600 * 1024
+
+
+def save_preview(image, path):
+    preview = image.copy()
+    preview.thumbnail((PREVIEW_SIDE, PREVIEW_SIDE))
+    if preview.mode == "RGBA":
+        # JPEG has no alpha; the original PNG keeps it.
+        flat = Image.new("RGB", preview.size, "white")
+        flat.paste(preview, mask=preview.getchannel("A"))
+        preview = flat
+    preview.save(path, format="JPEG", quality=85, optimize=True)
+    path.chmod(0o600)
+
+
 def save_image(store, job_id, source):
-    """Re-encode any raster image (path or file object) as the job's PNG original plus a small preview."""
+    """Re-encode any raster image (path or file object) as the job's PNG original plus a JPEG preview."""
     try:
         with Image.open(source) as original:
             if original.width * original.height > 20_000_000:
@@ -55,13 +72,7 @@ def save_image(store, job_id, source):
         image.save(destination, format="PNG")
         destination.chmod(0o600)
         width, height = image.size
-        image.thumbnail((640, 640))
-        preview = store.image_path(job_id, preview=True)
-        image.save(preview, format="PNG", optimize=True)
-        if preview.stat().st_size > 600 * 1024:
-            image.thumbnail((384, 384))
-            image.save(preview, format="PNG", optimize=True)
-        preview.chmod(0o600)
+        save_preview(image, store.image_path(job_id, preview=True))
         return {"width": width, "height": height, "image_bytes": destination.stat().st_size, "command_events": 0}
     except (OSError, ValueError, Image.DecompressionBombError):
         raise GenerationError("no_image") from None

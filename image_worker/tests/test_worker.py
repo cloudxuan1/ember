@@ -2,6 +2,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 import io
 import json
+import random
 from pathlib import Path
 import sys
 import threading
@@ -172,3 +173,65 @@ def test_real_http_fifo_persistence_and_read_only_image_access(tmp_path):
         assert client.get("/jobs", headers=headers).json()["jobs"][0]["status"] == "succeeded"
         assert client.get(f"/jobs/{job['id']}/image").status_code == 401
 
+
+
+def test_preview_is_a_1024_jpeg_within_the_old_size_ceiling(tmp_path):
+    from image_worker.runner import PREVIEW_LIMIT, save_image
+    store = Store(tmp_path)
+    noisy = Image.frombytes("RGB", (2048, 1365), random.Random(1).randbytes(2048 * 1365 * 3))
+    cases = [(noisy, (1024, 683)), (Image.new("RGBA", (1536, 1536), (255, 0, 0, 0)), (1024, 1024)),
+             (Image.new("RGB", (300, 200), "orange"), (300, 200))]
+    for source, expected in cases:
+        job, _ = store.submit(f"预览 {expected}")
+        data = io.BytesIO()
+        source.save(data, format="PNG")
+        metadata = save_image(store, job["id"], io.BytesIO(data.getvalue()))
+        preview = store.image_path(job["id"], preview=True)
+        assert preview.name.endswith(".preview.jpg") and preview.stat().st_mode & 0o777 == 0o600
+        assert preview.stat().st_size <= PREVIEW_LIMIT
+        with Image.open(preview) as image:
+            assert image.format == "JPEG" and image.size == expected  # never upscaled
+        with Image.open(store.image_path(job["id"])) as original:  # original stays a full-size PNG with alpha
+            assert original.format == "PNG" and original.size == source.size and original.mode == source.mode
+        assert (metadata["width"], metadata["height"]) == source.size
+
+
+def test_preview_type_follows_the_file_and_old_png_previews_still_load(tmp_path):
+    store = Store(tmp_path / "jobs")
+    app = create_app(store, CodexRunner(store, tmp_path / "auth"), TOKEN, run_queue=False)
+    headers = {"Authorization": "Bearer " + TOKEN}
+    old, _ = store.submit("改版前画的")
+    store.claim()
+    store.image_path(old["id"]).write_bytes(tiny_png())
+    (store.images / (old["id"] + ".preview.png")).write_bytes(tiny_png())
+    store.finish(old["id"], metadata={"width": 24, "height": 24, "image_bytes": 1})
+    new, _ = store.submit("改版后画的")
+    store.claim()
+    from image_worker.runner import save_image
+    store.finish(new["id"], metadata=save_image(store, new["id"], io.BytesIO(tiny_png())))
+    with TestClient(app) as client:
+        legacy = client.get(f"/jobs/{old['id']}/image?preview=true", headers=headers)
+        assert legacy.headers["content-type"] == "image/png" and legacy.content == tiny_png()
+        current = client.get(f"/jobs/{new['id']}/image?preview=true", headers=headers)
+        assert current.headers["content-type"] == "image/jpeg" and current.content.startswith(b"\xff\xd8\xff")
+        assert client.get(f"/jobs/{new['id']}/image", headers=headers).headers["content-type"] == "image/png"
+
+
+def test_full_prompt_only_when_asked_and_wait_is_capped(tmp_path, monkeypatch):
+    from image_worker import service
+    store = Store(tmp_path / "jobs")
+    app = create_app(store, CodexRunner(store, tmp_path / "auth"), TOKEN, run_queue=False)
+    headers = {"Authorization": "Bearer " + TOKEN}
+    prompt = "编的长提示词：" + "一只橘猫在雨里撑伞，" * 20
+    job, _ = store.submit(prompt)
+    assert service.WAIT_LIMIT == 60
+    monkeypatch.setattr(service, "WAIT_LIMIT", 0.5)
+    with TestClient(app) as client:
+        short = client.get(f"/jobs/{job['id']}", headers=headers).json()["job"]
+        assert short["prompt_preview"] == prompt[:80] and "prompt" not in short
+        full = client.get(f"/jobs/{job['id']}?full_prompt=true", headers=headers).json()["job"]
+        assert full["prompt"] == prompt and "prompt_preview" not in full
+        assert client.get("/jobs", headers=headers).json()["jobs"][0]["prompt_preview"] == prompt[:80]
+        start = time.monotonic()
+        assert client.get(f"/jobs/{job['id']}?wait=999", headers=headers).json()["job"]["status"] == "queued"
+        assert time.monotonic() - start < 5
