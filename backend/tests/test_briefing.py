@@ -172,3 +172,23 @@ def test_topic_layer_does_not_write_cooldown():
             "SELECT COUNT(*) FROM briefing_log WHERE memory_id = ?", (mid,)
         ).fetchone()[0]
     assert n == 1  # ② 层递出没有新增日志行
+
+
+# ---------- 置顶：贴了「开场」的卡 ----------
+
+
+def test_pinned_card_comes_whole_every_time_until_tag_removed():
+    """「我们」这类卡贴「开场」：不分抽屉、每一圈原样、每次都带、不进 items；便利贴拿掉就不带。"""
+    long_ring = "编的：" + "很长的一圈" * 200
+    us = _save(long_ring, date="2026-01-01", tags="开场", space="longterm")
+    memories.add_ring(us, "2026-10-01", "编的：第二圈")
+    other = _save("编的：日常的一件事，很长的一圈", date="2026-10-02")
+    for _ in range(3):  # 冷却挡不住
+        result = briefing.build_briefing(topic="很长的一圈")
+        assert [c["id"] for c in result["pinned"]] == [us]
+        assert [r["content"] for r in result["pinned"][0]["rings"]] == [long_ring, "编的：第二圈"]
+        assert us not in _ids(result)
+    assert other in _ids(result)  # 后面的照旧（话题层不冷却，次次都在）
+
+    memories.update_memory(us, {"tags": ""})
+    assert briefing.build_briefing()["pinned"] == []

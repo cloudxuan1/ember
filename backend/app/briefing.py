@@ -9,11 +9,13 @@ V5 hybrid 检索（语义腿挂了自动退关键词）；③ 近期——事件
 冷却：①③ 层同一条记忆 3 天内不重复递（briefing_log）；② 层不冷却——
 主动聊到相关的事，相关记忆永远该到场。
 只看 personal 核心层——briefing 是关系连续性的开场，不是项目看板。
+另有置顶：贴了「开场」便利贴的卡（不分抽屉）每次都整张原样带上（每一圈都带、不截断、不冷却、不占 8 条），
+放在 pinned 里排最前；不想带了把这张便利贴拿掉就行。
 """
 
 import json
 
-from app import memories, settings
+from app import memories, rings, settings
 from app.db import get_conn
 
 TOTAL_CAP = 8
@@ -26,6 +28,7 @@ EATEN = "吃到了"
 DOUGH = "面团"
 REASON_TOPIC = "和眼下话题相关"
 REASON_RECENT = "最近的事"
+PINNED_TAG = "开场"
 
 
 def _tag_set(tags: str | None) -> set[str]:
@@ -84,6 +87,33 @@ def _recent(conn) -> list:
     ).fetchall()
 
 
+def _pinned(conn) -> list[dict]:
+    """置顶：贴了「开场」的卡，整张原样（卡头 + 每一圈从早到晚），翻了页的不带。"""
+    ids = memories.tag_filter_ids(conn, PINNED_TAG) or []
+    rows = conn.execute(
+        """SELECT * FROM memories
+           WHERE superseded_by IS NULL AND deleted_at IS NULL
+             AND id IN (SELECT value FROM json_each(?))
+           ORDER BY id""",
+        (json.dumps(ids),),
+    ).fetchall()
+    by_card = rings.live_many(conn, [r["id"] for r in rows])
+    out = []
+    for row in rows:
+        card = {
+            "id": row["id"],
+            "title": row["title"],
+            "space": row["space"],
+            "starred": bool(row["starred"]),
+            "tags": row["tags"],
+            "rings": [{"date": r["date"], "content": r["content"]} for r in by_card[row["id"]]],
+        }
+        if not card["rings"]:  # 还没有圈的老卡：给整段内容
+            card["content"] = row["content"]
+        out.append(card)
+    return out
+
+
 def build_briefing(topic: str | None = None) -> dict:
     picked: list[dict] = []
     seen: set[int] = set()
@@ -113,6 +143,8 @@ def build_briefing(topic: str | None = None) -> dict:
             added += 1
 
     with get_conn() as conn:
+        pinned = _pinned(conn)
+        seen.update(card["id"] for card in pinned)  # 置顶的卡下面不再重复
         cooldown = _recently_surfaced(conn)
         pie_cap = settings.get_settings(conn)["briefing_pies"]
         ids = _uneaten(conn)
@@ -124,4 +156,4 @@ def build_briefing(topic: str | None = None) -> dict:
         for mid in to_log:
             conn.execute("INSERT INTO briefing_log (memory_id) VALUES (?)", (mid,))
 
-    return {"count": len(picked), "items": picked}
+    return {"pinned": pinned, "count": len(picked), "items": picked}
