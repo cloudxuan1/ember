@@ -27,6 +27,7 @@ REASON_PIE = "没吃到的饼"
 EATEN = "吃到了"
 DOUGH = "面团"
 REASON_TOPIC = "和眼下话题相关"
+DIARY = "心情小日记"  # ② 层最多 1 张、排在别的相关卡后面（日记什么话题都沾一点，别挤掉正主）
 REASON_RECENT = "最近的事"
 PINNED_TAG = "开场"
 
@@ -63,7 +64,7 @@ def _pies(conn, ids: list[int]) -> list:
 
 def _topic_rows(conn, topic: str) -> list:
     """② 话题共振：hybrid 检索拿 id，再回表取整行（要 superseded_by 等目录里没有的列）。"""
-    hits = memories.search_memories(topic, space="personal", limit=TOPIC_CAP * 2)
+    hits = memories.search_memories(topic, space="personal", limit=TOPIC_CAP * 3)  # 日记让位后还够填
     if not hits:
         return []
     ids = [h["id"] for h in hits]
@@ -75,7 +76,9 @@ def _topic_rows(conn, topic: str) -> list:
             ids,
         ).fetchall()
     }
-    return [by_id[i] for i in ids if i in by_id]  # 保住检索的相关性排序
+    rows = [by_id[i] for i in ids if i in by_id]  # 保住检索的相关性排序
+    diaries = [r for r in rows if DIARY in _tag_set(r["tags"])]
+    return [r for r in rows if r not in diaries] + diaries[:1]
 
 
 def _recent(conn) -> list:

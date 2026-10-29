@@ -192,3 +192,16 @@ def test_pinned_card_comes_whole_every_time_until_tag_removed():
 
     memories.update_memory(us, {"tags": ""})
     assert briefing.build_briefing()["pinned"] == []
+
+
+def test_topic_layer_takes_at_most_one_diary_after_other_hits():
+    """「心情小日记」在话题层最多 1 张，排在别的相关卡后面；没别的相关卡时日记照样顶上。"""
+    diaries = [_save(f"编的：今天嗓子痛 {i}", date=f"2026-10-2{i}", tags="心情小日记") for i in range(3)]
+    other = _save("编的：咽炎复查", date="2026-01-01")
+    topic = [i for i in briefing.build_briefing(topic="嗓子痛 咽炎")["items"] if i["reason"] == briefing.REASON_TOPIC]
+    ids = [i["id"] for i in topic]
+    assert ids[0] == other and len([i for i in ids if i in diaries]) == 1
+
+    memories.update_memory(other, {"tags": "sensitive"})  # 别的相关卡没了：日记顶上
+    topic = [i["id"] for i in briefing.build_briefing(topic="嗓子痛")["items"] if i["reason"] == briefing.REASON_TOPIC]
+    assert len(topic) == 1 and topic[0] in diaries
