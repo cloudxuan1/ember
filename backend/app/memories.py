@@ -17,6 +17,8 @@ from app import activity, embeddings, history, rings, settings
 from app.db import get_conn
 
 SUMMARY_LEN = 120  # search/list 返回的目录条目里 content 的截断长度
+# 关键词腿拆词：空格和常见标点（「嗓子痛、咽炎」= 两个词）；不拆 . : / -，日期、时间里有（9.10、10:30）
+QUERY_SPLIT = re.compile(r"[\s、，,；;。！!？?「」『』“”\"（）()【】《》]+")
 EXCERPT_LEAD = 20  # 搜索命中那一圈的摘录：从命中的词往前留几个字
 
 RRF_K = 60      # RRF 融合常数（业界惯用值）：越大头部排名的权重差越平缓
@@ -543,7 +545,7 @@ def _keyword_hits(query: str, where: tuple[list[str], list], in_range=lambda _da
     """关键词腿：标题、便利贴、每一圈的正文做 LIKE 子串匹配 + 简单加权，中文子串直接好使
     （不上 FTS5，分词坑不值得踩）。返回 [(卡, 命中的那一圈或 None)]，分高的在前。
     topic 也照样搜：PR3 之前 memory_edit 还能改它，PR5 删这一栏时一起去掉。"""
-    tokens = query.split() or [query]
+    tokens = list(dict.fromkeys(t for t in QUERY_SPLIT.split(query) if t)) or [query]
     in_rings = "EXISTS (SELECT 1 FROM memory_rings r WHERE r.memory_id = m.id AND r.deleted_at IS NULL AND r.content LIKE ?)"
     match = " OR ".join([f"(m.title LIKE ? OR m.tags LIKE ? OR m.topic LIKE ? OR {in_rings})"] * len(tokens))
     params: list = []

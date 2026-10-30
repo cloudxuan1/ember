@@ -308,6 +308,18 @@ def test_keyword_leg_searches_title_tags_and_every_ring(monkeypatch):
     assert "小叶子" in hit["ring"]["excerpt"]
 
 
+def test_keyword_leg_splits_on_punctuation_but_not_inside_dates(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_API_KEY")  # 只看关键词腿
+    throat = _save("编的：嗓子痛了一天")
+    pharynx = _save("编的：去医院查了咽炎")
+    _save("编的：完全无关的一条")
+    official = _save("编的：9.10 那天官宣")
+    # 以前只按空格拆：顿号连起来的一整句当成一个词，一张都对不上
+    assert set(_ids(memories.search_memories("嗓子痛、咽炎"))) == {throat, pharynx}
+    assert _ids(memories.search_memories("「咽炎」")) == [pharynx]
+    assert _ids(memories.search_memories("9.10")) == [official]  # 日期里的点不拆
+
+
 def test_keyword_hit_in_first_ring_has_no_duplicate_excerpt():
     mid = _save("编的：周末去看了一场电影")
     [hit] = memories.search_memories("电影")
