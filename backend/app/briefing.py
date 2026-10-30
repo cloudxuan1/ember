@@ -21,7 +21,9 @@ from app.db import get_conn
 
 TOTAL_CAP = 8
 TOPIC_CAP = 4        # ② 话题共振（① 饼的条数在设置里）
-TOPIC_MIN_SIMILARITY = 0.45  # ② 只靠意思对上的卡，相似度到这儿才收。暂定值，上线后在正式库上量过再定
+# ② 只靠意思对上的卡，相似度到这儿才收。10-30 正式库实测（Qwen3-Embedding-8B）：真沾边的多在 0.45 以上
+# （最高 0.73），关键词式 topic 的凑数卡多在 0.44 以下；换 embedding 模型要重新量
+TOPIC_MIN_SIMILARITY = 0.45
 RECENT_CAP = 3       # ③ 近期
 COOLDOWN_DAYS = 3
 
