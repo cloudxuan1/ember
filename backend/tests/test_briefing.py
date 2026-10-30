@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from app import briefing, memories, settings
+from app import briefing, embeddings, memories, settings
 from app.db import get_conn, init_db
 
 
@@ -205,3 +205,20 @@ def test_topic_layer_takes_at_most_one_diary_after_other_hits():
     memories.update_memory(other, {"tags": "sensitive"})  # 别的相关卡没了：日记顶上
     topic = [i["id"] for i in briefing.build_briefing(topic="嗓子痛")["items"] if i["reason"] == briefing.REASON_TOPIC]
     assert len(topic) == 1 and topic[0] in diaries
+
+
+def _fake_embed(texts, timeout=None):
+    """假指纹：伤心 / 眼泪一个方向，开心另一个方向，别的词都不沾（尾轴垫底防零向量）。"""
+    return [[float("伤心" in t or "眼泪" in t), float("开心" in t), 1e-6] for t in texts]
+
+
+def test_topic_layer_takes_literal_or_close_enough_never_filler(monkeypatch):
+    """话题层：字面对上的照收，只靠意思对上的要够像；不够像的不硬凑。"""
+    monkeypatch.setenv("EMBEDDING_API_KEY", "test-key")
+    monkeypatch.setenv("EMBEDDING_MODEL", "test-model-a")
+    monkeypatch.setattr(embeddings, "embed_texts", _fake_embed)
+    near = _save("编的：眼泪掉下来", date="2026-01-01")
+    literal = _save("编的：去买了收纳柜", date="2026-01-02")
+    _save("编的：开心的一天", date="2026-01-03")  # 意思、字面都不沾：不硬凑
+    items = briefing.build_briefing(topic="伤心、收纳柜")["items"]
+    assert {i["id"] for i in items if i["reason"] == briefing.REASON_TOPIC} == {near, literal}

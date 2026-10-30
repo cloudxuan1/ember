@@ -80,6 +80,18 @@ def test_rrf_literal_match_ranks_first():
     assert ids.index(lit["id"]) < ids.index(sem["id"])
 
 
+def test_similarity_shown_and_min_similarity_keeps_literal_hits():
+    """结果带相似度；设了门槛：只靠意思又不够像的不要，字面对上的照收。"""
+    near = memories.save_memory(date="2026-07-01", content="眼泪掉下来")["id"]  # 跟「伤心」同一个方向
+    literal = memories.save_memory(date="2026-07-02", content="去买了收纳柜")["id"]  # 意思不沾，字面对上
+    far = memories.save_memory(date="2026-07-03", content="开心的一天")["id"]  # 意思、字面都不沾
+    hits = {r["id"]: r for r in memories.search_memories("伤心、收纳柜")}
+    assert set(hits) == {near, literal, far}  # 不设门槛（主动搜索）：语义腿照旧把远的也排进来
+    assert hits[near]["similarity"] > 0.99 and hits[far]["similarity"] < 0.01
+    strict = [r["id"] for r in memories.search_memories("伤心、收纳柜", min_similarity=0.5)]
+    assert set(strict) == {near, literal}
+
+
 def test_query_failure_degrades_to_keyword(monkeypatch):
     saved = memories.save_memory(date="2026-07-05", content="今天很难过")
     monkeypatch.setattr(embeddings, "embed_texts", boom)
