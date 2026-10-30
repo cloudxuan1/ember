@@ -304,7 +304,8 @@ def vector_search(
     where: tuple[list[str], list] = ([], []),
     rings_where: tuple[list[str], list] = ([], []),
 ) -> list[dict]:
-    """语义腿：按距离从近到远返回至多 k 张卡 [{"id", "ring_id", "char_from", "char_to"}]。
+    """语义腿：按距离从近到远返回至多 k 张卡 [{"id", "ring_id", "char_from", "char_to", "similarity"}]。
+    similarity = 1 − 余弦距离（越大越像，最高 1）。
     一张卡的距离 = 它最像的那一段（ring_id / char_from / char_to 就是那一段）；
     还没有当前模型分段指纹的卡退回整条指纹，这时 ring_id 为 None。
     where = 卡的筛选条件（SQL 里卡的别名是 m），先筛再取前 k 张，范围内的不会被范围外的挤掉；
@@ -346,7 +347,8 @@ def vector_search(
         rows += conn.execute(by_whole, [packed, model, dim, *extra, model, dim, k]).fetchall()
     rows.sort(key=lambda r: (r["d"], r["memory_id"]))
     return [
-        {"id": r["memory_id"], "ring_id": r["ring_id"], "char_from": r["char_from"], "char_to": r["char_to"]}
+        {"id": r["memory_id"], "ring_id": r["ring_id"], "char_from": r["char_from"], "char_to": r["char_to"],
+         "similarity": 1.0 - r["d"]}
         for r in rows[:k]
     ]
 

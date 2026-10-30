@@ -583,6 +583,7 @@ def search_memories(
     date_to: str | None = None,
     tags: str | None = None,
     exclude_tags: str | None = None,
+    min_similarity: float | None = None,
 ) -> list[dict]:
     """hybrid 检索（V5）：关键词腿 + 语义腿，RRF 融合。
 
@@ -592,6 +593,8 @@ def search_memories(
     结果里的 ring = 命中的那一圈（编号、日期，跟卡的开头不一样时带一小段摘录）。
     space / 日期 / 便利贴怎么筛见 card_filter（不传 space = 日常 + 长期；"all" = 跨全库）。
     带日期范围时，卡里有一圈在范围里就算；命中的那一圈优先报范围里的，语义也只拿范围里的几圈去比。
+    语义比过的卡带 similarity（1 − 余弦距离，越大越像）。min_similarity：语义腿只认这么像以上的，
+    只靠意思对上又不够像的卡不要，字面对上的照收（开场简报的话题层用；主动搜索不设，远一点的也要翻得到）。
     """
     with get_conn() as conn:
         where = card_filter(conn, space, date_from, date_to, tags, exclude_tags)
@@ -623,11 +626,15 @@ def search_memories(
     for rank, (row, _) in enumerate(kw):
         scores[row["id"]] = scores.get(row["id"], 0.0) + 1.0 / (RRF_K + rank)
     vec_ring: dict[int, dict] = {}
+    vec_sim: dict[int, float] = {}
     for rank, hit in enumerate(vec):
         mid = hit["id"]
         if mid not in by_id:  # 已删 / 不在筛选范围里的语义候选不算
             continue
+        if min_similarity is not None and hit["similarity"] < min_similarity:  # 不够像：语义这条腿不算它
+            continue
         scores[mid] = scores.get(mid, 0.0) + 1.0 / (RRF_K + rank)
+        vec_sim[mid] = hit["similarity"]
         ring = vec_rings.get(hit["ring_id"])
         if ring is not None:
             vec_ring[mid] = {
@@ -636,7 +643,13 @@ def search_memories(
             }
     top = sorted(scores, key=lambda mid: (scores[mid], by_id[mid]["date"]), reverse=True)
     # 字面对上的那一圈最好解释，优先报它；只有意思对上的报最像的那一段所在的圈
-    return [_short(by_id[mid], kw_ring.get(mid) or vec_ring.get(mid)) for mid in top[:limit]]
+    results = []
+    for mid in top[:limit]:
+        item = _short(by_id[mid], kw_ring.get(mid) or vec_ring.get(mid))
+        if mid in vec_sim:
+            item["similarity"] = round(vec_sim[mid], 2)
+        results.append(item)
+    return results
 
 
 def list_memories(

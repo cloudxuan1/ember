@@ -2,7 +2,8 @@
 
 ① 没吃到的饼（年轮卡 PR3 起，换掉按起止日期挑的「没完的事」）——贴了任意一张饼便利贴、又没贴「吃到了」
 的卡，最新一圈的日子新的在前，条数看设置 briefing_pies；② 话题共振——topic 走
-V5 hybrid 检索（语义腿挂了自动退关键词）；③ 近期——事件时间最近
+V5 hybrid 检索（语义腿挂了自动退关键词），字面对上的照收，只靠意思对上的要够像（TOPIC_MIN_SIMILARITY），
+凑不满就少给、把位置让给③；③ 近期——事件时间最近
 （按 date 排不按 created_at 排：刚审完入库的四月旧事不算"最近"）。
 合并去重、sensitive 剔除、superseded 剔除、已删（藏起来的）剔除，总上限 8 条。
 贴了「面团」的（还没决定做不做的灵感）哪一层都不递；没吃到的饼不管从哪层来，一共不超过设置的张数。
@@ -20,6 +21,7 @@ from app.db import get_conn
 
 TOTAL_CAP = 8
 TOPIC_CAP = 4        # ② 话题共振（① 饼的条数在设置里）
+TOPIC_MIN_SIMILARITY = 0.45  # ② 只靠意思对上的卡，相似度到这儿才收。暂定值，上线后在正式库上量过再定
 RECENT_CAP = 3       # ③ 近期
 COOLDOWN_DAYS = 3
 
@@ -64,7 +66,9 @@ def _pies(conn, ids: list[int]) -> list:
 
 def _topic_rows(conn, topic: str) -> list:
     """② 话题共振：hybrid 检索拿 id，再回表取整行（要 superseded_by 等目录里没有的列）。"""
-    hits = memories.search_memories(topic, space="personal", limit=TOPIC_CAP * 3)  # 日记让位后还够填
+    hits = memories.search_memories(  # 多取一些：日记让位后还够填
+        topic, space="personal", limit=TOPIC_CAP * 3, min_similarity=TOPIC_MIN_SIMILARITY
+    )
     if not hits:
         return []
     ids = [h["id"] for h in hits]
