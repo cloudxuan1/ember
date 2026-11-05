@@ -4,6 +4,7 @@
 import json
 import shutil
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,10 @@ from app.db import db_path, get_conn, init_db
 OLD_SCHEMA = (Path(__file__).parent / "fixtures" / "pre_rings_schema.sql").read_text(encoding="utf-8")
 SINGLE_STORE_SCHEMA = (Path(__file__).parent / "fixtures" / "pre_single_store_schema.sql").read_text(encoding="utf-8")
 
+# 5 号卡的删除时间跟着现在走（北京时间的昨天）：写死的日子一过恢复期（activity_days，默认 30 天），
+# restore 之前的 purge_expired 就会先把它真删掉。格式和库里 datetime('now','+8 hours') 一样。
+DELETED_AT = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+
 # (id, date, content, tags, tier, topic, space, created_at, updated_at, deleted_at)
 CARDS = [
     (1, "2026-04-18", "编的：四月去看樱花", "春天", "anchor", "赏樱", "personal", "2026-07-01 10:00:00", None, None),
@@ -23,7 +28,7 @@ CARDS = [
     (4, "2026-10-01", "编的：没有主题的一条", "", "process", "", "personal", "2026-10-01 09:00:00", None, None),
     # 存重复了又删掉的：删掉的不算「在用」，所以 1 号的赏樱还是只有它一张 → 标题；它自己按恢复回来算 → 便利贴
     (5, "2026-10-02", "编的：存重复了的赏樱", "", "normal", "赏樱", "personal", "2026-10-02 09:00:00", None,
-     "2026-10-03 09:00:00"),
+     DELETED_AT),
     (6, "2026-10-03", "编的：项目笔记", "ember", "anchor", "  部署  ", "ember", "2026-10-03 09:00:00",
      "2026-10-04 10:00:00.000", None),
 ]
