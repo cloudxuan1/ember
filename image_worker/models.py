@@ -121,7 +121,8 @@ def request_body(model, prompt, reference_urls=(), options=None):
     body = {"model": model, "prompt": prompt, "n": 1}
     if "quality" in spec["params"]:
         body["quality"] = options.get("quality", DEFAULT_QUALITY)
-    body.update({name: value for name, value in options.items() if name in spec["params"] and name != "quality"})
+    # n stays 1: n images are n jobs, each its own request.
+    body.update({name: value for name, value in options.items() if name in spec["params"] and name not in ("quality", "n")})
     passthrough = {name: value for name, value in options.items() if name in spec["passthrough"]}
     if passthrough:
         # API reference, ProviderOptions: "keyed by provider slug ... Only options for the matched provider are forwarded".

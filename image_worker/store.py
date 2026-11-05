@@ -205,7 +205,8 @@ class Store:
     def read_request(self, row):
         """The parameters a job was submitted with. None = it had some but their file is gone: never draw it with defaults."""
         try:
-            return json.loads(self.request_file(row["id"]).read_text())["options"]
+            options = json.loads(self.request_file(row["id"]).read_text())["options"]
+            return options if isinstance(options, dict) else None
         except FileNotFoundError:
             plain = self.digest(row["prompt"], row["model"] or "", json.loads(row["reference_job_ids"] or "[]"))
             return {} if row["prompt_hash"] == plain else None

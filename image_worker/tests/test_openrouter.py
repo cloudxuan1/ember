@@ -150,7 +150,7 @@ def test_unknown_model_is_rejected_before_anything_is_queued(tmp_path):
 def test_every_whitelisted_model_is_listed_in_the_mcp_tool_description():
     description = (ROOT / "backend/app/mcp_server.py").read_text()
     for model, spec in OPENROUTER_MODELS.items():
-        assert model in description and spec["label"] in description
+        assert f"- {model}（{spec['label']}）：{spec['use']}" in description
 
 
 def test_tool_description_states_what_models_py_allows():
