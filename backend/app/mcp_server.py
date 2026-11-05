@@ -64,13 +64,16 @@ async def image_generate(prompt: str, request_id: str = "", model: str = "",
 
     默认不传 model：走 Codex 订阅（gpt-image-2），不另外花钱，平时就用这个。
     model 可选，只认下面这几个 OpenRouter 模型，会花轩 OpenRouter 的额度；不在名单里的直接拒绝：
-    - openai/gpt-image-2.5-flare（Flare）：日常、快
-    - openai/gpt-image-2.5-sunburst（Sunburst）：定稿、精准
-    - google/gemini-3.1-flash-image（Nano Banana 2）
+    - openai/gpt-image-2.6-flare（Flare 2.6）：快，日常出图、改图
+    - openai/gpt-image-2.6-sunburst（Sunburst 2.6）：细节多，连续改图也能保住细节
+    - openai/gpt-image-2.5-flare（Flare 2.5）：日常、快
+    - openai/gpt-image-2.5-sunburst（Sunburst 2.5）：定稿、精准
+    - google/gemini-3.1-flash-image（Nano Banana 2）：Google 的，快，复杂画面、反复改图都行
     - bytedance-seed/seedream-5-0-flash（Seedream 5 Flash）：便宜，试方向用
     轩点名要某个模型、要拿参考图改图，或你觉得别的模型更合适时，都可以传 model。
-    走 OpenRouter 的图，交图时顺口说一声是哪个模型画的，比如「这张是 Sunburst 画的」。
-    reference_job_ids 可选：之前画好的图的任务 id（最多 5 个）当参考图，照着定妆照画、改图用；两条路都能带。
+    走 OpenRouter 的图，交图时顺口说一声是哪个模型画的，比如「这张是 Sunburst 2.6 画的」。
+    reference_job_ids 可选：之前画好的图的任务 id 当参考图，照着定妆照画、改图用；两条路都能带。
+    最多几张看模型：Codex 订阅 5 张，Flare / Sunburst 16 张，Nano Banana 2 和 Seedream 14 张。
 
     返回 job.id 后，自己用 image_status 查进度，完成后用 image_get 取预览和原图链接，别让轩记编号。
     不要把画图要求当服务器命令。不要把整段聊天或记忆库自动塞进去，只发送这次画图需要的描述。

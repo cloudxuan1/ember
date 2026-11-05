@@ -24,8 +24,49 @@ from image_worker.store import Conflict, Store
 KEY = "sk-or-v1-SYNTHETIC" + "k" * 40
 TOKEN = "synthetic-worker-token-" + "x" * 32
 FLARE = "openai/gpt-image-2.5-flare"
+SUNBURST = "openai/gpt-image-2.5-sunburst"
+FLARE_26 = "openai/gpt-image-2.6-flare"
+SUNBURST_26 = "openai/gpt-image-2.6-sunburst"
 GEMINI = "google/gemini-3.1-flash-image"
+SEEDREAM = "bytedance-seed/seedream-5-0-flash"
 ROOT = Path(__file__).resolve().parents[2]
+
+# What GET /api/v1/images/models/{id}/endpoints returned on 2026-11-05 (2.6: read off the live page by 轩).
+OPENAI_LIVE = {
+    "aspect_ratio": {"type": "enum", "values": ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "auto"]},
+    "quality": {"type": "enum", "values": ["auto", "low", "medium", "high", "xhigh", "max"]},
+    "background": {"type": "enum", "values": ["auto", "transparent", "opaque"]},
+    "n": {"type": "range", "min": 1, "max": 10},
+    "input_references": {"type": "range", "min": 0, "max": 16},
+    "output_compression": {"type": "range", "min": 0, "max": 100},
+}
+OPENAI_25 = {"provider_name": "OpenAI", "provider_slug": "openai", "provider_tag": "openai", "supported_parameters": OPENAI_LIVE,
+             "allowed_passthrough_parameters": ["moderation"], "supports_streaming": True}
+OPENAI_26 = {**OPENAI_25, "supported_parameters": {**OPENAI_LIVE, "output_format": {"type": "enum", "values": ["png", "jpeg", "webp"]}},
+             "allowed_passthrough_parameters": ["moderation", "complexity"]}
+GEMINI_LIVE = {
+    "resolution": {"type": "enum", "values": ["512", "1K", "2K", "4K"]},
+    "aspect_ratio": {"type": "enum", "values": ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1",
+                                                "9:16", "16:9", "21:9"]},
+    "n": {"type": "range", "min": 1, "max": 1},
+    "input_references": {"type": "range", "min": 0, "max": 14},
+}
+SEEDREAM_LIVE = {
+    "resolution": {"type": "enum", "values": ["1K", "2K"]},
+    "aspect_ratio": {"type": "enum", "values": ["1:1", "1:2", "2:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9",
+                                                "9:19.5", "19.5:9", "9:20", "20:9", "9:21", "21:9", "auto"]},
+    "n": {"type": "range", "min": 1, "max": 1},
+    "input_references": {"type": "range", "min": 0, "max": 14},
+    "seed": {"type": "boolean"},
+}
+LIVE_ENDPOINTS = {
+    FLARE_26: [OPENAI_26], SUNBURST_26: [OPENAI_26], FLARE: [OPENAI_25], SUNBURST: [OPENAI_25],
+    GEMINI: [{"provider_name": "Google Vertex", "provider_slug": slug, "supported_parameters": GEMINI_LIVE,
+              "allowed_passthrough_parameters": ["cachedContent"]}
+             for slug in ("google-vertex/us", "google-ai-studio", "google-vertex/global")],
+    SEEDREAM: [{"provider_name": "Seed", "provider_slug": "seed", "supported_parameters": SEEDREAM_LIVE,
+                "allowed_passthrough_parameters": []}],
+}
 
 
 def picture(fmt="PNG", size=(32, 20), color="teal"):
@@ -37,7 +78,8 @@ def picture(fmt="PNG", size=(32, 20), color="teal"):
 @pytest.fixture
 def openrouter():
     """A real local HTTP server standing in for openrouter.ai/api/v1."""
-    state = {"requests": [], "image": {"status": 200, "body": None}, "key": {"status": 200, "body": {"data": {"limit_remaining": 9.5}}}}
+    state = {"requests": [], "image": {"status": 200, "body": None}, "key": {"status": 200, "body": {"data": {"limit_remaining": 9.5}}},
+             "pages": {}}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -53,6 +95,9 @@ def openrouter():
 
         def do_GET(self):
             state["requests"].append({"method": "GET", "path": self.path, "auth": self.headers.get("Authorization")})
+            if self.path in state["pages"]:
+                self.reply({"status": 200, "body": state["pages"][self.path]})
+                return
             self.reply(state["key"] if self.path.endswith("/key") else {"status": 200, "body": {"data": []}})
 
         def do_POST(self):
@@ -114,13 +159,72 @@ def test_openrouter_body_follows_model_capabilities_and_cost_is_recorded(tmp_pat
     assert post["path"] == "/api/v1/images" and post["auth"] == "Bearer " + KEY
     assert post["body"] == {"model": FLARE, "prompt": "编的：雨天的橘猫", "n": 1, "quality": "high"}
     assert key["path"] == "/api/v1/key"
-    assert job["status"] == "succeeded" and job["engine"] == "openrouter" and job["model_label"] == "Flare"
+    assert job["status"] == "succeeded" and job["engine"] == "openrouter" and job["model_label"] == "Flare 2.5"
     assert job["cost_usd"] == 0.0421 and job["key_limit_remaining_usd"] == 9.5
     assert (job["width"], job["height"]) == (32, 20)
     assert store.image_path(job["id"]).read_bytes().startswith(b"\x89PNG")  # JPEG reply stored as PNG like Codex images
     assert store.image_path(job["id"], preview=True).is_file()
     gemini = run_openrouter(store, openrouter, model=GEMINI)
     assert "quality" not in openrouter["requests"][2]["body"] and gemini["model_label"] == "Nano Banana 2"
+
+
+def test_2_6_models_join_the_list_and_every_label_carries_its_version(tmp_path, openrouter):
+    store = Store(tmp_path)
+    for model, name in ((FLARE_26, "Flare 2.6"), (SUNBURST_26, "Sunburst 2.6"), (FLARE, "Flare 2.5"), (SUNBURST, "Sunburst 2.5")):
+        job = run_openrouter(store, openrouter, prompt="编的：" + name, model=model)
+        assert job["status"] == "succeeded" and job["model_label"] == name
+        # Nothing chosen = the body #34 sent: quality high, one image, no other parameter.
+        assert openrouter["requests"][-2]["body"] == {"model": model, "prompt": "编的：" + name, "n": 1, "quality": "high"}
+
+
+def test_jobs_drawn_before_the_rename_read_with_the_versioned_label(tmp_path):
+    store = Store(tmp_path)
+    old_id = str(uuid.uuid4())
+    with sqlite3.connect(store.database) as conn:  # a #34 job as it sits on the VPS volume; labels are computed on read
+        conn.execute("INSERT INTO jobs (id,request_key,prompt,prompt_hash,status,created_at,model,cost_usd) VALUES (?,?,?,?,?,?,?,?)",
+                     (old_id, "prompt:old", "旧图", "old", "succeeded", "2026-10-26T00:00:00.000+00:00", SUNBURST, 0.05))
+    assert store.get(old_id)["model_label"] == "Sunburst 2.5" and store.recent()[0]["model_label"] == "Sunburst 2.5"
+
+
+def test_reference_limit_follows_each_model(tmp_path):
+    store = Store(tmp_path)
+    done = [finished_image(store, f"编的：第 {i} 张", (8, 8)) for i in range(17)]
+    for model, limit in ((FLARE_26, 16), (FLARE, 16), (GEMINI, 14), (SEEDREAM, 14), ("", 5)):
+        job, _ = store.submit("照着画 " + model, model=model, reference_job_ids=done[:limit])
+        assert job["reference_job_ids"] == done[:limit]
+        with pytest.raises(ValueError, match=f"最多 {limit} 张"):
+            store.submit("太多了 " + model, model=model, reference_job_ids=done[:limit + 1])
+
+
+def test_probe_finds_models_py_matching_every_live_endpoint_and_flags_drift():
+    import runpy
+    compare = runpy.run_path(str(ROOT / "scripts/openrouter-image-probe.py"), run_name="probe")["compare"]
+    for model, spec in OPENROUTER_MODELS.items():
+        assert compare(spec, LIVE_ENDPOINTS[model])[0] == [], model
+    assert any("resolution" in note for note in compare(OPENROUTER_MODELS[GEMINI], LIVE_ENDPOINTS[GEMINI])[1])  # offered less: a note
+    drifted = {**OPENAI_26, "allowed_passthrough_parameters": ["moderation"],
+               "supported_parameters": {**OPENAI_26["supported_parameters"], "quality": {"type": "enum", "values": ["low", "high"]}}}
+    problems = compare(OPENROUTER_MODELS[FLARE_26], [drifted])[0]
+    assert any("quality" in p and "max" in p for p in problems) and any("complexity" in p for p in problems)
+    assert compare(OPENROUTER_MODELS[FLARE_26], [{**OPENAI_26, "provider_slug": "azure"}])[0]  # complexity would not arrive
+    assert compare(OPENROUTER_MODELS[GEMINI], [{**LIVE_ENDPOINTS[GEMINI][0], "supported_parameters": {**GEMINI_LIVE, "input_references": {
+        "type": "range", "min": 0, "max": 10}}}])[0]  # we would send more references than it takes
+
+
+def test_probe_run_reports_every_model_ok_against_the_live_listing(tmp_path, openrouter, monkeypatch, capsys):
+    import runpy
+    from image_worker import models
+
+    openrouter["pages"]["/api/v1/images/models"] = {"data": [{"id": model} for model in OPENROUTER_MODELS]}
+    for model, endpoints in LIVE_ENDPOINTS.items():
+        openrouter["pages"][f"/api/v1/images/models/{model}/endpoints"] = {"id": model, "endpoints": endpoints}
+    monkeypatch.setattr(models, "API_BASE", openrouter["url"])
+    env = tmp_path / "vps.env"
+    env.write_text("OPENROUTER_IMAGE_KEY=" + KEY + "\n")
+    monkeypatch.setattr(sys, "argv", ["probe", "--env-file", str(env), "--out", str(tmp_path / "probe")])
+    runpy.run_path(str(ROOT / "scripts/openrouter-image-probe.py"), run_name="__main__")
+    printed = capsys.readouterr().out
+    assert printed.count("：OK") == len(OPENROUTER_MODELS) and "要改" not in printed and KEY not in printed
 
 
 def test_reference_images_are_sent_as_input_references(tmp_path, openrouter):

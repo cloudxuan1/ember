@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 import uuid
 
-from image_worker.models import MAX_REFERENCES, OPENROUTER_MODELS, label
+from image_worker.models import OPENROUTER_MODELS, label, reference_limit
 
 
 ERRORS = {
@@ -98,7 +98,7 @@ class Store:
         if model and model not in OPENROUTER_MODELS:
             raise ValueError("不认识的模型 " + model[:128] + "。可选：" + "、".join(OPENROUTER_MODELS)
                              + "；不传 model 走 Codex 订阅。")
-        references = self.reference_ids(reference_job_ids)
+        references = self.reference_ids(reference_job_ids, model)
         # Codex jobs without references keep the original prompt-only hash, so older jobs still deduplicate.
         source = json.dumps([prompt, model, references], ensure_ascii=False) if model or references else prompt
         digest = hashlib.sha256(source.encode()).hexdigest()
@@ -132,7 +132,7 @@ class Store:
             return self.public(conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone(), conn), False
 
     @staticmethod
-    def reference_ids(values):
+    def reference_ids(values, model=""):
         if isinstance(values, str) or not isinstance(values, (list, tuple)):
             raise ValueError("reference_job_ids 要是任务 id 的列表。")
         references = []
@@ -145,8 +145,9 @@ class Store:
                 raise ValueError("参考图要用之前画图任务的 id。")
             if value not in references:
                 references.append(value)
-        if len(references) > MAX_REFERENCES:
-            raise ValueError(f"参考图最多 {MAX_REFERENCES} 张。")
+        limit = reference_limit(model)
+        if len(references) > limit:
+            raise ValueError(f"参考图最多 {limit} 张（{label(model)}）。")
         return references
 
     def public(self, row, conn, full_prompt=False):
