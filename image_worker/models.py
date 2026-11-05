@@ -66,6 +66,8 @@ OPENROUTER_MODELS = {
 }
 
 CODEX_LABEL = "Codex 订阅（gpt-image-2）"
+# The optional parameters a caller may choose per image (n is separate: it makes several jobs).
+OPTION_NAMES = ("quality", "complexity", "aspect_ratio", "background", "output_format", "output_compression")
 
 
 def label(model):
@@ -76,12 +78,54 @@ def reference_limit(model):
     return OPENROUTER_MODELS[model]["references"] if model else CODEX_REFERENCES
 
 
-def request_body(model, prompt, reference_urls=()):
-    """The exact POST /api/v1/images body. Only parameters the model's endpoints list are sent."""
+def check_options(model, given):
+    """Sort the caller's optional parameters for one model: (options to send, notes on the ones it cannot take).
+
+    A value the model does not allow raises ValueError with a readable reason, so nothing is queued.
+    quality equal to the default is dropped: that request is the same as choosing nothing.
+    """
+    spec = OPENROUTER_MODELS.get(model) if model else None
+    options, ignored = {}, []
+    for name in OPTION_NAMES:
+        value = given.get(name)
+        if value is None or value == "":
+            continue
+        if spec is None:
+            ignored.append(f"{name}（不传 model 走 Codex 订阅，用不了）")
+            continue
+        allowed = spec["passthrough"].get(name) or spec["params"].get(name)
+        if allowed is None:
+            ignored.append(f"{name}（{spec['label']} 用不了）")
+            continue
+        if name == "output_compression":
+            if isinstance(value, bool) or not isinstance(value, int) or not allowed[0] <= value <= allowed[1]:
+                raise ValueError(f"output_compression 要是 {allowed[0]}–{allowed[1]} 的整数。")
+        else:
+            value = str(value).strip() if name == "aspect_ratio" else str(value).strip().lower()
+            if value not in allowed:
+                raise ValueError(f"{name} 不认识「{value[:40]}」；{spec['label']} 可选：{' / '.join(allowed)}。")
+        options[name] = value
+    if "output_compression" in options and options.get("output_format") not in ("jpeg", "webp"):
+        raise ValueError("output_compression 只对 jpeg / webp 有用：要压缩就同时传 output_format=jpeg 或 webp。")
+    if options.get("background") == "transparent" and options.get("output_format") == "jpeg":
+        raise ValueError("透明背景（background=transparent）不能配 jpeg，jpeg 存不了透明；换 png 或 webp。")
+    if options.get("quality") == DEFAULT_QUALITY:
+        del options["quality"]
+    return options, ignored
+
+
+def request_body(model, prompt, reference_urls=(), options=None):
+    """The exact POST /api/v1/images body: the model's default quality plus what check_options let through."""
     spec = OPENROUTER_MODELS[model]
+    options = options or {}
     body = {"model": model, "prompt": prompt, "n": 1}
     if "quality" in spec["params"]:
-        body["quality"] = DEFAULT_QUALITY
+        body["quality"] = options.get("quality", DEFAULT_QUALITY)
+    body.update({name: value for name, value in options.items() if name in spec["params"] and name != "quality"})
+    passthrough = {name: value for name, value in options.items() if name in spec["passthrough"]}
+    if passthrough:
+        # API reference, ProviderOptions: "keyed by provider slug ... Only options for the matched provider are forwarded".
+        body["provider"] = {"options": {spec["provider"]: passthrough}}
     if reference_urls:
         body["input_references"] = [{"type": "image_url", "image_url": {"url": url}} for url in reference_urls]
     return body

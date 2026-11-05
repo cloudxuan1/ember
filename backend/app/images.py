@@ -69,18 +69,22 @@ async def request(method, path, **kwargs):
         return {"error": "暂时连不上生图服务；提交结果可能尚未返回，请先查最近任务，不要换标记重复提交。"}
 
 
-async def generate(prompt, request_id="", model="", reference_job_ids=None):
+async def generate(prompt, request_id="", model="", reference_job_ids=None, options=None):
     body = {"prompt": prompt, "request_id": request_id}
-    # Without model / references the request is byte-for-byte the original Codex submission.
+    # Without model / references / parameters the request is byte-for-byte the original Codex submission.
     if model:
         body["model"] = model
     if reference_job_ids:
         if not isinstance(reference_job_ids, list) or not all(valid_id(r) for r in reference_job_ids):
             return {"error": "reference_job_ids 要用之前画图任务返回的 id 列表。"}
         body["reference_job_ids"] = reference_job_ids
+    # 取值对不对、模型能不能用，由 worker 按它的型号名单判断。
+    body.update({name: value for name, value in (options or {}).items() if value is not None and value != ""})
     result = await request("POST", "/jobs", json=body)
     if "job" in result:
         result["message"] = "任务已存在，继续查进度，不会重复生成。" if result.get("reused") else "已排队；用 image_status 查进度，完成后用 image_get 取图。不要反复提交。"
+        if result.get("ignored"):
+            result["message"] += "这些参数这次用不了，已忽略、没发给模型：" + "；".join(result["ignored"]) + "。"
     return result
 
 

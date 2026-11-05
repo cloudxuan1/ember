@@ -4,11 +4,12 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import uuid
 
-from image_worker.models import OPENROUTER_MODELS, label, reference_limit
+from image_worker.models import OPENROUTER_MODELS, check_options, label, reference_limit
 
 
 ERRORS = {
@@ -27,6 +28,7 @@ ERRORS = {
     "openrouter_refused": "OpenRouter / 模型方拒绝了这次请求（常见是内容审核），没有自动换模型或重试。",
     "openrouter_rejected": "OpenRouter 不接受这次请求的参数或参考图，没有自动换模型或重试；原因见 error.detail。",
     "openrouter_unavailable": "OpenRouter 或模型方暂时不可用，没有自动重试、没有换模型。要重画请明确再提交一次。",
+    "request_lost": "这张图提交时选的参数找不到了，没有按默认参数乱画，任务没有开始。要画请明确再提交一次。",
 }
 # An original is PNG, unless the caller asked OpenRouter for jpeg / webp output (the extension says which).
 ORIGINAL_SUFFIXES = (".png", ".jpg", ".webp")
@@ -55,6 +57,9 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.images = self.root / "images"
         self.images.mkdir(exist_ok=True, mode=0o700)
+        # The parameters a queued job was submitted with wait here (<id>.json), not in the table, until it finishes.
+        self.requests = self.root / "requests"
+        self.requests.mkdir(exist_ok=True, mode=0o700)
         self.database = self.root / "jobs.sqlite3"
         self.limit = limit
         # SQLite WAL/SHM inherit the database's private mode.
@@ -90,7 +95,24 @@ class Store:
         finally:
             conn.close()
 
-    def submit(self, prompt, request_id="", model="", reference_job_ids=()):
+    @staticmethod
+    def digest(prompt, model, references, options=None):
+        """A request's identity. Codex jobs without references keep the original prompt-only hash and plain
+        OpenRouter jobs keep #34's, so older jobs still deduplicate; chosen parameters make a different request."""
+        if options:
+            source = json.dumps([prompt, model, references, options], ensure_ascii=False, sort_keys=True)
+        elif model or references:
+            source = json.dumps([prompt, model, references], ensure_ascii=False)
+        else:
+            source = prompt
+        return hashlib.sha256(source.encode()).hexdigest()
+
+    def submit(self, prompt, request_id="", model="", reference_job_ids=(), options=None):
+        """One job: (job, reused). submit_request also says which parameters were ignored."""
+        result = self.submit_request(prompt, request_id, model, reference_job_ids, options)
+        return result["jobs"][0], result["reused"]
+
+    def submit_request(self, prompt, request_id="", model="", reference_job_ids=(), options=None):
         prompt = prompt.strip()
         if not prompt or len(prompt) > 8000:
             raise ValueError("画图要求不能为空，且最多 8000 字。")
@@ -101,9 +123,8 @@ class Store:
             raise ValueError("不认识的模型 " + model[:128] + "。可选：" + "、".join(OPENROUTER_MODELS)
                              + "；不传 model 走 Codex 订阅。")
         references = self.reference_ids(reference_job_ids, model)
-        # Codex jobs without references keep the original prompt-only hash, so older jobs still deduplicate.
-        source = json.dumps([prompt, model, references], ensure_ascii=False) if model or references else prompt
-        digest = hashlib.sha256(source.encode()).hexdigest()
+        options, ignored = check_options(model, options or {})
+        digest = self.digest(prompt, model, references, options)
         key = "request:" + request_id if request_id else "prompt:" + digest
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -111,7 +132,7 @@ class Store:
             if old:
                 if old["prompt_hash"] != digest:
                     raise Conflict("同一个请求标记已用于另一段画图要求，请给新的请求换一个标记。")
-                return self.public(old, conn), True
+                return {"jobs": [self.public(old, conn)], "reused": True, "ignored": ignored}
             for reference in references:
                 row = conn.execute("SELECT status FROM jobs WHERE id=?", (reference,)).fetchone()
                 if not row or row["status"] != "succeeded" or not self.original_file(reference).is_file():
@@ -123,15 +144,36 @@ class Store:
             ).fetchone()
             if active:
                 conn.execute("INSERT INTO request_aliases (request_key,job_id) VALUES (?,?)", (key, active["id"]))
-                return self.public(active, conn), True
+                return {"jobs": [self.public(active, conn)], "reused": True, "ignored": ignored}
             if conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0] >= self.limit:
                 raise QueueFull("画图队列已满，先查已有任务，稍后再提交。")
             job_id = str(uuid.uuid4())
+            if digest != self.digest(prompt, model, references):  # chose parameters: keep them for the worker
+                self.write_request(job_id, options)
             conn.execute(
                 "INSERT INTO jobs (id,request_key,prompt,prompt_hash,status,created_at,model,reference_job_ids) VALUES (?,?,?,?,?,?,?,?)",
                 (job_id, key, prompt, digest, "queued", now(), model or None, json.dumps(references) if references else None),
             )
-            return self.public(conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone(), conn), False
+            job = self.public(conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone(), conn)
+            return {"jobs": [job], "reused": False, "ignored": ignored}
+
+    def request_file(self, job_id):
+        return self.requests / (str(uuid.UUID(job_id)) + ".json")
+
+    def write_request(self, job_id, options):
+        fd = os.open(self.request_file(job_id), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            json.dump({"options": options}, handle, ensure_ascii=False)
+
+    def read_request(self, row):
+        """The parameters a job was submitted with. None = it had some but their file is gone: never draw it with defaults."""
+        try:
+            return json.loads(self.request_file(row["id"]).read_text())["options"]
+        except FileNotFoundError:
+            plain = self.digest(row["prompt"], row["model"] or "", json.loads(row["reference_job_ids"] or "[]"))
+            return {} if row["prompt_hash"] == plain else None
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
     @staticmethod
     def reference_ids(values, model=""):
@@ -193,7 +235,7 @@ class Store:
                 return None
             conn.execute("UPDATE jobs SET status='running',started_at=? WHERE id=?", (now(), row["id"]))
             return {"id": row["id"], "prompt": row["prompt"], "model": row["model"] or "",
-                    "reference_job_ids": json.loads(row["reference_job_ids"] or "[]")}
+                    "reference_job_ids": json.loads(row["reference_job_ids"] or "[]"), "options": self.read_request(row)}
 
     def finish(self, job_id, *, error=None, metadata=None, detail=None):
         metadata = metadata or {}
@@ -205,11 +247,16 @@ class Store:
                  metadata.get("image_bytes"), metadata.get("command_events", 0), metadata.get("cost_usd"),
                  metadata.get("key_limit_remaining_usd"), detail, job_id),
             )
+        self.request_file(job_id).unlink(missing_ok=True)
 
     def recover(self):
         # Never automatically reissue an interrupted request to the subscription service.
         with self.connection() as conn:
             conn.execute("UPDATE jobs SET status='failed',error_code='worker_restarted',finished_at=? WHERE status='running'", (now(),))
+            queued = {row["id"] for row in conn.execute("SELECT id FROM jobs WHERE status='queued'")}
+        for path in self.requests.glob("*.json"):  # only queued jobs still need their parameters
+            if path.stem not in queued:
+                path.unlink(missing_ok=True)
 
     def image_path(self, job_id, preview=False):
         # All paths derive from our UUID, never from model output or request paths.

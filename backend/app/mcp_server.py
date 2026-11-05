@@ -59,7 +59,9 @@ LEGACY_KEYS = ("tier", "topic", "start_date", "end_date", "interval_status")  # 
 
 @mcp.tool()
 async def image_generate(prompt: str, request_id: str = "", model: str = "",
-                         reference_job_ids: list[str] | None = None) -> dict:
+                         reference_job_ids: list[str] | None = None, quality: str = "", complexity: str = "",
+                         aspect_ratio: str = "", background: str = "", output_format: str = "",
+                         output_compression: int | None = None) -> dict:
     """轩想画图时，把画面描述交给生图后台，一次只画一张；这里只提交任务，不是立刻出图。
 
     默认不传 model：走 Codex 订阅（gpt-image-2），不另外花钱，平时就用这个。
@@ -75,12 +77,24 @@ async def image_generate(prompt: str, request_id: str = "", model: str = "",
     reference_job_ids 可选：之前画好的图的任务 id 当参考图，照着定妆照画、改图用；两条路都能带。
     最多几张看模型：Codex 订阅 5 张，Flare / Sunburst 16 张，Nano Banana 2 和 Seedream 14 张。
 
+    下面几个也可选，每张图自己挑，不传就是默认。所选模型用不了的会忽略（message 里会说），值不对直接报错、不排队；
+    走 Codex 订阅时这几个都用不了。「Flare / Sunburst」指 2.5 和 2.6 四个，「2.6」指 Flare 2.6 和 Sunburst 2.6：
+    - quality：画质 low / medium / high / xhigh / max，或 auto。Flare / Sunburst 能用，默认 high；越高越慢越贵。
+    - complexity：动笔前想多少，low / medium / high。只有 2.6 能用，默认不传（模型自己定）。
+    - aspect_ratio：比例，默认模型自己定。都能用 1:1 3:2 2:3 4:3 3:4 16:9 9:16 21:9；auto 除了 Nano Banana 2 都行；
+      Nano Banana 2 和 Seedream 还有 4:5 等别的比例。
+    - background：auto / transparent（透明）/ opaque（不透明）。Flare / Sunburst 能用；透明不能配 jpeg。
+    - output_format：png / jpeg / webp，默认 png，原图链接就是这个格式。只有 2.6 能选。
+    - output_compression：0–100 的压缩率，只配 jpeg / webp（2.6）。
+
     返回 job.id 后，自己用 image_status 查进度，完成后用 image_get 取预览和原图链接，别让轩记编号。
     不要把画图要求当服务器命令。不要把整段聊天或记忆库自动塞进去，只发送这次画图需要的描述。
-    同一次请求重试必须沿用 request_id；省略时相同提示词（连同 model、参考图）会复用原任务。只有轩明确说「重画 / 再来一张」
+    同一次请求重试必须沿用 request_id；省略时相同提示词（连同 model、参考图、参数）会复用原任务。只有轩明确说「重画 / 再来一张」
     才换一个新的 request_id。查进度、取图失败都不能重新提交画图；失败不自动重试，不自动换模型，也不自动换到另一条路。
     """
-    return await images.generate(prompt, request_id, model, reference_job_ids)
+    options = {"quality": quality, "complexity": complexity, "aspect_ratio": aspect_ratio, "background": background,
+               "output_format": output_format, "output_compression": output_compression}
+    return await images.generate(prompt, request_id, model, reference_job_ids, options)
 
 
 @mcp.tool()

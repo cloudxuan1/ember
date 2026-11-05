@@ -5,6 +5,7 @@ import io
 import json
 import logging
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import threading
@@ -152,6 +153,25 @@ def test_every_whitelisted_model_is_listed_in_the_mcp_tool_description():
         assert model in description and spec["label"] in description
 
 
+def test_tool_description_states_what_models_py_allows():
+    from image_worker.models import COMPLEXITY, GPT_IMAGE_2_5, GPT_IMAGE_2_6
+    description = (ROOT / "backend/app/mcp_server.py").read_text()
+    limits = {model: spec["references"] for model, spec in OPENROUTER_MODELS.items()}
+    assert {limits[FLARE], limits[SUNBURST], limits[FLARE_26], limits[SUNBURST_26]} == {16} and {limits[GEMINI], limits[SEEDREAM]} == {14}
+    assert "Codex 订阅 5 张，Flare / Sunburst 16 张，Nano Banana 2 和 Seedream 14 张" in description
+    assert GPT_IMAGE_2_5["quality"] == GPT_IMAGE_2_6["quality"] == ("auto", "low", "medium", "high", "xhigh", "max")
+    assert "quality：画质 low / medium / high / xhigh / max，或 auto" in description
+    assert "complexity：动笔前想多少，" + " / ".join(COMPLEXITY) in description
+    shared = [r for r in GPT_IMAGE_2_5["aspect_ratio"] if all(r in s["params"]["aspect_ratio"] for s in OPENROUTER_MODELS.values())]
+    assert "都能用 " + " ".join(shared) + "；" in description
+    assert [m for m, s in OPENROUTER_MODELS.items() if "auto" not in s["params"]["aspect_ratio"]] == [GEMINI]
+    assert GPT_IMAGE_2_5["background"] == ("auto", "transparent", "opaque")
+    assert "background：auto / transparent（透明）/ opaque（不透明）" in description
+    assert [m for m, s in OPENROUTER_MODELS.items() if "output_format" in s["params"]] == [FLARE_26, SUNBURST_26]
+    assert [m for m, s in OPENROUTER_MODELS.items() if s["passthrough"]] == [FLARE_26, SUNBURST_26]
+    assert "output_format：" + " / ".join(GPT_IMAGE_2_6["output_format"]) in description and "0–100 的压缩率" in description
+
+
 def test_openrouter_body_follows_model_capabilities_and_cost_is_recorded(tmp_path, openrouter):
     store = Store(tmp_path)
     job = run_openrouter(store, openrouter, model=FLARE)
@@ -264,6 +284,118 @@ def test_model_and_references_are_part_of_idempotency(tmp_path):
     store.submit("一只猫", "fixed-id", model=FLARE)
     with pytest.raises(Conflict):
         store.submit("一只猫", "fixed-id", model=GEMINI)
+
+
+def test_chosen_parameters_reach_the_request_body_and_a_webp_reply_stays_webp(tmp_path, openrouter):
+    webp = picture("WEBP")
+    openrouter["image"] = {"status": 200, "body": {"data": [{"b64_json": base64.b64encode(webp).decode(), "media_type": "image/webp"}],
+                                                   "usage": {"cost": 0.06}}}
+    store = Store(tmp_path)
+    chosen = {"quality": "max", "complexity": "high", "aspect_ratio": "16:9", "background": "transparent",
+              "output_format": "webp", "output_compression": 80}
+    job = run_openrouter(store, openrouter, model=FLARE_26, options=chosen)
+    assert openrouter["requests"][0]["body"] == {
+        "model": FLARE_26, "prompt": "编的：雨天的橘猫", "n": 1, "quality": "max", "aspect_ratio": "16:9",
+        "background": "transparent", "output_format": "webp", "output_compression": 80,
+        # complexity is passthrough (allowed_passthrough_parameters), sent under provider.options[provider_slug]
+        "provider": {"options": {"openai": {"complexity": "high"}}},
+    }
+    assert job["status"] == "succeeded" and store.original_file(job["id"]).read_bytes() == webp
+    assert list(store.requests.iterdir()) == []  # the parameters were only kept until the image was done
+
+
+def test_choosing_the_default_quality_is_the_same_request_as_choosing_nothing(tmp_path, openrouter):
+    store = Store(tmp_path)
+    plain = run_openrouter(store, openrouter, model=FLARE)
+    again, reused = store.submit("编的：雨天的橘猫", model=FLARE, options={"quality": "HIGH"})
+    assert reused and again["id"] == plain["id"]
+    other, reused = store.submit("编的：雨天的橘猫", model=FLARE, options={"quality": "low"})
+    assert not reused and other["id"] != plain["id"]  # a different choice is a different request
+    assert store.submit("编的：雨天的橘猫", model=FLARE, options={"quality": "low"})[0]["id"] == other["id"]
+
+
+@pytest.mark.parametrize(("model", "chosen", "message"), [
+    (FLARE_26, {"quality": "ultra"}, "quality 不认识「ultra」"),
+    (FLARE_26, {"complexity": "extreme"}, "complexity 不认识"),
+    (GEMINI, {"aspect_ratio": "auto"}, "aspect_ratio 不认识「auto」；Nano Banana 2 可选"),
+    (SEEDREAM, {"aspect_ratio": "7:3"}, "Seedream 5 Flash 可选"),
+    (FLARE_26, {"output_format": "gif"}, "output_format 不认识"),
+    (FLARE_26, {"output_compression": 50}, "只对 jpeg / webp 有用"),
+    (FLARE_26, {"output_format": "png", "output_compression": 50}, "只对 jpeg / webp 有用"),
+    (FLARE_26, {"output_format": "jpeg", "output_compression": 101}, "0–100 的整数"),
+    (FLARE_26, {"output_format": "webp", "output_compression": "80"}, "0–100 的整数"),
+    (SUNBURST_26, {"output_format": "jpeg", "background": "transparent"}, "不能配 jpeg"),
+])
+def test_values_a_model_does_not_allow_are_refused_before_queueing(tmp_path, model, chosen, message):
+    store = Store(tmp_path)
+    with pytest.raises(ValueError, match=message):
+        store.submit("编的：猫", model=model, options=chosen)
+    app = create_app(store, CodexRunner(store, tmp_path / "auth"), TOKEN, run_queue=False)
+    with TestClient(app) as client:
+        response = client.post("/jobs", json={"prompt": "编的：猫", "model": model, **chosen}, headers={"Authorization": "Bearer " + TOKEN})
+    assert response.status_code == 400 and re.search(message, response.json()["detail"])
+    assert store.recent() == [] and list(store.requests.iterdir()) == []
+
+
+def test_parameters_a_model_cannot_take_are_ignored_and_named(tmp_path, openrouter):
+    store = Store(tmp_path)
+    plain, _ = store.submit("编的：订阅的猫")
+    result = store.submit_request("编的：订阅的猫", options={"quality": "max", "complexity": "high", "output_format": "webp"})
+    assert [note.split("（")[0] for note in result["ignored"]] == ["quality", "complexity", "output_format"]
+    assert all("Codex 订阅" in note for note in result["ignored"])
+    assert result["reused"] and result["jobs"][0]["id"] == plain["id"]  # nothing left to choose: the plain request
+    flare = store.submit_request("编的：2.5 的猫", model=FLARE, options={"complexity": "low", "output_format": "jpeg",
+                                                                        "output_compression": 70, "aspect_ratio": "3:2"})
+    assert flare["ignored"] == ["complexity（Flare 2.5 用不了）", "output_format（Flare 2.5 用不了）",
+                                "output_compression（Flare 2.5 用不了）"]
+    gemini = store.submit_request("编的：香蕉的猫", model=GEMINI, options={"quality": "max", "background": "transparent"})
+    assert gemini["ignored"] == ["quality（Nano Banana 2 用不了）", "background（Nano Banana 2 用不了）"]
+    runner = OpenRouterRunner(store, KEY, timeout=10, base_url=openrouter["url"])
+    store.claim()  # the plain Codex job goes first in the queue; drop it
+    store.finish(plain["id"], error="generation_failed")
+    for expected in ({"model": FLARE, "prompt": "编的：2.5 的猫", "n": 1, "quality": "high", "aspect_ratio": "3:2"},
+                     {"model": GEMINI, "prompt": "编的：香蕉的猫", "n": 1}):
+        claimed = store.claim()
+        store.finish(claimed["id"], metadata=runner.generate(claimed, threading.Event()))
+        assert openrouter["requests"][-2]["body"] == expected
+    app = create_app(store, CodexRunner(store, tmp_path / "auth"), TOKEN, run_queue=False)
+    with TestClient(app) as client:
+        reply = client.post("/jobs", json={"prompt": "编的：订阅的猫", "quality": "low"}, headers={"Authorization": "Bearer " + TOKEN}).json()
+        assert reply["ignored"] == ["quality（不传 model 走 Codex 订阅，用不了）"] and reply["job"]["id"] == plain["id"]
+        assert "ignored" not in client.post("/jobs", json={"prompt": "编的：订阅的猫"}, headers={"Authorization": "Bearer " + TOKEN}).json()
+
+
+def test_parameters_wait_in_a_private_file_that_survives_a_restart(tmp_path):
+    store = Store(tmp_path)
+    chosen = {"quality": "xhigh", "complexity": "medium", "output_format": "jpeg", "output_compression": 60}
+    job, _ = store.submit("编的：重启前排队的猫", model=SUNBURST_26, options=chosen)
+    plain, _ = store.submit("编的：没选参数的猫", model=SUNBURST_26)
+    path = store.request_file(job["id"])
+    assert path.stat().st_mode & 0o777 == 0o600 and store.requests.stat().st_mode & 0o777 == 0o700
+    assert sorted(p.name for p in store.requests.iterdir()) == [job["id"] + ".json"]  # nothing chosen, nothing kept
+    stale = store.requests / (str(uuid.uuid4()) + ".json")
+    stale.write_text('{"options": {}}')  # left over from a job that is no longer queued
+    reopened = Store(tmp_path)
+    reopened.recover()
+    assert path.is_file() and not stale.exists()
+    claimed = reopened.claim()
+    assert claimed["id"] == job["id"] and claimed["options"] == chosen
+    reopened.finish(job["id"], error="generation_failed")
+    assert not path.exists()
+    assert reopened.claim()["options"] == {}  # the plain job: no file, and none needed
+
+
+def test_a_lost_parameter_file_fails_the_job_instead_of_drawing_defaults(tmp_path, openrouter):
+    store = Store(tmp_path)
+    job, _ = store.submit("编的：参数丢了的猫", model=FLARE_26, options={"quality": "max"})
+    store.request_file(job["id"]).unlink()
+    claimed = store.claim()
+    assert claimed["options"] is None
+    runner = OpenRouterRunner(store, KEY, timeout=10, base_url=openrouter["url"])
+    with pytest.raises(GenerationError, match="request_lost"):
+        runner.generate(claimed, threading.Event())
+    store.finish(job["id"], error="request_lost")
+    assert openrouter["requests"] == [] and "默认参数" in store.get(job["id"])["error"]["message"]
 
 
 @pytest.mark.parametrize(("status", "code"), [(401, "openrouter_auth"), (402, "openrouter_credit"), (403, "openrouter_refused"),

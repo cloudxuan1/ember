@@ -5,11 +5,13 @@ import hmac
 import os
 from pathlib import Path
 import threading
+from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from image_worker.models import OPTION_NAMES
 from image_worker.openrouter import OpenRouterRunner
 from image_worker.runner import CodexRunner, GenerationError
 from image_worker.store import Conflict, QueueFull, Store
@@ -25,6 +27,12 @@ class Submission(BaseModel):
     # Checked by the store, so a bad value gets a readable 400 instead of a validation 422.
     model: str = ""
     reference_job_ids: list = Field(default_factory=list)
+    quality: Any = None
+    complexity: Any = None
+    aspect_ratio: Any = None
+    background: Any = None
+    output_format: Any = None
+    output_compression: Any = None
 
 
 def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=None):
@@ -82,15 +90,19 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
 
     @app.post("/jobs", dependencies=[Depends(authorize)])
     def submit(body: Submission):
+        options = {name: getattr(body, name) for name in OPTION_NAMES}
         try:
-            job, reused = store.submit(body.prompt, body.request_id, body.model, body.reference_job_ids)
+            result = store.submit_request(body.prompt, body.request_id, body.model, body.reference_job_ids, options)
         except Conflict as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except QueueFull as error:
             raise HTTPException(status_code=429, detail=str(error)) from None
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from None
-        return {"job": job, "reused": reused}
+        out = {"job": result["jobs"][0], "reused": result["reused"]}
+        if result["ignored"]:
+            out["ignored"] = result["ignored"]
+        return out
 
     @app.get("/jobs", dependencies=[Depends(authorize)])
     def recent():

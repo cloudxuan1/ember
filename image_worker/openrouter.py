@@ -77,13 +77,16 @@ class OpenRouterRunner:
     def generate(self, job, stop):
         if not self.key:
             raise GenerationError("openrouter_not_configured")
+        options = job.get("options", {})
+        if options is None:
+            raise GenerationError("request_lost")
         check_storage(self.store)
         try:
             references = [reference_url(path) for path in reference_files(self.store, job)]
         except (OSError, ValueError, Image.DecompressionBombError):
             raise GenerationError("reference_missing") from None
         try:
-            payload = self.call("POST", "/images", request_body(job["model"], job["prompt"], references))
+            payload = self.call("POST", "/images", request_body(job["model"], job["prompt"], references, options))
         except urllib.error.HTTPError as error:
             try:
                 body = json.loads(error.read(64 * 1024))
@@ -110,7 +113,7 @@ class OpenRouterRunner:
             raw = base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError):
             raise GenerationError("no_image") from None
-        metadata = save_image(self.store, job["id"], io.BytesIO(raw))
+        metadata = save_image(self.store, job["id"], io.BytesIO(raw), keep=options.get("output_format"))
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
         cost = usage.get("cost")
         if isinstance(cost, (int, float)) and not isinstance(cost, bool):

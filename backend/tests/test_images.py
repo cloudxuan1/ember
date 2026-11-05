@@ -130,6 +130,39 @@ def test_model_and_references_pass_through_and_bad_references_stay_local(worker)
     assert "reference_job_ids" in result["error"] and len(worker["calls"]) == 1
 
 
+OPTIONS = ("quality", "complexity", "aspect_ratio", "background", "output_format", "output_compression")
+
+
+def test_chosen_parameters_pass_through_only_when_given(worker):
+    asyncio.run(mcp_server.image_generate("编的：猫", "p1", "openai/gpt-image-2.6-flare", quality="max", complexity="high",
+                                          output_format="jpeg", output_compression=0))
+    assert json.loads(worker["calls"][0].content) == {
+        "prompt": "编的：猫", "request_id": "p1", "model": "openai/gpt-image-2.6-flare",
+        "quality": "max", "complexity": "high", "output_format": "jpeg", "output_compression": 0,  # 0 is a choice, not "unset"
+    }
+
+
+def test_ignored_parameters_are_named_and_refused_values_come_back_as_the_reason(worker, monkeypatch):
+    replies = [httpx.Response(200, json={"job": {"id": JOB_ID, "status": "queued"}, "reused": False,
+                                         "ignored": ["complexity（Flare 2.5 用不了）"]}),
+               httpx.Response(400, json={"detail": "quality 不认识「ultra」；Flare 2.6 可选：auto / low"})]
+    transport = httpx.MockTransport(lambda request: replies.pop(0))
+    monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
+    queued = asyncio.run(mcp_server.image_generate("编的：猫", model="openai/gpt-image-2.5-flare", complexity="low"))
+    assert queued["message"].startswith("已排队") and "已忽略" in queued["message"] and "complexity（Flare 2.5 用不了）" in queued["message"]
+    refused = asyncio.run(mcp_server.image_generate("编的：猫", model="openai/gpt-image-2.6-flare", quality="ultra"))
+    assert refused == {"error": "quality 不认识「ultra」；Flare 2.6 可选：auto / low"}
+
+
+def test_every_optional_parameter_is_in_the_tool_schema_and_description():
+    doc = mcp_server.image_generate.__doc__
+    tools = asyncio.run(mcp_server.mcp.list_tools())
+    schema = next(tool for tool in tools if tool.name == "image_generate").inputSchema["properties"]
+    for name in OPTIONS:
+        assert f"- {name}：" in doc and name in schema
+    assert "走 Codex 订阅时这几个都用不了" in doc and "透明不能配 jpeg" in doc
+
+
 def test_openrouter_image_names_its_model_and_carries_cost(worker, monkeypatch):
     job = {"id": JOB_ID, "status": "succeeded", "engine": "openrouter", "model": "openai/gpt-image-2.5-sunburst",
            "model_label": "Sunburst 2.5", "cost_usd": 0.19, "key_limit_remaining_usd": 4.81}
