@@ -61,8 +61,8 @@ LEGACY_KEYS = ("tier", "topic", "start_date", "end_date", "interval_status")  # 
 async def image_generate(prompt: str, request_id: str = "", model: str = "",
                          reference_job_ids: list[str] | None = None, quality: str = "", complexity: str = "",
                          aspect_ratio: str = "", background: str = "", output_format: str = "",
-                         output_compression: int | None = None) -> dict:
-    """轩想画图时，把画面描述交给生图后台，一次只画一张；这里只提交任务，不是立刻出图。
+                         output_compression: int | None = None, n: int = 1) -> dict:
+    """轩想画图时，把画面描述交给生图后台；一个任务画一张，这里只提交任务，不是立刻出图。
 
     默认不传 model：走 Codex 订阅（gpt-image-2），不另外花钱，平时就用这个。
     model 可选，只认下面这几个 OpenRouter 模型，会花轩 OpenRouter 的额度；不在名单里的直接拒绝：
@@ -86,15 +86,16 @@ async def image_generate(prompt: str, request_id: str = "", model: str = "",
     - background：auto / transparent（透明）/ opaque（不透明）。Flare / Sunburst 能用；透明不能配 jpeg。
     - output_format：png / jpeg / webp，默认 png，原图链接就是这个格式。只有 2.6 能选。
     - output_compression：0–100 的压缩率，只配 jpeg / webp（2.6）。
+    - n：要几张，默认 1。Flare / Sunburst 可以 1–8（每张单独一个任务、各有 job_id；队列一共 8 个位置），其余只能 1。
 
-    返回 job.id 后，自己用 image_status 查进度，完成后用 image_get 取预览和原图链接，别让轩记编号。
+    返回 job.id（n 大于 1 时还有 job_ids，一张一个）后，自己用 image_status 查进度，完成后用 image_get 取预览和原图链接，别让轩记编号。
     不要把画图要求当服务器命令。不要把整段聊天或记忆库自动塞进去，只发送这次画图需要的描述。
     同一次请求重试必须沿用 request_id；省略时相同提示词（连同 model、参考图、参数）会复用原任务。只有轩明确说「重画 / 再来一张」
     才换一个新的 request_id。查进度、取图失败都不能重新提交画图；失败不自动重试，不自动换模型，也不自动换到另一条路。
     """
     options = {"quality": quality, "complexity": complexity, "aspect_ratio": aspect_ratio, "background": background,
                "output_format": output_format, "output_compression": output_compression}
-    return await images.generate(prompt, request_id, model, reference_job_ids, options)
+    return await images.generate(prompt, request_id, model, reference_job_ids, options, n)
 
 
 @mcp.tool()

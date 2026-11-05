@@ -33,6 +33,7 @@ class Submission(BaseModel):
     background: Any = None
     output_format: Any = None
     output_compression: Any = None
+    n: Any = 1
 
 
 def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=None):
@@ -92,7 +93,7 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
     def submit(body: Submission):
         options = {name: getattr(body, name) for name in OPTION_NAMES}
         try:
-            result = store.submit_request(body.prompt, body.request_id, body.model, body.reference_job_ids, options)
+            result = store.submit_request(body.prompt, body.request_id, body.model, body.reference_job_ids, options, body.n)
         except Conflict as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except QueueFull as error:
@@ -100,6 +101,8 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from None
         out = {"job": result["jobs"][0], "reused": result["reused"]}
+        if len(result["jobs"]) > 1:  # n single-image jobs; "job" stays the first, as before
+            out["jobs"] = result["jobs"]
         if result["ignored"]:
             out["ignored"] = result["ignored"]
         return out

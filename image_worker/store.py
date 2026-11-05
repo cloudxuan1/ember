@@ -96,11 +96,13 @@ class Store:
             conn.close()
 
     @staticmethod
-    def digest(prompt, model, references, options=None):
+    def digest(prompt, model, references, options=None, copy=1):
         """A request's identity. Codex jobs without references keep the original prompt-only hash and plain
-        OpenRouter jobs keep #34's, so older jobs still deduplicate; chosen parameters make a different request."""
-        if options:
-            source = json.dumps([prompt, model, references, options], ensure_ascii=False, sort_keys=True)
+        OpenRouter jobs keep #34's, so older jobs still deduplicate; chosen parameters, and each extra copy
+        of an n-image request, make a different one."""
+        if options or copy > 1:
+            extra = [options or {}] + ([copy] if copy > 1 else [])
+            source = json.dumps([prompt, model, references, *extra], ensure_ascii=False, sort_keys=True)
         elif model or references:
             source = json.dumps([prompt, model, references], ensure_ascii=False)
         else:
@@ -112,7 +114,24 @@ class Store:
         result = self.submit_request(prompt, request_id, model, reference_job_ids, options)
         return result["jobs"][0], result["reused"]
 
-    def submit_request(self, prompt, request_id="", model="", reference_job_ids=(), options=None):
+    def copies(self, model, n, ignored):
+        """How many single-image jobs n asks for: what the model's endpoint allows, capped by the queue."""
+        if n is None or (n == 1 and not isinstance(n, bool)):
+            return 1
+        if not model:
+            ignored.append("n（不传 model 走 Codex 订阅，一个请求只画一张，只排了 1 张）")
+            return 1
+        spec = OPENROUTER_MODELS[model]
+        low, high = spec["params"].get("n", (1, 1))
+        high = min(high, self.limit)
+        if isinstance(n, bool) or not isinstance(n, int) or not low <= n <= high:
+            if high == 1:
+                raise ValueError(f"{spec['label']} 一次只能画 1 张，n 只能是 1。")
+            raise ValueError(f"n 要是 {low}–{high} 的整数（{spec['label']}；画图队列一共 {self.limit} 个位置）。")
+        return n
+
+    def submit_request(self, prompt, request_id="", model="", reference_job_ids=(), options=None, n=1):
+        """One job, or n single-image jobs (each its own id and request) when n > 1. Each copy deduplicates on its own."""
         prompt = prompt.strip()
         if not prompt or len(prompt) > 8000:
             raise ValueError("画图要求不能为空，且最多 8000 字。")
@@ -124,38 +143,56 @@ class Store:
                              + "；不传 model 走 Codex 订阅。")
         references = self.reference_ids(reference_job_ids, model)
         options, ignored = check_options(model, options or {})
-        digest = self.digest(prompt, model, references, options)
-        key = "request:" + request_id if request_id else "prompt:" + digest
+        count = self.copies(model, n, ignored)
+        plain = self.digest(prompt, model, references)
+        wanted = []  # (digest, request key) per copy; the first copy is exactly the single-image request
+        for copy in range(1, count + 1):
+            digest = self.digest(prompt, model, references, options, copy)
+            suffix = "" if copy == 1 else f"#{copy}"
+            wanted.append((digest, "request:" + request_id + suffix if request_id else "prompt:" + digest))
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            old = conn.execute("SELECT * FROM jobs WHERE request_key=? OR id=(SELECT job_id FROM request_aliases WHERE request_key=?)", (key, key)).fetchone()
-            if old:
-                if old["prompt_hash"] != digest:
+            rows, new = [None] * count, []
+            for i, (digest, key) in enumerate(wanted):
+                old = conn.execute("SELECT * FROM jobs WHERE request_key=? OR id=(SELECT job_id FROM request_aliases WHERE request_key=?)", (key, key)).fetchone()
+                if old and old["prompt_hash"] != digest:
                     raise Conflict("同一个请求标记已用于另一段画图要求，请给新的请求换一个标记。")
-                return {"jobs": [self.public(old, conn)], "reused": True, "ignored": ignored}
-            for reference in references:
+                if old:
+                    rows[i] = old
+                else:
+                    new.append(i)
+            for reference in references if new else ():
                 row = conn.execute("SELECT status FROM jobs WHERE id=?", (reference,)).fetchone()
                 if not row or row["status"] != "succeeded" or not self.original_file(reference).is_file():
                     raise ValueError("参考图 " + reference + " 不是已画好的图，请用 image_status 里成功任务的 id。")
-            # A lost acknowledgement must not turn an agent's retry into a second image.
-            active = conn.execute(
-                "SELECT * FROM jobs WHERE prompt_hash=? AND status IN ('queued','running') ORDER BY seq LIMIT 1",
-                (digest,),
-            ).fetchone()
-            if active:
-                conn.execute("INSERT INTO request_aliases (request_key,job_id) VALUES (?,?)", (key, active["id"]))
-                return {"jobs": [self.public(active, conn)], "reused": True, "ignored": ignored}
-            if conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0] >= self.limit:
-                raise QueueFull("画图队列已满，先查已有任务，稍后再提交。")
-            job_id = str(uuid.uuid4())
-            if digest != self.digest(prompt, model, references):  # chose parameters: keep them for the worker
-                self.write_request(job_id, options)
-            conn.execute(
-                "INSERT INTO jobs (id,request_key,prompt,prompt_hash,status,created_at,model,reference_job_ids) VALUES (?,?,?,?,?,?,?,?)",
-                (job_id, key, prompt, digest, "queued", now(), model or None, json.dumps(references) if references else None),
-            )
-            job = self.public(conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone(), conn)
-            return {"jobs": [job], "reused": False, "ignored": ignored}
+            for i in list(new):
+                digest, key = wanted[i]
+                # A lost acknowledgement must not turn an agent's retry into a second image.
+                active = conn.execute(
+                    "SELECT * FROM jobs WHERE prompt_hash=? AND status IN ('queued','running') ORDER BY seq LIMIT 1",
+                    (digest,),
+                ).fetchone()
+                if active:
+                    conn.execute("INSERT INTO request_aliases (request_key,job_id) VALUES (?,?)", (key, active["id"]))
+                    rows[i] = active
+                    new.remove(i)
+            busy = conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0]
+            if new and busy + len(new) > self.limit:
+                if count == 1:
+                    raise QueueFull("画图队列已满，先查已有任务，稍后再提交。")
+                raise QueueFull(f"画图队列一共 {self.limit} 个位置，现在还空 {max(self.limit - busy, 0)} 个，这次要新排 {len(new)} 张；"
+                                "少要几张，或者等前面的画完再提交。一张都没有排上。")
+            for i in new:
+                digest, key = wanted[i]
+                job_id = str(uuid.uuid4())
+                if digest != plain:  # chose parameters, or an extra copy: the worker reads them from this file
+                    self.write_request(job_id, options)
+                conn.execute(
+                    "INSERT INTO jobs (id,request_key,prompt,prompt_hash,status,created_at,model,reference_job_ids) VALUES (?,?,?,?,?,?,?,?)",
+                    (job_id, key, prompt, digest, "queued", now(), model or None, json.dumps(references) if references else None),
+                )
+                rows[i] = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            return {"jobs": [self.public(row, conn) for row in rows], "reused": not new, "ignored": ignored}
 
     def request_file(self, job_id):
         return self.requests / (str(uuid.UUID(job_id)) + ".json")

@@ -20,7 +20,7 @@ from image_worker.models import OPENROUTER_MODELS
 from image_worker.openrouter import OpenRouterRunner
 from image_worker.runner import CodexRunner, GenerationError, save_image
 from image_worker.service import create_app
-from image_worker.store import Conflict, Store
+from image_worker.store import Conflict, QueueFull, Store
 
 KEY = "sk-or-v1-SYNTHETIC" + "k" * 40
 TOKEN = "synthetic-worker-token-" + "x" * 32
@@ -170,6 +170,9 @@ def test_tool_description_states_what_models_py_allows():
     assert [m for m, s in OPENROUTER_MODELS.items() if "output_format" in s["params"]] == [FLARE_26, SUNBURST_26]
     assert [m for m, s in OPENROUTER_MODELS.items() if s["passthrough"]] == [FLARE_26, SUNBURST_26]
     assert "output_format：" + " / ".join(GPT_IMAGE_2_6["output_format"]) in description and "0–100 的压缩率" in description
+    most = min(GPT_IMAGE_2_5["n"][1], Store.__init__.__defaults__[0])  # the endpoint's n max, capped by the queue
+    assert most == 8 and f"Flare / Sunburst 可以 1–{most}" in description and f"队列一共 {most} 个位置" in description
+    assert {s["params"]["n"] for m, s in OPENROUTER_MODELS.items() if m in (GEMINI, SEEDREAM)} == {(1, 1)}
 
 
 def test_openrouter_body_follows_model_capabilities_and_cost_is_recorded(tmp_path, openrouter):
@@ -396,6 +399,68 @@ def test_a_lost_parameter_file_fails_the_job_instead_of_drawing_defaults(tmp_pat
         runner.generate(claimed, threading.Event())
     store.finish(job["id"], error="request_lost")
     assert openrouter["requests"] == [] and "默认参数" in store.get(job["id"])["error"]["message"]
+
+
+def test_n_makes_that_many_single_image_jobs_each_sent_with_n_1(tmp_path, openrouter):
+    store = Store(tmp_path)
+    first = store.submit_request("编的：三只猫", model=FLARE_26, options={"quality": "low"}, n=3)
+    ids = [job["id"] for job in first["jobs"]]
+    assert len(set(ids)) == 3 and not first["reused"] and all(job["status"] == "queued" for job in first["jobs"])
+    assert store.submit_request("编的：三只猫", model=FLARE_26, options={"quality": "low"}, n=3)["jobs"] == store.submit_request(
+        "编的：三只猫", model=FLARE_26, options={"quality": "low"}, n=3)["jobs"]  # a retry is the same three jobs
+    again = store.submit_request("编的：三只猫", model=FLARE_26, options={"quality": "low"}, n=3)
+    assert again["reused"] and [job["id"] for job in again["jobs"]] == ids
+    assert store.submit("编的：三只猫", model=FLARE_26, options={"quality": "low"})[0]["id"] == ids[0]  # copy 1 = the single request
+    runner = OpenRouterRunner(store, KEY, timeout=10, base_url=openrouter["url"])
+    for job_id in ids:
+        claimed = store.claim()
+        assert claimed["id"] == job_id and claimed["options"] == {"quality": "low"}
+        store.finish(job_id, metadata=runner.generate(claimed, threading.Event()))
+    posts = [r["body"] for r in openrouter["requests"] if r["method"] == "POST"]
+    assert posts == [{"model": FLARE_26, "prompt": "编的：三只猫", "n": 1, "quality": "low"}] * 3
+    assert [store.get(job_id)["status"] for job_id in ids] == ["succeeded"] * 3
+
+
+def test_n_with_a_request_id_keeps_each_copy_on_its_own_key(tmp_path):
+    store = Store(tmp_path)
+    jobs = store.submit_request("编的：两只狗", "dogs", model=SUNBURST_26, n=2)["jobs"]
+    assert store.submit_request("编的：两只狗", "dogs", model=SUNBURST_26, n=2)["reused"]
+    more = store.submit_request("编的：两只狗", "dogs", model=SUNBURST_26, n=3)
+    assert [job["id"] for job in more["jobs"][:2]] == [job["id"] for job in jobs] and not more["reused"]
+    with pytest.raises(Conflict):
+        store.submit_request("编的：别的", "dogs", model=SUNBURST_26, n=2)
+    # copies after the first always carry a parameter file, so a lost one is noticed even with nothing chosen
+    assert sorted(p.stem for p in store.requests.iterdir()) == sorted(job["id"] for job in more["jobs"][1:])
+
+
+def test_n_is_checked_against_the_model_and_the_queue(tmp_path):
+    store = Store(tmp_path)
+    for model, n, message in ((GEMINI, 2, "Nano Banana 2 一次只能画 1 张"), (SEEDREAM, 3, "Seedream 5 Flash 一次只能画 1 张"),
+                              (FLARE_26, 9, "n 要是 1–8 的整数"), (FLARE, 0, "1–8"), (FLARE, "3", "1–8"), (FLARE, True, "1–8")):
+        with pytest.raises(ValueError, match=message):
+            store.submit_request("编的：猫", model=model, n=n)
+    codex = store.submit_request("编的：订阅画三张", n=3)
+    assert len(codex["jobs"]) == 1 and codex["ignored"] == ["n（不传 model 走 Codex 订阅，一个请求只画一张，只排了 1 张）"]
+    assert len(store.submit_request("编的：香蕉一张", model=GEMINI, n=1)["jobs"]) == 1
+    for i in range(4):
+        store.submit(f"编的：排队 {i}", model=FLARE)
+    with pytest.raises(QueueFull, match="还空 2 个，这次要新排 3 张"):
+        store.submit_request("编的：再来三张", model=FLARE, n=3)
+    assert len([job for job in store.recent() if "再来三张" in job["prompt_preview"]]) == 0  # all or nothing
+    assert len(store.submit_request("编的：再来两张", model=FLARE, n=2)["jobs"]) == 2
+
+
+def test_n_over_http_returns_every_job(tmp_path):
+    store = Store(tmp_path)
+    app = create_app(store, CodexRunner(store, tmp_path / "auth"), TOKEN, run_queue=False)
+    headers = {"Authorization": "Bearer " + TOKEN}
+    with TestClient(app) as client:
+        reply = client.post("/jobs", json={"prompt": "编的：四只猫", "model": FLARE_26, "n": 4}, headers=headers).json()
+        assert [job["id"] for job in reply["jobs"]][0] == reply["job"]["id"] and len({job["id"] for job in reply["jobs"]}) == 4
+        single = client.post("/jobs", json={"prompt": "编的：一只猫", "model": FLARE_26}, headers=headers).json()
+        assert "jobs" not in single and not single["reused"]
+        refused = client.post("/jobs", json={"prompt": "编的：猫", "model": GEMINI, "n": 2}, headers=headers)
+        assert refused.status_code == 400 and "只能画 1 张" in refused.json()["detail"]
 
 
 @pytest.mark.parametrize(("status", "code"), [(401, "openrouter_auth"), (402, "openrouter_credit"), (403, "openrouter_refused"),

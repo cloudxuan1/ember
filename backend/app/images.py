@@ -69,7 +69,7 @@ async def request(method, path, **kwargs):
         return {"error": "暂时连不上生图服务；提交结果可能尚未返回，请先查最近任务，不要换标记重复提交。"}
 
 
-async def generate(prompt, request_id="", model="", reference_job_ids=None, options=None):
+async def generate(prompt, request_id="", model="", reference_job_ids=None, options=None, n=1):
     body = {"prompt": prompt, "request_id": request_id}
     # Without model / references / parameters the request is byte-for-byte the original Codex submission.
     if model:
@@ -80,11 +80,18 @@ async def generate(prompt, request_id="", model="", reference_job_ids=None, opti
         body["reference_job_ids"] = reference_job_ids
     # 取值对不对、模型能不能用，由 worker 按它的型号名单判断。
     body.update({name: value for name, value in (options or {}).items() if value is not None and value != ""})
+    if n != 1:
+        body["n"] = n
     result = await request("POST", "/jobs", json=body)
-    if "job" in result:
+    if "job" in result and len(result.get("jobs") or ()) > 1:
+        result["job_ids"] = [job["id"] for job in result["jobs"]]
+        count = len(result["job_ids"])
+        result["message"] = (f"这 {count} 张的任务都已存在，继续查进度，不会重复生成。" if result.get("reused") else
+                             f"已排队 {count} 张，一张一个任务（job_ids）；用 image_status 分别查进度，画好的用 image_get 分别取图。不要反复提交。")
+    elif "job" in result:
         result["message"] = "任务已存在，继续查进度，不会重复生成。" if result.get("reused") else "已排队；用 image_status 查进度，完成后用 image_get 取图。不要反复提交。"
-        if result.get("ignored"):
-            result["message"] += "这些参数这次用不了，已忽略、没发给模型：" + "；".join(result["ignored"]) + "。"
+    if "job" in result and result.get("ignored"):
+        result["message"] += "这些参数这次用不了，已忽略、没发给模型：" + "；".join(result["ignored"]) + "。"
     return result
 
 

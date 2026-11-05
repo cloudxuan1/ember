@@ -158,9 +158,27 @@ def test_every_optional_parameter_is_in_the_tool_schema_and_description():
     doc = mcp_server.image_generate.__doc__
     tools = asyncio.run(mcp_server.mcp.list_tools())
     schema = next(tool for tool in tools if tool.name == "image_generate").inputSchema["properties"]
-    for name in OPTIONS:
+    for name in OPTIONS + ("n",):
         assert f"- {name}：" in doc and name in schema
-    assert "走 Codex 订阅时这几个都用不了" in doc and "透明不能配 jpeg" in doc
+    assert "走 Codex 订阅时这几个都用不了" in doc and "透明不能配 jpeg" in doc and "job_ids" in doc
+
+
+def test_n_passes_through_and_every_job_id_comes_back(worker, monkeypatch):
+    ids = [str(uuid.uuid4()) for _ in range(3)]
+    replies = [{"job": {"id": ids[0], "status": "queued"}, "jobs": [{"id": i, "status": "queued"} for i in ids], "reused": False},
+               {"job": {"id": ids[0], "status": "queued"}, "jobs": [{"id": i, "status": "queued"} for i in ids], "reused": True}]
+    calls = []
+
+    def handle(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json=replies.pop(0))
+
+    monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=httpx.MockTransport(handle)))
+    first = asyncio.run(mcp_server.image_generate("编的：三只猫", "cats", "openai/gpt-image-2.6-flare", n=3))
+    assert calls[0] == {"prompt": "编的：三只猫", "request_id": "cats", "model": "openai/gpt-image-2.6-flare", "n": 3}
+    assert first["job_ids"] == ids and "已排队 3 张" in first["message"]
+    again = asyncio.run(mcp_server.image_generate("编的：三只猫", "cats", "openai/gpt-image-2.6-flare", n=3))
+    assert again["job_ids"] == ids and "都已存在" in again["message"]  # n=1 sends no "n" at all: see the first test
 
 
 def test_openrouter_image_names_its_model_and_carries_cost(worker, monkeypatch):
