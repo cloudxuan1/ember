@@ -168,11 +168,33 @@ def test_image_get_carries_full_prompt_and_jpeg_preview(worker, monkeypatch):
     assert "full_prompt" not in calls[-1].url.params  # image_status keeps the short preview
 
 
-def test_original_download_still_requires_png(worker, monkeypatch):
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"\xff\xd8\xff\xe0not-a-png-original"))
+@pytest.mark.parametrize(("data", "media_type", "extension"), [
+    (PNG, "image/png", "png"),
+    (b"\xff\xd8\xff\xe0synthetic-jpeg", "image/jpeg", "jpg"),
+    (b"RIFF\x20\x00\x00\x00WEBPVP8 synthetic-webp", "image/webp", "webp"),
+])
+def test_original_download_type_and_name_follow_the_file(worker, monkeypatch, data, media_type, extension):
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=data))
+    monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
+    app = FastAPI()
+    app.include_router(images.router)
+    parsed = urlparse(images.download_url(JOB_ID))
+    with TestClient(app) as client:
+        response = client.get(parsed.path + "?" + parsed.query)
+    assert response.status_code == 200 and response.content == data and response.headers["content-type"] == media_type
+    assert response.headers["content-disposition"] == f'inline; filename="ember-image-{JOB_ID}.{extension}"'
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_original_download_still_refuses_what_is_not_an_image(worker, monkeypatch):
+    replies = {"data": b"<html>not an image</html>"}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=replies["data"]))
     monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
     with pytest.raises(ValueError):
         asyncio.run(images.image_bytes(JOB_ID))
+    replies["data"] = b"RIFF\x20\x00\x00\x00WEBPVP8 synthetic-webp"
+    with pytest.raises(ValueError):  # previews are only ever JPEG (or the old PNG)
+        asyncio.run(images.image_bytes(JOB_ID, preview=True))
 
 
 def test_status_wait_is_capped_at_50_and_http_timeout_outlasts_it(worker):

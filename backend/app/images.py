@@ -19,6 +19,17 @@ WAIT_LIMIT = 50  # image_status 一次最多等这么久；worker 那边同一�
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
+def image_type(data):
+    """(media type, extension) from the bytes. 原图默认 PNG，要了 jpeg / webp 的就是那种；预览是 JPEG（改版前的是 PNG）。"""
+    if data.startswith(PNG_MAGIC):
+        return "image/png", "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp", "webp"
+    return None, None
+
+
 def config():
     token = os.environ.get("IMAGE_WORKER_TOKEN", "")
     url = os.environ.get("IMAGE_WORKER_URL", "").rstrip("/")
@@ -115,8 +126,8 @@ async def image_bytes(job_id, preview=False):
                     data.extend(chunk)
     except httpx.HTTPError:
         raise ValueError("暂时取不到图片，请稍后用同一任务编号取图；不要重新生成。") from None
-    # 原图一律 PNG；预览新图是 JPEG，改版前画的图还是 PNG。
-    if not data.startswith(PNG_MAGIC) and not (preview and data.startswith(b"\xff\xd8\xff")):
+    kind, _ = image_type(data)
+    if kind is None or (preview and kind == "image/webp"):
         raise ValueError("服务没有交回有效图片。")
     return bytes(data)
 
@@ -155,7 +166,8 @@ async def download(job_id: str, expires: int, signature: str):
         data = await image_bytes(job_id)
     except ValueError as error:
         raise HTTPException(status_code=503, detail=str(error)) from None
-    return Response(content=data, media_type="image/png", headers={
+    media_type, extension = image_type(data)
+    return Response(content=data, media_type=media_type, headers={
         "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": f'inline; filename="ember-image-{job_id}.png"',
+        "Content-Disposition": f'inline; filename="ember-image-{job_id}.{extension}"',
     })

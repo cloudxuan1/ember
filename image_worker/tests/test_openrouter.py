@@ -358,6 +358,34 @@ print(json.dumps({{'type':'thread.started','thread_id':{thread!r}}}))
     assert finished["status"] == "succeeded" and finished["engine"] == "codex_subscription" and "cost_usd" not in finished
 
 
+def test_codex_gets_a_png_copy_of_a_jpeg_reference(tmp_path):
+    store = Store(tmp_path / "images")
+    job, _ = store.submit("编的：jpeg 定妆照")
+    store.claim()
+    store.finish(job["id"], metadata=save_image(store, job["id"], io.BytesIO(picture("JPEG")), keep="jpeg"))
+    assert store.original_file(job["id"]).suffix == ".jpg"
+    auth = tmp_path / "auth"
+    auth.mkdir()
+    (auth / "auth.json").write_text("synthetic-login-placeholder")
+    thread = str(uuid.uuid4())
+    body = f'''import base64,json,os,pathlib,sys
+attach=[a for a in sys.argv[1:] if a.startswith('--image=')]
+path=pathlib.Path(attach[0].split('=',1)[1])
+assert path.name=='reference-1.png' and path.read_bytes().startswith(bytes([0x89])+b'PNG')
+sys.stdin.read()
+out=pathlib.Path(os.environ['CODEX_HOME'])/'generated_images'/{thread!r}
+out.mkdir(parents=True)
+(out/'image.png').write_bytes(base64.b64decode({base64.b64encode(picture()).decode()!r}))
+print(json.dumps({{'type':'thread.started','thread_id':{thread!r}}}))
+'''
+    cli = tmp_path / "fake-codex"
+    cli.write_text(f"#!{sys.executable}\n" + body)
+    cli.chmod(0o700)
+    store.submit("同一个角色，换个背景", reference_job_ids=[job["id"]])
+    metadata = CodexRunner(store, auth, binary=str(cli)).generate(store.claim(), threading.Event())
+    assert metadata["width"] == 32
+
+
 def test_codex_arguments_without_references_are_unchanged(tmp_path):
     runner = CodexRunner(Store(tmp_path), tmp_path / "auth", binary="codex")
     disabled = []

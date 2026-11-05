@@ -16,6 +16,7 @@ from image_worker.store import Conflict, QueueFull, Store
 
 
 WAIT_LIMIT = 50  # image_status may hold one request this long (60 hit the MCP client's 60 s timeout); the backend's HTTP timeout sits above it.
+MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
 
 
 class Submission(BaseModel):
@@ -114,12 +115,11 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
         if job["status"] != "succeeded":
             raise HTTPException(status_code=409, detail="图片还没准备好，请先查任务进度。")
         try:
-            path = store.preview_file(job_id) if preview else store.image_path(job_id)
+            path = store.preview_file(job_id) if preview else store.original_file(job_id)
         except ValueError:
             raise HTTPException(status_code=404, detail="找不到图片。") from None
         if not path.is_file():
             raise HTTPException(status_code=404, detail="图片文件不存在。")
-        media_type = "image/jpeg" if path.suffix == ".jpg" else "image/png"
-        return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-store"})
+        return FileResponse(path, media_type=MEDIA_TYPES[path.suffix], headers={"Cache-Control": "private, no-store"})
 
     return app

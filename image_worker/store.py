@@ -28,6 +28,8 @@ ERRORS = {
     "openrouter_rejected": "OpenRouter 不接受这次请求的参数或参考图，没有自动换模型或重试；原因见 error.detail。",
     "openrouter_unavailable": "OpenRouter 或模型方暂时不可用，没有自动重试、没有换模型。要重画请明确再提交一次。",
 }
+# An original is PNG, unless the caller asked OpenRouter for jpeg / webp output (the extension says which).
+ORIGINAL_SUFFIXES = (".png", ".jpg", ".webp")
 # Columns added after the first release; existing rows read as Codex subscription jobs.
 ADDED_COLUMNS = {
     "model": "TEXT", "reference_job_ids": "TEXT", "cost_usd": "REAL",
@@ -112,7 +114,7 @@ class Store:
                 return self.public(old, conn), True
             for reference in references:
                 row = conn.execute("SELECT status FROM jobs WHERE id=?", (reference,)).fetchone()
-                if not row or row["status"] != "succeeded" or not self.image_path(reference).is_file():
+                if not row or row["status"] != "succeeded" or not self.original_file(reference).is_file():
                     raise ValueError("参考图 " + reference + " 不是已画好的图，请用 image_status 里成功任务的 id。")
             # A lost acknowledgement must not turn an agent's retry into a second image.
             active = conn.execute(
@@ -215,6 +217,11 @@ class Store:
         if canonical != job_id:
             raise ValueError("invalid image id")
         return self.images / (canonical + (".preview.jpg" if preview else ".png"))
+
+    def original_file(self, job_id):
+        """<id>.png, or the <id>.jpg / <id>.webp a jpeg / webp request was stored as."""
+        path = self.image_path(job_id)
+        return next((p for p in (path.with_suffix(s) for s in ORIGINAL_SUFFIXES) if p.is_file()), path)
 
     def preview_file(self, job_id):
         """The JPEG preview, or the PNG preview that images made before the switch still have."""

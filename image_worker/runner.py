@@ -1,5 +1,6 @@
 """Codex native image tool only. Prompts are stdin data, never shell commands."""
 
+import io
 import json
 import os
 from pathlib import Path
@@ -35,7 +36,7 @@ def check_storage(store):
 
 
 def reference_files(store, job):
-    paths = [store.image_path(reference) for reference in job.get("reference_job_ids") or ()]
+    paths = [store.original_file(reference) for reference in job.get("reference_job_ids") or ()]
     if not all(path.is_file() for path in paths):
         raise GenerationError("reference_missing")
     return paths
@@ -58,18 +59,35 @@ def save_preview(image, path):
     path.chmod(0o600)
 
 
-def save_image(store, job_id, source):
-    """Re-encode any raster image (path or file object) as the job's PNG original plus a JPEG preview."""
+# output_format the caller can ask OpenRouter for → (Pillow's name for it, the original's extension).
+KEPT_FORMATS = {"jpeg": ("JPEG", ".jpg"), "webp": ("WEBP", ".webp")}
+
+
+def save_image(store, job_id, source, keep=None):
+    """Re-encode any raster image (path or file object) as the job's PNG original plus a JPEG preview.
+
+    keep = the jpeg / webp output_format the caller asked for: a reply really in that format is stored
+    byte for byte as <id>.jpg / <id>.webp instead, so the compression it was asked for survives.
+    """
     try:
+        raw = None
+        if keep in KEPT_FORMATS:
+            raw = source.read() if hasattr(source, "read") else Path(source).read_bytes()
+            source = io.BytesIO(raw)
         with Image.open(source) as original:
             if original.width * original.height > 20_000_000:
                 raise ValueError("too large")
+            kept = keep in KEPT_FORMATS and original.format == KEPT_FORMATS[keep][0]
             original.load()
             image = original.convert("RGBA" if "A" in original.getbands() else "RGB")
-        destination = store.image_path(job_id)
-        if destination.exists():
+        if store.original_file(job_id).exists():
             raise ValueError("refuse overwrite")
-        image.save(destination, format="PNG")
+        destination = store.image_path(job_id)
+        if kept:
+            destination = destination.with_suffix(KEPT_FORMATS[keep][1])
+            destination.write_bytes(raw)
+        else:
+            image.save(destination, format="PNG")
         destination.chmod(0o600)
         width, height = image.size
         save_preview(image, store.image_path(job_id, preview=True))
@@ -150,7 +168,14 @@ class CodexRunner:
             images = []
             for number, source in enumerate(sources, 1):
                 images.append(work / f"reference-{number}.png")
-                shutil.copyfile(source, images[-1])
+                if source.suffix == ".png":
+                    shutil.copyfile(source, images[-1])
+                    continue
+                try:  # a jpeg / webp original: Codex still gets a PNG, like every reference before
+                    with Image.open(source) as picture:
+                        picture.save(images[-1], format="PNG")
+                except (OSError, ValueError, Image.DecompressionBombError):
+                    raise GenerationError("reference_missing") from None
             if images:
                 prompt += (
                     "\n\nThis is an edit based on the attached reference image(s). Call the image tool once with "
