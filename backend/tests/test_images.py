@@ -111,7 +111,7 @@ def test_tool_descriptions_cover_queue_retry_privacy_and_subscription():
     assert "整段聊天" in mcp_server.image_generate.__doc__ and "不要重新生成" in mcp_server.image_get.__doc__
     assert "设备码" in mcp_server.image_status.__doc__
     doc = mcp_server.image_generate.__doc__
-    assert "默认不传 model：走 Codex 订阅" in doc and "不自动换模型" in doc and "Sunburst 画的" in doc
+    assert "默认不传 model：走 Codex 订阅" in doc and "不自动换模型" in doc and "Sunburst 2.6 画的" in doc
     assert "reference_job_ids" in doc and "cost_usd" in mcp_server.image_status.__doc__
 
 
@@ -130,9 +130,60 @@ def test_model_and_references_pass_through_and_bad_references_stay_local(worker)
     assert "reference_job_ids" in result["error"] and len(worker["calls"]) == 1
 
 
+OPTIONS = ("quality", "complexity", "aspect_ratio", "background", "output_format", "output_compression")
+
+
+def test_chosen_parameters_pass_through_only_when_given(worker):
+    asyncio.run(mcp_server.image_generate("编的：猫", "p1", "openai/gpt-image-2.6-flare", quality="max", complexity="high",
+                                          output_format="jpeg", output_compression=0))
+    assert json.loads(worker["calls"][0].content) == {
+        "prompt": "编的：猫", "request_id": "p1", "model": "openai/gpt-image-2.6-flare",
+        "quality": "max", "complexity": "high", "output_format": "jpeg", "output_compression": 0,  # 0 is a choice, not "unset"
+    }
+
+
+def test_ignored_parameters_are_named_and_refused_values_come_back_as_the_reason(worker, monkeypatch):
+    replies = [httpx.Response(200, json={"job": {"id": JOB_ID, "status": "queued"}, "reused": False,
+                                         "ignored": ["complexity（Flare 2.5 用不了）"]}),
+               httpx.Response(400, json={"detail": "quality 不认识「ultra」；Flare 2.6 可选：auto / low"})]
+    transport = httpx.MockTransport(lambda request: replies.pop(0))
+    monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
+    queued = asyncio.run(mcp_server.image_generate("编的：猫", model="openai/gpt-image-2.5-flare", complexity="low"))
+    assert queued["message"].startswith("已排队") and "已忽略" in queued["message"] and "complexity（Flare 2.5 用不了）" in queued["message"]
+    refused = asyncio.run(mcp_server.image_generate("编的：猫", model="openai/gpt-image-2.6-flare", quality="ultra"))
+    assert refused == {"error": "quality 不认识「ultra」；Flare 2.6 可选：auto / low"}
+
+
+def test_every_optional_parameter_is_in_the_tool_schema_and_description():
+    doc = mcp_server.image_generate.__doc__
+    tools = asyncio.run(mcp_server.mcp.list_tools())
+    schema = next(tool for tool in tools if tool.name == "image_generate").inputSchema["properties"]
+    for name in OPTIONS + ("n",):
+        assert f"- {name}：" in doc and name in schema
+    assert "走 Codex 订阅时这几个都用不了" in doc and "透明不能配 jpeg" in doc and "job_ids" in doc
+
+
+def test_n_passes_through_and_every_job_id_comes_back(worker, monkeypatch):
+    ids = [str(uuid.uuid4()) for _ in range(3)]
+    replies = [{"job": {"id": ids[0], "status": "queued"}, "jobs": [{"id": i, "status": "queued"} for i in ids], "reused": False},
+               {"job": {"id": ids[0], "status": "queued"}, "jobs": [{"id": i, "status": "queued"} for i in ids], "reused": True}]
+    calls = []
+
+    def handle(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json=replies.pop(0))
+
+    monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=httpx.MockTransport(handle)))
+    first = asyncio.run(mcp_server.image_generate("编的：三只猫", "cats", "openai/gpt-image-2.6-flare", n=3))
+    assert calls[0] == {"prompt": "编的：三只猫", "request_id": "cats", "model": "openai/gpt-image-2.6-flare", "n": 3}
+    assert first["job_ids"] == ids and "已排队 3 张" in first["message"]
+    again = asyncio.run(mcp_server.image_generate("编的：三只猫", "cats", "openai/gpt-image-2.6-flare", n=3))
+    assert again["job_ids"] == ids and "都已存在" in again["message"]  # n=1 sends no "n" at all: see the first test
+
+
 def test_openrouter_image_names_its_model_and_carries_cost(worker, monkeypatch):
     job = {"id": JOB_ID, "status": "succeeded", "engine": "openrouter", "model": "openai/gpt-image-2.5-sunburst",
-           "model_label": "Sunburst", "cost_usd": 0.19, "key_limit_remaining_usd": 4.81}
+           "model_label": "Sunburst 2.5", "cost_usd": 0.19, "key_limit_remaining_usd": 4.81}
 
     def handle(request):
         if request.url.path.endswith("/image"):
@@ -142,7 +193,7 @@ def test_openrouter_image_names_its_model_and_carries_cost(worker, monkeypatch):
     transport = httpx.MockTransport(handle)
     monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
     metadata = json.loads(asyncio.run(mcp_server.image_get(JOB_ID)).content[0].text)
-    assert "Sunburst 画的" in metadata["message"]
+    assert "Sunburst 2.5 画的" in metadata["message"]
     assert metadata["job"]["cost_usd"] == 0.19 and metadata["job"]["key_limit_remaining_usd"] == 4.81
 
 
@@ -168,11 +219,33 @@ def test_image_get_carries_full_prompt_and_jpeg_preview(worker, monkeypatch):
     assert "full_prompt" not in calls[-1].url.params  # image_status keeps the short preview
 
 
-def test_original_download_still_requires_png(worker, monkeypatch):
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"\xff\xd8\xff\xe0not-a-png-original"))
+@pytest.mark.parametrize(("data", "media_type", "extension"), [
+    (PNG, "image/png", "png"),
+    (b"\xff\xd8\xff\xe0synthetic-jpeg", "image/jpeg", "jpg"),
+    (b"RIFF\x20\x00\x00\x00WEBPVP8 synthetic-webp", "image/webp", "webp"),
+])
+def test_original_download_type_and_name_follow_the_file(worker, monkeypatch, data, media_type, extension):
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=data))
+    monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
+    app = FastAPI()
+    app.include_router(images.router)
+    parsed = urlparse(images.download_url(JOB_ID))
+    with TestClient(app) as client:
+        response = client.get(parsed.path + "?" + parsed.query)
+    assert response.status_code == 200 and response.content == data and response.headers["content-type"] == media_type
+    assert response.headers["content-disposition"] == f'inline; filename="ember-image-{JOB_ID}.{extension}"'
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_original_download_still_refuses_what_is_not_an_image(worker, monkeypatch):
+    replies = {"data": b"<html>not an image</html>"}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=replies["data"]))
     monkeypatch.setattr(images, "client", lambda: httpx.AsyncClient(base_url="http://worker", transport=transport))
     with pytest.raises(ValueError):
         asyncio.run(images.image_bytes(JOB_ID))
+    replies["data"] = b"RIFF\x20\x00\x00\x00WEBPVP8 synthetic-webp"
+    with pytest.raises(ValueError):  # previews are only ever JPEG (or the old PNG)
+        asyncio.run(images.image_bytes(JOB_ID, preview=True))
 
 
 def test_status_wait_is_capped_at_50_and_http_timeout_outlasts_it(worker):

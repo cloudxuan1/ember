@@ -110,6 +110,48 @@ def generation(client, folder, name, body, results):
           f"bytes={row.get('image_bytes')}, keys={row['top_keys']}" + (f", error={row['error']}" if "error" in row else ""))
 
 
+def compare(spec, endpoints):
+    """problems = models.py offers something an endpoint would refuse; notes = the endpoint allows more than we offer."""
+    problems, notes = [], []
+    if not endpoints:
+        problems.append("没有 endpoints")
+    for endpoint in endpoints:
+        who = endpoint.get("provider_slug") or endpoint.get("provider_name") or "?"
+        live = endpoint.get("supported_parameters") or {}
+        for name, ours in spec["params"].items():
+            descriptor = live.get(name)
+            if not isinstance(descriptor, dict):
+                problems.append(f"{who} 没有 {name}")
+            elif descriptor.get("type") == "range":
+                low, high = descriptor.get("min"), descriptor.get("max")
+                if not isinstance(low, int) or not isinstance(high, int) or ours[0] < low or ours[1] > high:
+                    problems.append(f"{who} 的 {name} 是 {low}–{high}，models.py 写 {ours[0]}–{ours[1]}")
+                elif (low, high) != tuple(ours):
+                    notes.append(f"{who} 的 {name} 能到 {low}–{high}")
+            else:
+                values = descriptor.get("values") or []
+                missing, extra = [v for v in ours if v not in values], [v for v in values if v not in ours]
+                if missing:
+                    problems.append(f"{who} 的 {name} 不收 {missing}")
+                if extra:
+                    notes.append(f"{who} 的 {name} 还能用 {extra}")
+        top = (live.get("input_references") or {}).get("max")
+        if not isinstance(top, int) or spec["references"] > top:
+            problems.append(f"{who} 参考图最多 {top}，models.py 写 {spec['references']}")
+        elif top > spec["references"]:
+            notes.append(f"{who} 参考图能到 {top}")
+        allowed = endpoint.get("allowed_passthrough_parameters") or []
+        missing = [key for key in spec["passthrough"] if key not in allowed]
+        if missing:
+            problems.append(f"{who} 不收透传 {missing}（它收 {allowed}）")
+        if spec["passthrough"] and str(who).split("/")[0].lower() != spec["provider"]:
+            problems.append(f"透传写在 provider.options.{spec['provider']} 下，{who} 收不到")
+        unused = sorted(set(live) - set(spec["params"]) - {"input_references"})
+        if unused:
+            notes.append(f"{who} 没用上：{unused}")
+    return problems, notes
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file", default="/root/ember/.env")
@@ -142,18 +184,14 @@ def main():
         present.append(model)
         status, endpoints, _ = client.call("GET", f"/images/models/{model}/endpoints")
         save(folder, model.replace("/", "__") + ".endpoints.json", endpoints, client.redact)
-        params = {}
-        for endpoint in endpoints.get("endpoints", []) if isinstance(endpoints, dict) else []:
-            for name, descriptor in (endpoint.get("supported_parameters") or {}).items():
-                params.setdefault(name, descriptor)
-        quality = params.get("quality")
-        quality_ok = quality is not None and ("values" not in quality or "high" in quality["values"])
-        references_ok = "input_references" in params
-        verdict = "OK" if (quality_ok, references_ok) == (spec["quality"], spec["references"]) else "要改 image_worker/models.py"
-        print(f"✓ {model}: endpoints HTTP {status}；参数 {sorted(params)}；quality→{quality_ok}（白名单写 {spec['quality']}），"
-              f"input_references→{references_ok}（白名单写 {spec['references']}）：{verdict}")
-        summary["models"][model] = {"present": True, "parameters": params, "quality": quality_ok,
-                                    "references": references_ok, "verdict": verdict}
+        listed = endpoints.get("endpoints") if isinstance(endpoints, dict) else None
+        listed = [e for e in listed if isinstance(e, dict)] if isinstance(listed, list) else []
+        problems, notes = compare(spec, listed)
+        verdict = "OK" if not problems else "要改 image_worker/models.py：" + "；".join(problems)
+        slugs = [e.get("provider_slug") for e in listed]
+        print(f"✓ {model}: endpoints HTTP {status} {slugs}：{verdict}" + ("（另外：" + "；".join(notes) + "）" if notes else ""))
+        summary["models"][model] = {"present": True, "providers": slugs, "problems": problems, "notes": notes,
+                                    "verdict": "OK" if not problems else "要改"}
 
     if args.generate:
         print("真画（每个模型一张）：")

@@ -217,6 +217,52 @@ def test_preview_type_follows_the_file_and_old_png_previews_still_load(tmp_path)
         assert client.get(f"/jobs/{new['id']}/image", headers=headers).headers["content-type"] == "image/png"
 
 
+def encoded(fmt, mode="RGB"):
+    data = io.BytesIO()
+    Image.new(mode, (40, 30), (200, 80, 40, 120) if mode == "RGBA" else "orange").save(data, format=fmt)
+    return data.getvalue()
+
+
+def test_jpeg_and_webp_originals_keep_their_bytes_extension_and_content_type(tmp_path):
+    from image_worker.runner import save_image
+    store = Store(tmp_path / "jobs")
+    app = create_app(store, CodexRunner(store, tmp_path / "auth"), TOKEN, run_queue=False)
+    headers = {"Authorization": "Bearer " + TOKEN}
+    cases = [("jpeg", encoded("JPEG"), ".jpg", "image/jpeg"), ("webp", encoded("WEBP", "RGBA"), ".webp", "image/webp"),
+             ("jpeg", encoded("PNG"), ".png", "image/png")]  # asked for jpeg but the reply is PNG: stored like any reply
+    with TestClient(app) as client:
+        for keep, raw, suffix, media_type in cases:
+            job, _ = store.submit(f"编的：{keep} → {suffix}")
+            store.claim()
+            store.finish(job["id"], metadata=save_image(store, job["id"], io.BytesIO(raw), keep=keep))
+            original = store.original_file(job["id"])
+            assert original.suffix == suffix and original.stat().st_mode & 0o777 == 0o600
+            assert suffix == ".png" or original.read_bytes() == raw  # byte for byte, so the asked-for compression survives
+            assert store.get(job["id"])["image_bytes"] == original.stat().st_size
+            response = client.get(f"/jobs/{job['id']}/image", headers=headers)
+            assert response.headers["content-type"] == media_type and response.content == original.read_bytes()
+            preview = client.get(f"/jobs/{job['id']}/image?preview=true", headers=headers)
+            assert preview.headers["content-type"] == "image/jpeg" and preview.content.startswith(b"\xff\xd8\xff")
+            with pytest.raises(GenerationError, match="no_image"):  # never a second original beside the first
+                save_image(store, job["id"], io.BytesIO(encoded("PNG")))
+
+
+def test_jpeg_and_webp_originals_can_be_references(tmp_path):
+    from image_worker.openrouter import reference_url
+    from image_worker.runner import reference_files, save_image
+    store = Store(tmp_path)
+    ids = []
+    for fmt, keep in (("JPEG", "jpeg"), ("WEBP", "webp")):
+        job, _ = store.submit("编的：参考图 " + fmt)
+        store.claim()
+        store.finish(job["id"], metadata=save_image(store, job["id"], io.BytesIO(encoded(fmt)), keep=keep))
+        ids.append(job["id"])
+    store.submit("照着这两张改", model="openai/gpt-image-2.6-flare", reference_job_ids=ids)  # accepted: both originals found
+    paths = reference_files(store, {"reference_job_ids": ids})
+    assert [path.suffix for path in paths] == [".jpg", ".webp"]
+    assert all(reference_url(path).startswith("data:image/png;base64,") for path in paths)
+
+
 def test_full_prompt_only_when_asked_and_wait_is_capped(tmp_path, monkeypatch):
     from image_worker import service
     store = Store(tmp_path / "jobs")

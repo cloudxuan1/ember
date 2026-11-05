@@ -5,17 +5,20 @@ import hmac
 import os
 from pathlib import Path
 import threading
+from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from image_worker.models import OPTION_NAMES
 from image_worker.openrouter import OpenRouterRunner
 from image_worker.runner import CodexRunner, GenerationError
 from image_worker.store import Conflict, QueueFull, Store
 
 
 WAIT_LIMIT = 50  # image_status may hold one request this long (60 hit the MCP client's 60 s timeout); the backend's HTTP timeout sits above it.
+MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
 
 
 class Submission(BaseModel):
@@ -24,6 +27,13 @@ class Submission(BaseModel):
     # Checked by the store, so a bad value gets a readable 400 instead of a validation 422.
     model: str = ""
     reference_job_ids: list = Field(default_factory=list)
+    quality: Any = None
+    complexity: Any = None
+    aspect_ratio: Any = None
+    background: Any = None
+    output_format: Any = None
+    output_compression: Any = None
+    n: Any = 1
 
 
 def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=None):
@@ -81,15 +91,21 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
 
     @app.post("/jobs", dependencies=[Depends(authorize)])
     def submit(body: Submission):
+        options = {name: getattr(body, name) for name in OPTION_NAMES}
         try:
-            job, reused = store.submit(body.prompt, body.request_id, body.model, body.reference_job_ids)
+            result = store.submit_request(body.prompt, body.request_id, body.model, body.reference_job_ids, options, body.n)
         except Conflict as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except QueueFull as error:
             raise HTTPException(status_code=429, detail=str(error)) from None
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from None
-        return {"job": job, "reused": reused}
+        out = {"job": result["jobs"][0], "reused": result["reused"]}
+        if len(result["jobs"]) > 1:  # n single-image jobs; "job" stays the first, as before
+            out["jobs"] = result["jobs"]
+        if result["ignored"]:
+            out["ignored"] = result["ignored"]
+        return out
 
     @app.get("/jobs", dependencies=[Depends(authorize)])
     def recent():
@@ -114,12 +130,11 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
         if job["status"] != "succeeded":
             raise HTTPException(status_code=409, detail="图片还没准备好，请先查任务进度。")
         try:
-            path = store.preview_file(job_id) if preview else store.image_path(job_id)
+            path = store.preview_file(job_id) if preview else store.original_file(job_id)
         except ValueError:
             raise HTTPException(status_code=404, detail="找不到图片。") from None
         if not path.is_file():
             raise HTTPException(status_code=404, detail="图片文件不存在。")
-        media_type = "image/jpeg" if path.suffix == ".jpg" else "image/png"
-        return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-store"})
+        return FileResponse(path, media_type=MEDIA_TYPES[path.suffix], headers={"Cache-Control": "private, no-store"})
 
     return app
