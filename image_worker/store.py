@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import sqlite3
@@ -22,6 +23,7 @@ ERRORS = {
     "unsafe_tool": "本次任务尝试调用画图之外的命令工具，已停止，不会执行服务器命令。",
     "storage_full": "图片存储空间不足，任务没有开始；需要先由轩处理空间，不会自动删除旧图片。",
     "reference_missing": "参考图的原图找不到了，任务没有开始。请换一张已画好的图当参考。",
+    "reference_too_large": "参考图请求超过安全大小，任务没有发送。请减少参考图后明确提交新请求。",
     "openrouter_not_configured": "OpenRouter 这条路还没配密钥（VPS .env 的 OPENROUTER_IMAGE_KEY），任务没有开始。不传 model 可以走 Codex 订阅。",
     "openrouter_auth": "OpenRouter 不认这把密钥，请让轩检查 VPS .env 的 OPENROUTER_IMAGE_KEY。没有自动改走订阅。",
     "openrouter_credit": "OpenRouter 额度不够或已到这把密钥的上限，没有自动换模型或重试。",
@@ -60,6 +62,7 @@ class Store:
         # The parameters a queued job was submitted with wait here (<id>.json), not in the table, until it finishes.
         self.requests = self.root / "requests"
         self.requests.mkdir(exist_ok=True, mode=0o700)
+        self.requests.chmod(0o700)
         self.database = self.root / "jobs.sqlite3"
         self.limit = limit
         # SQLite WAL/SHM inherit the database's private mode.
@@ -83,7 +86,7 @@ class Store:
                     conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {kind}")
 
     @contextmanager
-    def connection(self):
+    def connection(self, request_files=()):
         conn = sqlite3.connect(self.database, timeout=10)
         conn.row_factory = sqlite3.Row
         try:
@@ -91,6 +94,8 @@ class Store:
             conn.commit()
         except BaseException:
             conn.rollback()
+            for job_id in request_files:
+                self.remove_request(self.request_file(job_id))
             raise
         finally:
             conn.close()
@@ -150,7 +155,8 @@ class Store:
             digest = self.digest(prompt, model, references, options, copy)
             suffix = "" if copy == 1 else f"#{copy}"
             wanted.append((digest, "request:" + request_id + suffix if request_id else "prompt:" + digest))
-        with self.connection() as conn:
+        request_files = []
+        with self.connection(request_files) as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows, new = [None] * count, []
             for i, (digest, key) in enumerate(wanted):
@@ -186,6 +192,7 @@ class Store:
                 digest, key = wanted[i]
                 job_id = str(uuid.uuid4())
                 if digest != plain:  # chose parameters, or an extra copy: the worker reads them from this file
+                    request_files.append(job_id)
                     self.write_request(job_id, options)
                 conn.execute(
                     "INSERT INTO jobs (id,request_key,prompt,prompt_hash,status,created_at,model,reference_job_ids) VALUES (?,?,?,?,?,?,?,?)",
@@ -198,9 +205,26 @@ class Store:
         return self.requests / (str(uuid.UUID(job_id)) + ".json")
 
     def write_request(self, job_id, options):
-        fd = os.open(self.request_file(job_id), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(self.request_file(job_id), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as handle:
             json.dump({"options": options}, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Persist the directory entry before SQLite may commit a queued job referring to it.
+        directory = os.open(self.requests, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    @staticmethod
+    def remove_request(path):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # The job's outcome is already committed. Cleanup must not stop the queue;
+            # recovery retries it without logging paths, parameters, or prompts.
+            logging.getLogger(__name__).warning("Image parameter cleanup deferred until recovery")
 
     def read_request(self, row):
         """The parameters a job was submitted with. None = it had some but their file is gone: never draw it with defaults."""
@@ -285,16 +309,18 @@ class Store:
                  metadata.get("image_bytes"), metadata.get("command_events", 0), metadata.get("cost_usd"),
                  metadata.get("key_limit_remaining_usd"), detail, job_id),
             )
-        self.request_file(job_id).unlink(missing_ok=True)
+        self.remove_request(self.request_file(job_id))
 
     def recover(self):
         # Never automatically reissue an interrupted request to the subscription service.
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("UPDATE jobs SET status='failed',error_code='worker_restarted',finished_at=? WHERE status='running'", (now(),))
             queued = {row["id"] for row in conn.execute("SELECT id FROM jobs WHERE status='queued'")}
-        for path in self.requests.glob("*.json"):  # only queued jobs still need their parameters
-            if path.stem not in queued:
-                path.unlink(missing_ok=True)
+            # Keep the write lock until cleanup ends; a concurrent submit must not lose its file.
+            for path in self.requests.glob("*.json"):
+                if path.stem not in queued:
+                    self.remove_request(path)
 
     def image_path(self, job_id, preview=False):
         # All paths derive from our UUID, never from model output or request paths.
@@ -313,3 +339,4 @@ class Store:
         path = self.image_path(job_id, preview=True)
         legacy = path.with_name(path.name.replace(".preview.jpg", ".preview.png"))
         return path if path.is_file() or not legacy.is_file() else legacy
+
