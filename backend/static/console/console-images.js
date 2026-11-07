@@ -213,8 +213,9 @@
     wrap.appendChild(chip('all', '全部'));
     wrap.appendChild(chip('starred', [icon('star', 17, null, G.view === 'starred'), starred ? h('span', { class: 'chip-n', text: starred }) : null],
       'chip-ico chip-star', '只看收藏' + (starred ? '，' + starred + ' 张' : '')));
-    wrap.appendChild(chip('trash', ['回收站', binned ? h('span', { class: 'chip-n', text: binned }) : null], null,
-      '回收站' + (binned ? '，' + binned + ' 张' : '')));
+    // 回收站也只放图案（轩定）：垃圾桶 + 张数，跟删除按钮上的是同一个垃圾桶
+    wrap.appendChild(chip('trash', [icon('trash', 17), binned ? h('span', { class: 'chip-n', text: binned }) : null],
+      'chip-ico chip-trash', '回收站' + (binned ? '，' + binned + ' 张' : '')));
     if (G.view === 'all') {
       wrap.appendChild(h('button', {
         class: (G.picking ? 'press chip chip-sel' : 'press glass chip') + ' chip-act',
