@@ -196,6 +196,44 @@ test('a grid read sent before a ⭐ is saved does not undo it; a read sent after
   assert.strictEqual(env.starIn('img-list', A).getAttribute('aria-pressed'), 'false');
 });
 
+// Codex 复审：读请求是点⭐之后、保存完成之前发出的（读到的还是旧值），等保存成功以后才回来
+test('a detail read sent while the ⭐ is still being saved does not undo it', async () => {
+  const env = load();
+  await open(env, [item(A, false)]);
+  env.starIn('img-list', A).click();                               // 点网格上的⭐，保存先压着
+  const save = env.take('POST /api/images/' + A + '/star');
+  env.find('img-list', (n) => n.cls.has('imgopen')).click();       // 马上点开大图：详情 GET 读到的还是 false
+  const detail = env.take('GET /api/images/' + A);
+  save.resolve({ job: item(A, true) });                             // 保存成功
+  await flush();
+  env.answer('GET /api/images/stats', STATS);
+  detail.resolve({ job: item(A, false, { prompt: '编的：完整提示词' }) });  // 旧值这时才回来
+  await flush();
+  assert.strictEqual(env.starIn('sheet-head', A).getAttribute('aria-pressed'), 'true');
+  assert.strictEqual(env.starIn('img-list', A).getAttribute('aria-pressed'), 'true');
+});
+
+test('a grid read sent while the ⭐ is still being saved does not undo it', async () => {
+  const env = load();
+  await open(env, [item(A, false)]);
+  env.starIn('img-list', A).click();
+  const save = env.take('POST /api/images/' + A + '/star');
+  env.images.show();                                                // 重新进图片页：网格 GET 读到的还是 false
+  const grid = env.take('GET /api/images?');
+  env.answer('GET /api/images/stats', STATS);
+  save.resolve({ job: item(A, true) });
+  await flush();
+  env.answer('GET /api/images/stats', STATS);
+  grid.resolve(page([item(A, false)]));
+  await flush();
+  assert.strictEqual(env.starIn('img-list', A).getAttribute('aria-pressed'), 'true');
+  env.images.show();                                                // 存好以后才发的读：照服务器的（小克又取消了）
+  env.answer('GET /api/images/stats', STATS);
+  env.answer('GET /api/images?', page([item(A, false)]));
+  await flush();
+  assert.strictEqual(env.starIn('img-list', A).getAttribute('aria-pressed'), 'false');
+});
+
 test('selection stops at 100, the batch the server accepts', async () => {
   const env = load();
   const items = Array.from({ length: 101 }, (_, i) => item('00000000-0000-4000-8000-' + String(i).padStart(12, '0'), false));

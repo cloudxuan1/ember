@@ -32,8 +32,9 @@
     stats: null, statsReq: 0, picking: false, picked: {}, busy: false
   };
   var starWrites = {}; // 同一张图串行写⭐，只把最后一次点选当目标（同记忆库）
-  // 本地每点一次⭐记一个序号。一次读（网格 / 大图）要是在这之前就发出去了，它带回来的⭐是点之前的旧样子，
-  // 不能盖掉刚点的（#41 Codex 审核：旧的读请求比⭐保存晚回来）；点完以后才发出的读照服务器的（比如小克刚改过）
+  // ⭐ 的本地改动记一个序号：点的时候记一次，服务器确认存好时再记一次。一次读（网格 / 大图）要是在「存好」之前
+  // 发出去的，它带回来的⭐可能还是旧的，不能盖掉刚点的（#41 Codex 审核两轮：旧读请求比保存晚回来，
+  // 包括点了以后、存好之前才发的读）；存好以后才发出的读照服务器的（比如小克刚改过）
   var starSeq = 0;
   var starMarks = {}; // 编号 → { on, seq }
   var PICK_MAX = 100; // 一次最多勾几张：跟后端 /api/images/trash 一次收的上限一样（console.IMAGE_BATCH_MAX）
@@ -117,10 +118,13 @@
     starMarks[id] = { on: on, seq: ++starSeq };
   }
 
-  /** 读回来的一张图：since = 发出这次读时的序号；那之后本地又点过⭐，以本地为准 */
+  /** 读回来的一张图：⭐还在写 → 以这边要的为准；since = 发出这次读时的序号，那之后本地点过或刚存好 → 以本地为准 */
   function keepLocalStar(job, since) {
+    var write = starWrites[job.id];
     var mark = starMarks[job.id];
-    if (mark && mark.seq > since) {
+    if (write) {
+      job.starred = write.wanted;
+    } else if (mark && mark.seq > since) {
       job.starred = mark.on;
     }
     return job;
@@ -463,6 +467,7 @@
         return;
       }
       delete starWrites[id];
+      markStar(id, write.wanted); // 存好了才算数：在这之前发出的读（哪怕是点了以后才发的）都可能读到旧的
       paintStar(id, write.wanted);
       loadStats();
     }, function (err) {
