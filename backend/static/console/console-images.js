@@ -452,7 +452,7 @@
       old.parentNode.replaceChild(icon('star', b.classList.contains('imgstar') ? 18 : 22, null, on), old);
     });
     if (sh && sh.mode === 'image' && sh.id === id) {
-      renderImageBody(sh);
+      Sheet().resize(function () { renderImageBody(sh); }); // 「点了⭐，留着」那一行出来 / 收走：面板高度弹过去，不跳
     }
   }
 
@@ -607,7 +607,7 @@
     var sh = S.sheet = {
       mode: 'image', id: item.id, img: item, full: null, opener: opener || null, focusKeys: L.focusKeys(opener), req: 0, busy: false, box: null
     };
-    Sheet().show({ fixed: true }); // 面板一打开就是固定高度，图晚到也不会把面板撑高
+    Sheet().show({ tall: true }); // 内容多高面板就多高、最高到顶；大图的位置先留好，图晚到不会把面板撑高
     renderImageSheet(sh);
     fetchFull(sh);
   }
@@ -648,7 +648,7 @@
         return;
       }
       sh.full = keepLocalStar(data.job, since);
-      renderImageSheet(sh);
+      Sheet().resize(function () { renderImageSheet(sh); }); // 完整提示词比开头那 80 字长：面板慢慢长高，不跳
     }, function (err) {
       if (S.sheet !== sh || req !== sh.req) {
         return;

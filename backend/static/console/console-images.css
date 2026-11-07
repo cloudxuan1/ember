@@ -62,8 +62,8 @@
 .imgmodel, .imgleft, .keptbadge, .imgpick { pointer-events: none; }
 
 /* ---------- 点开看大图（借记忆库的底部面板） ---------- */
-/* 面板高度固定（JS 给 .sheet-fixed）：内容多高都不变，图晚到不会把面板撑高、往下顶字 */
-.sheet.sheet-fixed { height: 86vh; height: 86dvh; }
+/* 看大图的面板（JS 给 .sheet-tall）：内容多高就多高，最高到顶（跟「展开到顶」一样高），图大一次到位 */
+.sheet.sheet-tall { max-height: calc(100vh - env(safe-area-inset-top, 0px) - 8px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 8px); }
 /* 大图这一块按图的比例先占好位置（JS 写 aspect-ratio），最高 56% 屏高；
    底下垫着网格里已经下好的小图，大图下好、解码完淡入盖上；两张图一样大、一样摆法，换的时候不挪 */
 .imgbox { position: relative; width: 100%; max-height: 56vh; max-height: 56dvh; border-radius: 18px; overflow: hidden; background: var(--seg); }

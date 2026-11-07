@@ -2,7 +2,8 @@
    打开时是「半高」：内容多高面板就多高，最高 86%。手指在面板上往上推，面板跟着手指长高，
    松手按速度和距离决定：展开到顶（顶上只留状态栏）或者弹回半高；展开以后滚到最上面再往下拉，收回半高。
    半高时滚到最上面再往下拉：面板整个跟着手指往下走、遮罩跟着变淡，松手按速度和距离决定关掉还是弹回去。
-   固定高度的面板（图片页看大图，.sheet-fixed）不往上推展开：往上滑直接滚里面，往下拉就是关。
+   看大图的面板（.sheet-tall）一打开就是内容的高度、最高到顶，没有「往上推展开」这一步：往上滑直接滚里面，往下拉就是关；
+   内容后来变了（拉完全文、点⭐多一行字）面板要变高变矮时，从原来的高度弹过去，不一下跳。
    电脑上在面板里往下滚滚轮，也会先展开到顶。
    跟手的规矩照 apple-design：拖的时候 1:1 跟着、拖过头越拉越紧（橡皮筋）、松手用手指的速度接一个弹簧，
    中途能一把抓住；系统开了「减少动态」就不弹，直接到位。 */
@@ -33,8 +34,8 @@
     return dialog.getBoundingClientRect().height;
   }
 
-  function fixed() {
-    return dialog.classList.contains('sheet-fixed');
+  function tall() {
+    return dialog.classList.contains('sheet-tall');
   }
 
   /** 在输入框里按下去的不算拉面板：选字、挪光标不能把面板拉走 */
@@ -88,9 +89,9 @@
     dialog.style.height = '';
   }
 
-  /** 从现在的高度、带着手指的速度（px/s，正 = 变高）弹到目标 */
-  function springTo(toFull, v0) {
-    var from = height();
+  /** 从现在的高度（或给定的 fromH）、带着手指的速度（px/s，正 = 变高）弹到目标 */
+  function springTo(toFull, v0, fromH) {
+    var from = fromH == null ? height() : fromH;
     var target = measure(toFull);
     stop();
     full = toFull;
@@ -228,7 +229,7 @@
         st = null;
         return;
       }
-      if (!full && dy < 0 && !fixed()) {
+      if (!full && dy < 0 && !tall()) {
         st.mode = 'grow';
       } else if (full && dy > 0 && inner.scrollTop <= 0) {
         st.mode = 'shrink';
@@ -313,7 +314,7 @@
   }
 
   function onWheel(e) {
-    if (!full && !anim && e.deltaY > 0 && !fixed()) {
+    if (!full && !anim && e.deltaY > 0 && !tall()) {
       springTo(true, 0);
     }
   }
@@ -342,6 +343,20 @@
     },
     isFull: function () {
       return full;
+    },
+    /** 换内容（update 里重画）：面板是「内容多高就多高」的，高度变了就从原来的高度弹过去。
+        用 offsetHeight（排版高度）：刚打开那半秒面板还在缩放着出来，量外框会差几像素。
+        正在拖、正在弹、展开到顶（高度不看内容）、减少动态时直接换。 */
+    resize: function (update) {
+      if (!dialog || st || anim || dropping || full || reduce.matches) {
+        update();
+        return;
+      }
+      var from = dialog.offsetHeight;
+      update();
+      if (Math.abs(dialog.offsetHeight - from) >= 1) {
+        springTo(false, 0, from);
+      }
     }
   };
 

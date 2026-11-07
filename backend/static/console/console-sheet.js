@@ -27,7 +27,7 @@
   // =====================================================================
   // 底部面板：开 / 关
   // =====================================================================
-  /** opts.fixed：面板高度固定、不往上推展开（图片页看大图用：图晚到也不会把面板撑高） */
+  /** opts.tall：内容多高面板就多高、最高到顶，不用再往上推展开（图片页看大图用：图大，一次到位） */
   function showSheet(opts) {
     var layer = $('sheet-layer');
     if (S.closeTimer) {
@@ -36,7 +36,7 @@
     }
     layer.classList.remove('closing', 'swiped');
     layer.hidden = false;
-    $('sheet-dialog').classList.toggle('sheet-fixed', !!(opts && opts.fixed));
+    $('sheet-dialog').classList.toggle('sheet-tall', !!(opts && opts.tall));
     L.setInertForModal();
     if (Drag()) {
       Drag().reset(); // 每次打开都从半高开始
@@ -795,6 +795,14 @@
     requestClose: requestClose,
     // 往下拉关（console-sheet-drag.js）：写了一半没存就不直接关，弹回去再问一句
     isDirty: function () { return editDirty(S.sheet); },
+    // 换面板里的内容（update 里重画）：面板高度跟着变的话，从原来的高度弹过去，不一下跳
+    resize: function (update) {
+      if (Drag() && Drag().resize) {
+        Drag().resize(update);
+      } else {
+        update();
+      }
+    },
     // 图片页（console-images.js）借同一个面板看大图：自己填内容，开 / 关走这里
     show: showSheet,
     close: closeSheet
