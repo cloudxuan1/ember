@@ -452,7 +452,7 @@
       old.parentNode.replaceChild(icon('star', b.classList.contains('imgstar') ? 18 : 22, null, on), old);
     });
     if (sh && sh.mode === 'image' && sh.id === id) {
-      renderImageBody(sh);
+      Sheet().resize(function () { renderImageBody(sh); }); // 「点了⭐，留着」那一行出来 / 收走：面板高度弹过去，不跳
     }
   }
 
@@ -605,11 +605,33 @@
   // =====================================================================
   function openImage(item, opener) {
     var sh = S.sheet = {
-      mode: 'image', id: item.id, img: item, full: null, opener: opener || null, focusKeys: L.focusKeys(opener), req: 0, busy: false
+      mode: 'image', id: item.id, img: item, full: null, opener: opener || null, focusKeys: L.focusKeys(opener), req: 0, busy: false, box: null
     };
-    Sheet().show();
+    Sheet().show({ tall: true }); // 内容多高面板就多高、最高到顶；大图的位置先留好，图晚到不会把面板撑高
     renderImageSheet(sh);
     fetchFull(sh);
+  }
+
+  /** 大图那一块：一打开就按图的比例占好位置，先垫上网格里已经下好的小图，大图下好、解码完再淡入盖上去。
+      之后重画（拉完全文、点⭐）一直用这同一块：图不重新加载，也不闪。 */
+  function imageBox(sh) {
+    var job = sh.img;
+    var big = h('img', { class: 'imgbig', alt: '这张图的预览' });
+    var box = h('div', { class: 'imgbox' }, h('img', { class: 'imgph', src: imgUrl(sh.id, 'thumb'), alt: '' }), big);
+    box.style.aspectRatio = job.width && job.height ? job.width + ' / ' + job.height : '1 / 1';
+    var ready = function () {
+      box.classList.add('ready');
+    };
+    big.addEventListener('load', function () {
+      // 先在后台解码好再淡入：不然大图第一次画到屏幕上要现解码，正在滑的话会顿一下
+      if (big.decode) {
+        big.decode().then(ready, ready);
+      } else {
+        ready();
+      }
+    });
+    big.setAttribute('src', imgUrl(sh.id, 'preview')); // 取不到就一直垫着小图，不露破图标
+    return box;
   }
 
   function fetchFull(sh) {
@@ -626,7 +648,7 @@
         return;
       }
       sh.full = keepLocalStar(data.job, since);
-      renderImageSheet(sh);
+      Sheet().resize(function () { renderImageSheet(sh); }); // 完整提示词比开头那 80 字长：面板慢慢长高，不跳
     }, function (err) {
       if (S.sheet !== sh || req !== sh.req) {
         return;
@@ -668,7 +690,7 @@
     var job = sh.full || sh.img;
     var binned = !!job.trashed_at;
     L.clear(el);
-    el.appendChild(h('img', { class: 'imgbig', src: imgUrl(sh.id, 'preview'), alt: '这张图的预览' }));
+    el.appendChild(sh.box || (sh.box = imageBox(sh)));
     var facts = [job.model ? modelTag(job) : (job.model_label || 'Codex 订阅')];
     if (job.width && job.height) {
       facts.push(job.width + ' × ' + job.height);

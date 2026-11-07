@@ -27,14 +27,16 @@
   // =====================================================================
   // 底部面板：开 / 关
   // =====================================================================
-  function showSheet() {
+  /** opts.tall：内容多高面板就多高、最高到顶，不用再往上推展开（图片页看大图用：图大，一次到位） */
+  function showSheet(opts) {
     var layer = $('sheet-layer');
     if (S.closeTimer) {
       clearTimeout(S.closeTimer);
       S.closeTimer = null;
     }
-    layer.classList.remove('closing');
+    layer.classList.remove('closing', 'swiped');
     layer.hidden = false;
+    $('sheet-dialog').classList.toggle('sheet-tall', !!(opts && opts.tall));
     L.setInertForModal();
     if (Drag()) {
       Drag().reset(); // 每次打开都从半高开始
@@ -43,22 +45,25 @@
     $('sheet-dialog').focus({ preventScroll: true });
   }
 
-  function closeSheet() {
+  /** opts.swiped：手指已经把面板拉出屏幕、遮罩也跟着淡掉了，不再播收起动画，直接收尾 */
+  function closeSheet(opts) {
     var sh = S.sheet;
     if (!sh) {
       return;
     }
+    var swiped = !!(opts && opts.swiped);
     S.sheet = null;
     var layer = $('sheet-layer');
     layer.classList.add('closing');
+    layer.classList.toggle('swiped', swiped);
     S.closeTimer = setTimeout(function () {
       S.closeTimer = null;
       layer.hidden = true;
-      layer.classList.remove('closing');
+      layer.classList.remove('closing', 'swiped');
       L.clear($('sheet'));
       L.setInertForModal();
       returnFocus(sh);
-    }, 230);
+    }, swiped ? 0 : 230);
   }
 
   /** 关掉后焦点回到点开它的那张卡片 / 那一行；列表重画过就找同一条的新卡片，删掉了就找旁边那张 */
@@ -788,6 +793,16 @@
     renderSheet: renderSheet,
     startNew: startNew,
     requestClose: requestClose,
+    // 往下拉关（console-sheet-drag.js）：写了一半没存就不直接关，弹回去再问一句
+    isDirty: function () { return editDirty(S.sheet); },
+    // 换面板里的内容（update 里重画）：面板高度跟着变的话，从原来的高度弹过去，不一下跳
+    resize: function (update) {
+      if (Drag() && Drag().resize) {
+        Drag().resize(update);
+      } else {
+        update();
+      }
+    },
     // 图片页（console-images.js）借同一个面板看大图：自己填内容，开 / 关走这里
     show: showSheet,
     close: closeSheet

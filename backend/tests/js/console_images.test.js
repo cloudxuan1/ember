@@ -111,7 +111,7 @@ function load() {
   sandbox.window = sandbox;
   sandbox.EmberLib = lib;
   sandbox.EmberApp = { S, $: (id) => byId[id] };
-  sandbox.EmberSheet = { show() {}, close() { S.sheet = null; }, requestClose() { S.sheet = null; } };
+  sandbox.EmberSheet = { show() {}, close() { S.sheet = null; }, requestClose() { S.sheet = null; }, resize(update) { update(); } };
   vm.runInNewContext(SOURCE, sandbox);
 
   const env = {
