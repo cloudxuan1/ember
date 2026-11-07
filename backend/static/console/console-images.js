@@ -32,6 +32,11 @@
     stats: null, statsReq: 0, picking: false, picked: {}, busy: false
   };
   var starWrites = {}; // 同一张图串行写⭐，只把最后一次点选当目标（同记忆库）
+  // 本地每点一次⭐记一个序号。一次读（网格 / 大图）要是在这之前就发出去了，它带回来的⭐是点之前的旧样子，
+  // 不能盖掉刚点的（#41 Codex 审核：旧的读请求比⭐保存晚回来）；点完以后才发出的读照服务器的（比如小克刚改过）
+  var starSeq = 0;
+  var starMarks = {}; // 编号 → { on, seq }
+  var PICK_MAX = 100; // 一次最多勾几张：跟后端 /api/images/trash 一次收的上限一样（console.IMAGE_BATCH_MAX）
 
   function Sheet() {
     return window.EmberSheet;
@@ -108,6 +113,19 @@
     return 'g' + String(id).toLowerCase().replace(/[^a-z0-9-]/g, '');
   }
 
+  function markStar(id, on) {
+    starMarks[id] = { on: on, seq: ++starSeq };
+  }
+
+  /** 读回来的一张图：since = 发出这次读时的序号；那之后本地又点过⭐，以本地为准 */
+  function keepLocalStar(job, since) {
+    var mark = starMarks[job.id];
+    if (mark && mark.seq > since) {
+      job.starred = mark.on;
+    }
+    return job;
+  }
+
   function find(id) {
     for (var i = 0; i < G.items.length; i++) {
       if (G.items[i].id === id) {
@@ -115,11 +133,6 @@
       }
     }
     return null;
-  }
-
-  function sheetJob(id) {
-    var sh = S.sheet;
-    return sh && sh.mode === 'image' && sh.id === id ? (sh.full || sh.img) : null;
   }
 
   function imgUrl(id, kind) {
@@ -151,12 +164,14 @@
   function loadGrid(more) {
     var page = more ? G.page + 1 : 1;
     var req = ++G.req;
+    var since = starSeq;
     G.loading = true;
     $('img-list').setAttribute('aria-busy', 'true');
     return api('GET', '/api/images' + L.qs({ view: G.view, page: page, page_size: PAGE_SIZE })).then(function (data) {
       if (req !== G.req) {
         return;
       }
+      data.items.forEach(function (it) { keepLocalStar(it, since); });
       G.loading = false;
       G.loaded = true;
       G.err = '';
@@ -374,6 +389,9 @@
     }
     if (G.picked[id]) {
       delete G.picked[id];
+    } else if (Object.keys(G.picked).length >= PICK_MAX) {
+      toast('一次最多选 ' + PICK_MAX + ' 张，先放进回收站再接着选');
+      return;
     } else {
       G.picked[id] = true;
     }
@@ -387,12 +405,7 @@
   // =====================================================================
   // ⭐（网格和大图面板共用）
   // =====================================================================
-  function starredNow(id) {
-    var item = find(id) || sheetJob(id);
-    return !!(item && item.starred);
-  }
-
-  /** cls = 'imgstar'（网格：小玻璃圆）或 'starbtn shead-star'（面板顶上） */
+  /** cls = 'imgstar'（网格：小玻璃圆）或 'starbtn shead-star'（面板顶上）。点一下 = 把看得见的这颗翻过来 */
   function starBtn(item, cls) {
     var on = !!item.starred;
     var face = cls === 'imgstar';
@@ -403,7 +416,10 @@
       'data-imgstar': item.id,
       'aria-pressed': on ? 'true' : 'false',
       'aria-label': '收藏这张图',
-      onclick: function (e) { setStar(item.id, !starredNow(item.id), e.currentTarget); }
+      onclick: function (e) {
+        var b = e.currentTarget;
+        setStar(item.id, b.getAttribute('aria-pressed') !== 'true', b);
+      }
     }, face ? h('span', { class: 'starface' }, ico) : ico);
   }
 
@@ -451,6 +467,7 @@
       loadStats();
     }, function (err) {
       delete starWrites[id];
+      markStar(id, write.saved);
       paintStar(id, write.saved);
       toast(err.message); // 比如刚被小克放进回收站：回收站里的不能点⭐
       reload();
@@ -464,6 +481,7 @@
       write = starWrites[id] = { saved: !on, wanted: on, busy: false };
     }
     write.wanted = on;
+    markStar(id, on);
     paintStar(id, on);
     if (on && btn && document.contains(btn)) {
       btn.classList.add('star-pop');
@@ -591,6 +609,7 @@
 
   function fetchFull(sh) {
     var req = ++sh.req;
+    var since = starSeq;
     api('GET', '/api/images/' + encodeURIComponent(sh.id)).then(function (data) {
       if (S.sheet !== sh || req !== sh.req) {
         return;
@@ -601,10 +620,7 @@
         reload();
         return;
       }
-      if (starWrites[sh.id]) {
-        data.job.starred = starWrites[sh.id].wanted; // 正在写⭐：以这边刚点的为准
-      }
-      sh.full = data.job;
+      sh.full = keepLocalStar(data.job, since);
       renderImageSheet(sh);
     }, function (err) {
       if (S.sheet !== sh || req !== sh.req) {
