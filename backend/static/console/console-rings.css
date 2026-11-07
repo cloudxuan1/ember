@@ -123,6 +123,10 @@
 /* ---------- 面板往上推：展开到顶（顶上只留状态栏 + 8px）；拖着 / 弹着的时候高度由 JS 一帧一帧给 ---------- */
 .sheet.sheet-full { height: calc(100vh - env(safe-area-inset-top, 0px) - 8px); height: calc(100dvh - env(safe-area-inset-top, 0px) - 8px); max-height: none; }
 .sheet.sheet-dragging { max-height: none; }
+/* 往下拉关：面板跟着手指往下挪（JS 写 translate，跟打开动画的 transform 互不打架） */
+.sheet.sheet-swiping { will-change: translate; }
+/* 已经被手指拉出屏幕、遮罩也淡没了：不再播收起动画 */
+.layer.closing.swiped .sheet, .layer.closing.swiped .scrim { animation: none; }
 
 @keyframes starPop { 0% { transform: scale(.55); } 60% { transform: scale(1.18); } 100% { transform: none; } }
 @keyframes ringSpot { 0% { background-color: transparent; } 15%, 45% { background-color: var(--accent-soft); } 100% { background-color: transparent; } }
