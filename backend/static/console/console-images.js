@@ -605,11 +605,33 @@
   // =====================================================================
   function openImage(item, opener) {
     var sh = S.sheet = {
-      mode: 'image', id: item.id, img: item, full: null, opener: opener || null, focusKeys: L.focusKeys(opener), req: 0, busy: false
+      mode: 'image', id: item.id, img: item, full: null, opener: opener || null, focusKeys: L.focusKeys(opener), req: 0, busy: false, box: null
     };
-    Sheet().show();
+    Sheet().show({ fixed: true }); // 面板一打开就是固定高度，图晚到也不会把面板撑高
     renderImageSheet(sh);
     fetchFull(sh);
+  }
+
+  /** 大图那一块：一打开就按图的比例占好位置，先垫上网格里已经下好的小图，大图下好、解码完再淡入盖上去。
+      之后重画（拉完全文、点⭐）一直用这同一块：图不重新加载，也不闪。 */
+  function imageBox(sh) {
+    var job = sh.img;
+    var big = h('img', { class: 'imgbig', alt: '这张图的预览' });
+    var box = h('div', { class: 'imgbox' }, h('img', { class: 'imgph', src: imgUrl(sh.id, 'thumb'), alt: '' }), big);
+    box.style.aspectRatio = job.width && job.height ? job.width + ' / ' + job.height : '1 / 1';
+    var ready = function () {
+      box.classList.add('ready');
+    };
+    big.addEventListener('load', function () {
+      // 先在后台解码好再淡入：不然大图第一次画到屏幕上要现解码，正在滑的话会顿一下
+      if (big.decode) {
+        big.decode().then(ready, ready);
+      } else {
+        ready();
+      }
+    });
+    big.setAttribute('src', imgUrl(sh.id, 'preview')); // 取不到就一直垫着小图，不露破图标
+    return box;
   }
 
   function fetchFull(sh) {
@@ -668,7 +690,7 @@
     var job = sh.full || sh.img;
     var binned = !!job.trashed_at;
     L.clear(el);
-    el.appendChild(h('img', { class: 'imgbig', src: imgUrl(sh.id, 'preview'), alt: '这张图的预览' }));
+    el.appendChild(sh.box || (sh.box = imageBox(sh)));
     var facts = [job.model ? modelTag(job) : (job.model_label || 'Codex 订阅')];
     if (job.width && job.height) {
       facts.push(job.width + ' × ' + job.height);

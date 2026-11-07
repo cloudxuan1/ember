@@ -27,7 +27,8 @@
   // =====================================================================
   // 底部面板：开 / 关
   // =====================================================================
-  function showSheet() {
+  /** opts.fixed：面板高度固定、不往上推展开（图片页看大图用：图晚到也不会把面板撑高） */
+  function showSheet(opts) {
     var layer = $('sheet-layer');
     if (S.closeTimer) {
       clearTimeout(S.closeTimer);
@@ -35,6 +36,7 @@
     }
     layer.classList.remove('closing');
     layer.hidden = false;
+    $('sheet-dialog').classList.toggle('sheet-fixed', !!(opts && opts.fixed));
     L.setInertForModal();
     if (Drag()) {
       Drag().reset(); // 每次打开都从半高开始
