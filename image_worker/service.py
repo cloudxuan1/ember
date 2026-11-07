@@ -2,23 +2,62 @@ import asyncio
 from contextlib import asynccontextmanager
 import fcntl
 import hmac
+import io
+import logging
 import os
 from pathlib import Path
 import threading
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, Response
+from PIL import Image
+from pydantic import BaseModel, Field, StrictBool
 
 from image_worker.models import OPTION_NAMES
 from image_worker.openrouter import OpenRouterRunner
 from image_worker.runner import CodexRunner, GenerationError
-from image_worker.store import Conflict, QueueFull, Store
+from image_worker.store import Conflict, QueueFull, Refused, Store
 
 
 WAIT_LIMIT = 50  # image_status may hold one request this long (60 hit the MCP client's 60 s timeout); the backend's HTTP timeout sits above it.
 MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
+HOUSEKEEPING_SECONDS = 60 * 60  # how often the recycle bin's 30 days are checked (also once at startup)
+THUMB_SIDE = 480  # long side of a web page grid thumbnail, made from the preview
+
+
+def thumbnail(path):
+    """A small JPEG for the web page's grid. Made from the preview (≤1024 px), never from the original."""
+    with Image.open(path) as source:
+        source.draft("RGB", (THUMB_SIDE, THUMB_SIDE))  # a JPEG decodes straight at a reduced scale
+        if "A" in source.getbands():  # old PNG previews may have alpha; JPEG has none
+            rgba = source.convert("RGBA")
+            image = Image.new("RGB", rgba.size, "white")
+            image.paste(rgba, mask=rgba.getchannel("A"))
+        else:
+            image = source.convert("RGB")
+    image.thumbnail((THUMB_SIDE, THUMB_SIDE))
+    data = io.BytesIO()
+    image.save(data, format="JPEG", quality=80, optimize=True)
+    return data.getvalue()
+
+
+class StarBody(BaseModel):
+    starred: StrictBool
+
+
+class TrashBody(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class EmptyBody(BaseModel):
+    until: str = Field(min_length=1, max_length=64)
+
+
+def refusal(error):
+    """A Refused gallery action as HTTP: 404 for an unknown id, 409 otherwise, with a machine code and the reason."""
+    return HTTPException(status_code=404 if error.code == "not_found" else 409,
+                         detail={"code": error.code, "message": str(error)})
 
 
 class Submission(BaseModel):
@@ -60,6 +99,17 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
                 # No traceback containing prompts, model output, or authentication data.
                 store.finish(job["id"], error="generation_failed")
 
+    def housekeeping():
+        # The recycle bin: purge what has been in it for 30 days, retry file removals that failed. At startup, then hourly.
+        while True:
+            try:
+                store.purge_expired()
+                store.sweep_purged()
+            except Exception:
+                logging.getLogger(__name__).warning("Recycle bin cleanup deferred to the next round")
+            if stop.wait(HOUSEKEEPING_SECONDS):
+                return
+
     @asynccontextmanager
     async def lifespan(_):
         if len(token) < 32:
@@ -68,14 +118,17 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         store.recover()
         thread = threading.Thread(target=loop, name="image-queue", daemon=True)
+        cleaner = threading.Thread(target=housekeeping, name="image-trash", daemon=True)
         if run_queue:
             thread.start()
+            cleaner.start()
         try:
             yield
         finally:
             stop.set()
             if run_queue:
                 thread.join(timeout=12)
+                cleaner.join(timeout=12)
             lock.close()
 
     app = FastAPI(title="ember image worker", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -122,11 +175,12 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
                 return {"job": job}
             await asyncio.sleep(0.25)
 
-    @app.get("/jobs/{job_id}/image", dependencies=[Depends(authorize)])
-    def image(job_id: str, preview: bool = False):
+    def served_file(job_id, preview):
         job = store.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="找不到这个画图任务。")
+        if job.get("purged_at"):
+            raise HTTPException(status_code=410, detail="这张图已经彻底删除了，原图和预览都没了。")
         if job["status"] != "succeeded":
             raise HTTPException(status_code=409, detail="图片还没准备好，请先查任务进度。")
         try:
@@ -135,6 +189,71 @@ def create_app(store=None, runner=None, token=None, run_queue=True, openrouter=N
             raise HTTPException(status_code=404, detail="找不到图片。") from None
         if not path.is_file():
             raise HTTPException(status_code=404, detail="图片文件不存在。")
+        return path
+
+    @app.get("/jobs/{job_id}/image", dependencies=[Depends(authorize)])
+    def image(job_id: str, preview: bool = False):
+        path = served_file(job_id, preview)
         return FileResponse(path, media_type=MEDIA_TYPES[path.suffix], headers={"Cache-Control": "private, no-store"})
+
+    # ---------- Gallery: the web page's grid and 小克's list / ⭐ / recycle bin ----------
+    thumbs = threading.BoundedSemaphore(2)  # decoding is the only heavy part; keep memory flat under a full grid
+
+    @app.get("/jobs/{job_id}/thumb", dependencies=[Depends(authorize)])
+    def thumb(job_id: str):
+        path = served_file(job_id, preview=True)
+        try:
+            with thumbs:
+                data = thumbnail(path)
+        except (OSError, ValueError, Image.DecompressionBombError):
+            raise HTTPException(status_code=404, detail="预览图读不出来。") from None
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
+
+    @app.get("/gallery", dependencies=[Depends(authorize)])
+    def gallery(page: int = 1, page_size: int = 20, starred: bool | None = None, trash: bool = False,
+                date_from: str = "", date_to: str = ""):
+        try:
+            return store.gallery(page, page_size, starred, trash, date_from, date_to)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+
+    @app.get("/gallery/stats", dependencies=[Depends(authorize)])
+    def gallery_stats():
+        return store.gallery_stats()
+
+    @app.post("/gallery/trash", dependencies=[Depends(authorize)])
+    def trash(body: TrashBody):
+        results = store.trash(body.ids)
+        return {"results": results, "trashed": sum(result.get("status") == "trashed" for result in results)}
+
+    @app.post("/gallery/empty", dependencies=[Depends(authorize)])
+    def empty(body: EmptyBody):
+        try:
+            return store.empty_trash(body.until)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+
+    @app.post("/jobs/{job_id}/star", dependencies=[Depends(authorize)])
+    def star(job_id: str, body: StarBody):
+        try:
+            return {"job": store.set_star(job_id, body.starred)}
+        except Refused as error:
+            raise refusal(error) from None
+
+    @app.post("/jobs/{job_id}/restore", dependencies=[Depends(authorize)])
+    def restore(job_id: str):
+        try:
+            job, changed = store.restore(job_id)
+        except Refused as error:
+            raise refusal(error) from None
+        return {"job": job, "restored": changed}
+
+    @app.post("/jobs/{job_id}/purge", dependencies=[Depends(authorize)])
+    def purge(job_id: str):
+        try:
+            job, changed = store.purge(job_id)
+        except Refused as error:
+            raise refusal(error) from None
+        return {"job": job, "purged": changed}
 
     return app

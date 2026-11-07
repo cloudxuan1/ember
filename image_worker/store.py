@@ -1,12 +1,13 @@
 """Durable FIFO and idempotency; unrelated to Ember's memory database."""
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import re
 import sqlite3
 import uuid
 
@@ -35,14 +36,64 @@ ERRORS = {
 # An original is PNG, unless the caller asked OpenRouter for jpeg / webp output (the extension says which).
 ORIGINAL_SUFFIXES = (".png", ".jpg", ".webp")
 # Columns added after the first release; existing rows read as Codex subscription jobs.
+# starred / trashed_at / purged_at (the gallery): existing rows read as kept, not starred, not in the recycle bin.
 ADDED_COLUMNS = {
     "model": "TEXT", "reference_job_ids": "TEXT", "cost_usd": "REAL",
     "key_limit_remaining_usd": "REAL", "error_detail": "TEXT",
+    "starred": "INTEGER NOT NULL DEFAULT 0", "trashed_at": "TEXT", "purged_at": "TEXT",
+}
+TRASH_DAYS = 30  # A trashed image is purged after this many days. Fixed on purpose: there is no setting for it.
+GALLERY_PAGE_MAX = 100
+# Days in listings are Beijing days (the memory library's convention); timestamps are stored in UTC.
+BEIJING = timezone(timedelta(hours=8))
+# Why a gallery action was refused. Neutral wording: the web page shows these to 轩 as they are.
+REFUSALS = {
+    "not_found": "找不到这张图，编号不对。",
+    "no_image": "这个任务没有画好的图（还在排队、正在画，或者没画成）。",
+    "starred": "这张点了⭐，不能删；要删先取消⭐。",
+    "in_use": "这张正被排队 / 正在画的任务当参考图，那张画完才能删。",
+    "trashed": "这张在回收站里，不能点⭐；先恢复再点。",
+    "not_in_trash": "这张不在回收站里了（可能刚被恢复），没有彻底删。",
+    "purged": "这张已经彻底删除了，原图和预览都没了。",
 }
 
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def stamp(moment):
+    """A UTC timestamp in now()'s exact format, so stored times compare correctly as text."""
+    return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def purge_time(trashed_at):
+    """When an image trashed at this time is purged automatically."""
+    return stamp(datetime.fromisoformat(trashed_at) + timedelta(days=TRASH_DAYS))
+
+
+def day_bound(value, end=False):
+    """'2026-11-07' / '2026-11' / '2026' (a Beijing day / month / year) → the UTC timestamp where it starts,
+    or with end=True where the next one starts. Empty → None."""
+    value = str(value or "").strip()
+    if not value:
+        return None
+    match = re.fullmatch(r"(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?", value)
+    if not match:
+        raise ValueError(f"日期「{value[:20]}」看不懂：写成 2026-11-07，或只写到月 2026-11、到年 2026（北京时间）。")
+    year, month, day = int(match[1]), int(match[2] or 1), int(match[3] or 1)
+    try:
+        start = datetime(year, month, day, tzinfo=BEIJING)
+    except ValueError:
+        raise ValueError(f"没有 {value} 这个日子。") from None
+    if end:
+        if match[3]:
+            start += timedelta(days=1)
+        elif match[2]:
+            start = datetime(year + month // 12, month % 12 + 1, 1, tzinfo=BEIJING)
+        else:
+            start = datetime(year + 1, 1, 1, tzinfo=BEIJING)
+    return stamp(start)
 
 
 class QueueFull(ValueError):
@@ -51,6 +102,14 @@ class QueueFull(ValueError):
 
 class Conflict(ValueError):
     pass
+
+
+class Refused(ValueError):
+    """A gallery action the image's state does not allow right now (⭐, in use as a reference, already purged…)."""
+
+    def __init__(self, code, message=None):
+        super().__init__(message or REFUSALS[code])
+        self.code = code
 
 
 class Store:
@@ -168,7 +227,12 @@ class Store:
                 else:
                     new.append(i)
             for reference in references if new else ():
-                row = conn.execute("SELECT status FROM jobs WHERE id=?", (reference,)).fetchone()
+                row = conn.execute("SELECT status, trashed_at, purged_at FROM jobs WHERE id=?", (reference,)).fetchone()
+                # A trashed reference could be purged while its job waits in the queue; a purged one has no original.
+                if row and row["purged_at"]:
+                    raise ValueError("参考图 " + reference + " 已经彻底删除了，原图没了；换一张还在的图当参考。")
+                if row and row["trashed_at"]:
+                    raise ValueError("参考图 " + reference + " 在回收站里；要用它，先请轩在网页「图片 → 回收站」里恢复。")
                 if not row or row["status"] != "succeeded" or not self.original_file(reference).is_file():
                     raise ValueError("参考图 " + reference + " 不是已画好的图，请用 image_status 里成功任务的 id。")
             for i in list(new):
@@ -270,6 +334,12 @@ class Store:
         for field in ("cost_usd", "key_limit_remaining_usd"):
             if row[field] is not None:
                 out[field] = row[field]
+        out["starred"] = bool(row["starred"])
+        if row["purged_at"]:  # files gone; the record stays
+            out["purged_at"] = row["purged_at"]
+        elif row["trashed_at"]:
+            out["trashed_at"] = row["trashed_at"]
+            out["purge_at"] = purge_time(row["trashed_at"])
         if row["status"] == "queued":
             out["queue_position"] = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='queued' AND seq<=?", (row["seq"],)).fetchone()[0]
         if row["error_code"]:
@@ -339,4 +409,214 @@ class Store:
         path = self.image_path(job_id, preview=True)
         legacy = path.with_name(path.name.replace(".preview.jpg", ".preview.png"))
         return path if path.is_file() or not legacy.is_file() else legacy
+
+    # ---------- Gallery: ⭐, the recycle bin, listing ----------
+    # Every change re-reads the row inside BEGIN IMMEDIATE, so a stale page or a second caller (the web page and
+    # 小克 at the same time) gets a refusal instead of undoing what the other just did.
+
+    def image_files(self, job_id):
+        """Every file an image can have (original in any format, JPEG or old PNG preview); most never exist."""
+        original = self.image_path(job_id)
+        preview = self.image_path(job_id, preview=True)
+        return [original.with_suffix(s) for s in ORIGINAL_SUFFIXES] + [preview, preview.with_suffix(".png")]
+
+    def disk_bytes(self, job_id):
+        total = 0
+        for path in self.image_files(job_id):
+            try:
+                total += path.stat().st_size
+            except FileNotFoundError:
+                pass
+        return total
+
+    def remove_files(self, job_id):
+        """Delete a purged image's original and preview. The row already says purged, so nothing lists or serves
+        them; a failure leaves them for the next sweep (sweep_purged) instead of stopping anything."""
+        for path in self.image_files(job_id):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logging.getLogger(__name__).warning("Image file removal deferred until the next cleanup")
+                return False
+        return True
+
+    @staticmethod
+    def in_use(conn):
+        """Images a queued or running job will still read as references: never trashed or purged."""
+        used = set()
+        for row in conn.execute("SELECT reference_job_ids FROM jobs WHERE status IN ('queued','running') AND reference_job_ids IS NOT NULL"):
+            used.update(json.loads(row["reference_job_ids"]))
+        return used
+
+    @staticmethod
+    def image_row(conn, job_id):
+        """The row of a finished image that still has its files, or Refused."""
+        try:
+            known = str(uuid.UUID(job_id)) == job_id
+        except (ValueError, TypeError, AttributeError):
+            known = False
+        row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone() if known else None
+        if not row:
+            raise Refused("not_found")
+        if row["purged_at"]:
+            raise Refused("purged")
+        if row["status"] != "succeeded":
+            raise Refused("no_image")
+        return row
+
+    def reread(self, conn, job_id):
+        return self.public(conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone(), conn)
+
+    def set_star(self, job_id, starred):
+        """⭐ an image (starred images cannot be trashed) or take the ⭐ away."""
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = self.image_row(conn, job_id)
+            if starred and row["trashed_at"]:
+                raise Refused("trashed")
+            conn.execute("UPDATE jobs SET starred=? WHERE id=?", (1 if starred else 0, job_id))
+            return self.reread(conn, job_id)
+
+    def trash(self, ids):
+        """Move images into the recycle bin; their files stay until purged. One result per id, in order:
+        {"id", "ok": True, "status": "trashed" | "already", "job"} or {"id", "ok": False, "code", "message"}."""
+        results = []
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            used = self.in_use(conn)
+            moment = now()
+            for job_id in ids:
+                try:
+                    row = self.image_row(conn, job_id)
+                    if row["trashed_at"]:
+                        results.append({"id": job_id, "ok": True, "status": "already", "job": self.public(row, conn)})
+                        continue
+                    if row["starred"]:
+                        raise Refused("starred")
+                    if job_id in used:
+                        raise Refused("in_use")
+                    conn.execute("UPDATE jobs SET trashed_at=? WHERE id=?", (moment, job_id))
+                    results.append({"id": job_id, "ok": True, "status": "trashed", "job": self.reread(conn, job_id)})
+                except Refused as refused:
+                    results.append({"id": job_id, "ok": False, "code": refused.code, "message": str(refused)})
+        return results
+
+    def restore(self, job_id):
+        """Take an image out of the recycle bin: (job, whether it was in there)."""
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = self.image_row(conn, job_id)
+            if not row["trashed_at"]:
+                return self.public(row, conn), False
+            conn.execute("UPDATE jobs SET trashed_at=NULL WHERE id=?", (job_id,))
+            return self.reread(conn, job_id), True
+
+    def mark_purged(self, conn, where, args=()):
+        """Mark trashed images matching `where` purged (never one a queued / running job still needs) → their ids."""
+        used = self.in_use(conn)
+        rows = conn.execute(f"SELECT id FROM jobs WHERE trashed_at IS NOT NULL AND purged_at IS NULL AND starred=0 AND {where}", args)
+        ids = [row["id"] for row in rows if row["id"] not in used]
+        moment = now()
+        conn.executemany("UPDATE jobs SET purged_at=? WHERE id=?", [(moment, job_id) for job_id in ids])
+        return ids
+
+    def purge(self, job_id):
+        """Permanently delete one image from the recycle bin: original and preview files go, the job row stays
+        (purged_at), so its id still answers. (job, whether it was purged just now)."""
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self.image_row(conn, job_id)
+            except Refused as refused:
+                if refused.code == "purged":
+                    return self.reread(conn, job_id), False
+                raise
+            if not row["trashed_at"]:
+                raise Refused("not_in_trash")
+            if not self.mark_purged(conn, "id=?", (job_id,)):
+                raise Refused("in_use")
+            job = self.reread(conn, job_id)
+        self.remove_files(job_id)
+        return job, True
+
+    def empty_trash(self, until):
+        """Purge what was in the recycle bin when 轩 confirmed: everything trashed at or before `until` (the newest
+        trashed_at her page showed). Something trashed after that, e.g. by 小克 while the dialog was open, stays."""
+        try:
+            moment = datetime.fromisoformat(str(until))
+            if moment.tzinfo is None:
+                raise ValueError("no timezone")
+        except (ValueError, TypeError):
+            raise ValueError("清空回收站要带上页面看到的最后一张的时间（until）。") from None
+        cutoff = stamp(moment)
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            ids = self.mark_purged(conn, "trashed_at<=?", (cutoff,))
+            left = conn.execute("SELECT COUNT(*) FROM jobs WHERE trashed_at IS NOT NULL AND purged_at IS NULL").fetchone()[0]
+        for job_id in ids:
+            self.remove_files(job_id)
+        return {"purged": len(ids), "left": left}
+
+    def purge_expired(self, moment=None):
+        """Purge images that have been in the recycle bin for TRASH_DAYS days. Returns how many."""
+        cutoff = stamp((moment or datetime.now(timezone.utc)) - timedelta(days=TRASH_DAYS))
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            ids = self.mark_purged(conn, "trashed_at<=?", (cutoff,))
+        for job_id in ids:
+            self.remove_files(job_id)
+        return len(ids)
+
+    def sweep_purged(self):
+        """Retry removing files of purged images whose deletion failed before."""
+        with self.connection() as conn:
+            ids = [row["id"] for row in conn.execute("SELECT id FROM jobs WHERE purged_at IS NOT NULL")]
+        for job_id in ids:
+            self.remove_files(job_id)
+
+    def gallery(self, page=1, page_size=20, starred=None, trash=False, date_from="", date_to=""):
+        """Finished images that still have their files, newest first: kept ones, or (trash=True) the recycle bin,
+        most recently trashed first. starred None = both; dates are Beijing days on created_at, both ends included."""
+        page, page_size = max(1, int(page)), max(1, min(int(page_size), GALLERY_PAGE_MAX))
+        where = ["status='succeeded'", "purged_at IS NULL", "trashed_at IS NOT NULL" if trash else "trashed_at IS NULL"]
+        args = []
+        if starred is not None:
+            where.append("starred=?")
+            args.append(1 if starred else 0)
+        start, end = day_bound(date_from), day_bound(date_to, end=True)
+        if start and end and start >= end:
+            raise ValueError("date_from 不能晚于 date_to。")
+        if start:
+            where.append("created_at>=?")
+            args.append(start)
+        if end:
+            where.append("created_at<?")
+            args.append(end)
+        clause = " AND ".join(where)
+        order = "trashed_at DESC, seq DESC" if trash else "seq DESC"
+        with self.connection() as conn:
+            conn.execute("BEGIN")  # one snapshot: total and items agree
+            total = conn.execute(f"SELECT COUNT(*) FROM jobs WHERE {clause}", args).fetchone()[0]
+            rows = conn.execute(f"SELECT * FROM jobs WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
+                                [*args, page_size, (page - 1) * page_size]).fetchall()
+            items = [self.public(row, conn) for row in rows]
+        return {"items": items, "total": total, "page": page, "page_size": page_size,
+                "has_more": page * page_size < total}
+
+    def gallery_stats(self):
+        """How many images, and how much disk their files take (measured), kept vs. in the recycle bin.
+        trash.latest is the newest trashed_at: emptying the bin purges up to it and no further."""
+        with self.connection() as conn:
+            rows = conn.execute("SELECT id, starred, trashed_at FROM jobs WHERE status='succeeded' AND purged_at IS NULL").fetchall()
+        kept = {"count": 0, "bytes": 0, "starred": 0}
+        trash = {"count": 0, "bytes": 0, "latest": None}
+        for row in rows:
+            part = trash if row["trashed_at"] else kept
+            part["count"] += 1
+            part["bytes"] += self.disk_bytes(row["id"])
+            if row["trashed_at"]:
+                trash["latest"] = max(trash["latest"] or "", row["trashed_at"])
+            elif row["starred"]:
+                kept["starred"] += 1
+        return {"kept": kept, "trash": trash, "trash_days": TRASH_DAYS}
 
