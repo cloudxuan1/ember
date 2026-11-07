@@ -787,6 +787,9 @@
     fetchDetail: fetchDetail,
     renderSheet: renderSheet,
     startNew: startNew,
-    requestClose: requestClose
+    requestClose: requestClose,
+    // 图片页（console-images.js）借同一个面板看大图：自己填内容，开 / 关走这里
+    show: showSheet,
+    close: closeSheet
   };
 })();

@@ -1,0 +1,82 @@
+/* ember 记忆库网页 · 图片页（#41）：生图画好的图——两列网格、⭐、勾选放进回收站、回收站、点开看大图。
+   样子照轩挑定的预览（两列卡片；型号是图右下角的半透明小牌子，跟⭐一个样子，型号写在前面）。
+   颜色一律走 console.css / console-rings.css 的配色变量，四套配色都能用。 */
+
+/* ---------- 顶上：全部 / ⭐ / 回收站 + 选择（跟记忆库的月份按钮同一排样子） ---------- */
+.imgchips .chip-t { display: inline-flex; align-items: center; gap: 5px; }
+.chip-n { font-size: 12px; font-weight: 650; opacity: .7; font-variant-numeric: tabular-nums; }
+.chip-sel .chip-n { opacity: .85; }
+.chip-act { margin-left: auto; }
+.imgsum { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 20px 10px; font-size: 13px; color: var(--ink2); }
+.imgsum-t { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.imgsum .btn-danger { height: 36px; padding: 0 14px; font-size: 13px; }
+
+/* ---------- 网格：两列实心卡片 ---------- */
+/* 底下多垫 44px：滚到最底时最后一排不躲在 tab 栏 / 勾选条底下（同记忆库的 .listpad） */
+.imglist { padding: 0 16px 44px; transition: opacity .2s ease; }
+.imglist[aria-busy="true"] { opacity: .55; }
+.imggrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.imgcard { position: relative; display: flex; flex-direction: column; min-width: 0; padding: 6px; border-radius: var(--r-card); background: var(--card); border: 1px solid var(--card-edge); box-shadow: var(--card-shadow); transition: transform .45s cubic-bezier(.34, 1.56, .64, 1), opacity .2s ease; }
+.imgcard:has(> .imgopen:active) { transform: scale(.97); transition: transform .08s ease-out; }
+/* 一个透明按钮铺满卡（点开 / 勾选），⭐ 浮在它上面单独点 */
+.imgopen { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; border-radius: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+.imgopen:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.imgthumb { position: relative; aspect-ratio: 1; border-radius: calc(var(--r-card) - 6px); overflow: hidden; background: var(--seg); }
+.imgthumb img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .3s cubic-bezier(.34, 1.4, .64, 1); }
+.imgcap { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 6px 4px; }
+.imgmeta { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.imgdate { flex: none; font-size: 12px; font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; }
+.imgprompt { font-size: 13px; line-height: 1.45; color: var(--ink2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* ⭐ 浮在图的右上角：看着 32px 的小玻璃圆，手指能点的是 44px */
+.imgstar { position: absolute; top: 6px; right: 6px; z-index: 2; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--ink2); }
+.imgstar:focus-visible { outline-offset: -4px; border-radius: 50%; }
+.starface { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--glass-strong); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); box-shadow: 0 2px 8px rgba(0, 0, 0, .14); }
+.imgstar.star-on { color: var(--star); }
+
+/* 哪个模型画的：图右下角的半透明小牌子，跟右上角⭐一个样子；型号写在前面（2.6 Sunburst），JS 里排 */
+.imgmodel { position: absolute; right: 12px; bottom: 12px; z-index: 2; max-width: calc(100% - 24px); box-sizing: border-box; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 650; color: var(--ink); background: var(--glass-strong); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); box-shadow: 0 2px 8px rgba(0, 0, 0, .14); }
+
+/* ---------- 勾选：左上角一个圈，勾上了变实心打勾；点了⭐的变淡、勾不上 ---------- */
+.imgpick { position: absolute; top: 12px; left: 12px; z-index: 2; width: 26px; height: 26px; box-sizing: border-box; border-radius: 50%; border: 2px solid #FFFFFF; background: rgba(0, 0, 0, .16); box-shadow: 0 1px 4px rgba(0, 0, 0, .28); display: flex; align-items: center; justify-content: center; color: #FFFFFF; }
+.imgpick .ico { opacity: 0; stroke-width: 3; }
+.imgcard.picked .imgpick { background: var(--accent); }
+.imgcard.picked .imgpick .ico { opacity: 1; }
+.imgcard.picked .imgthumb { box-shadow: inset 0 0 0 3px var(--accent); }
+.imgcard.picked .imgthumb img { transform: scale(.94); border-radius: 12px; }
+.imgcard.kept { opacity: .45; }
+.keptbadge { position: absolute; top: 12px; left: 12px; z-index: 2; display: inline-flex; align-items: center; gap: 3px; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 650; background: var(--glass-strong); color: var(--ink); }
+.keptbadge .ico { color: var(--star); }
+
+/* 勾选时底部换成这一条（顶替 tab 栏的位置）：已选几张 + 放进回收站 */
+.selbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom)); width: calc(100% - 32px); max-width: 400px; box-sizing: border-box; z-index: 30; display: flex; align-items: center; gap: 10px; padding: 7px 7px 7px 22px; border-radius: 999px; }
+.selbar-t { flex: 1; min-width: 0; font-size: 15px; font-weight: 650; color: var(--ink); }
+.selbar .btn-danger { height: 50px; padding: 0 22px; font-size: 15px; }
+
+/* ---------- 回收站：图左上角写还剩几天（右下角是型号） ---------- */
+.imgleft { position: absolute; left: 8px; top: 8px; z-index: 2; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 650; background: var(--glass-strong); color: var(--ink); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); font-variant-numeric: tabular-nums; }
+.imgleft-soon { color: var(--danger); }
+.imgcard.binned .imgthumb img { filter: saturate(.55); }
+
+/* 图上的小牌子（型号、还剩几天、留着、勾选圈）只是看的：点它们等于点这张图 */
+.imgmodel, .imgleft, .keptbadge, .imgpick { pointer-events: none; }
+
+/* ---------- 点开看大图（借记忆库的底部面板） ---------- */
+.imgbig { display: block; width: 100%; max-height: 56vh; max-height: 56dvh; object-fit: contain; border-radius: 18px; background: var(--seg); }
+.imgfacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.imgnote { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; border-radius: 14px; background: var(--seg); font-size: 13px; line-height: 1.5; color: var(--ink2); }
+.imgnote .ico { flex: none; color: var(--ink3); }
+.imgnote-star .ico { color: var(--star); }
+.imgbtns { margin-top: 14px; }
+/* 「看原图」是链接：链接默认 content-box，width:100% 再加左右内边距会伸进旁边「删除」底下 */
+.imgbtns a { box-sizing: border-box; text-decoration: none; }
+.imgptitle { display: block; margin: 18px 2px 6px; font-size: 13px; font-weight: 650; letter-spacing: .06em; color: var(--ink2); }
+.imgptext { display: block; font-size: 15px; line-height: 1.7; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+
+@media (prefers-reduced-motion: reduce) {
+  .imgcard, .imgthumb img { transition: none; }
+  .imgcard:has(> .imgopen:active) { transform: none; opacity: .8; }
+}
+@media (prefers-contrast: more) {
+  .imgcard { border-color: var(--ink3); }
+}
