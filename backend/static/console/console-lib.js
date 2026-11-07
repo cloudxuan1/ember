@@ -107,7 +107,10 @@
     pie: ['M2.5 14.8L15.8 6c2.9.5 5.2 2.8 5.7 5.8z', 'M2.5 14.8v3.7l19-2.6v-4.1', 'M15.8 6c-.5 1.1-.2 2.2.7 2.9s2 .6 2.9.1', 'M8.6 13.9h.01M13.2 13.2h.01'],
     doc: ['M7 3.5h7l4 4v13H7zM14 3.5v4h4'],
     chat: ['M4.5 5.5h15v10h-9l-4 3.5v-3.5h-2z'],
-    tick: ['M5 12.5l4.2 4.2L19 7']
+    tick: ['M5 12.5l4.2 4.2L19 7'],
+    // 图片页（#41）：看原图（往外开）、回收站里还剩几天
+    open: ['M14 4.5h5.5V10M19.5 4.5L11 13M17 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 4 18.5v-10A1.5 1.5 0 0 1 5.5 7H10'],
+    clock: ['M12 7.5V12l3 2M20.5 12a8.5 8.5 0 1 1-17 0 8.5 8.5 0 0 1 17 0z']
   };
 
   /** icon('star', 18, 'extra-class', 实心?) */
@@ -464,7 +467,8 @@
     var alertOn = !!alertState;
     var sheetLayer = document.getElementById('sheet-layer');
     var sheetOn = sheetLayer && !sheetLayer.hidden;
-    var bg = [document.getElementById('content'), document.getElementById('tabbar'), document.getElementById('fab')];
+    var bg = [document.getElementById('content'), document.getElementById('tabbar'), document.getElementById('fab'),
+      document.getElementById('img-selbar')];
     bg.forEach(function (el) {
       if (el) {
         el.inert = alertOn || sheetOn;

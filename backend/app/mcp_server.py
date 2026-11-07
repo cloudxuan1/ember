@@ -76,6 +76,7 @@ async def image_generate(prompt: str, request_id: str = "", model: str = "",
     走 OpenRouter 的图，交图时顺口说一声是哪个模型画的，比如「这张是 Sunburst 2.6 画的」。
     reference_job_ids 可选：之前画好的图的任务 id 当参考图，照着定妆照画、改图用；两条路都能带。
     最多几张看模型：Codex 订阅 5 张，Flare / Sunburst 16 张，Nano Banana 2 和 Seedream 14 张。
+    回收站里的、已经彻底删除的图不能当参考图。
 
     下面几个也可选，每张图自己挑，不传就是默认。所选模型用不了的会忽略（message 里会说），值不对直接报错、不排队；
     走 Codex 订阅时这几个都用不了。「Flare / Sunburst」指 2.5 和 2.6 四个，「2.6」指 Flare 2.6 和 Sunburst 2.6：
@@ -107,6 +108,8 @@ async def image_status(job_id: str = "", wait_seconds: int = 15) -> dict:
     订阅那条路登录失效时需要轩做设备码登录，额度不足就等额度恢复，不要询问或使用 API key。
     model_label 是哪个模型画的。OpenRouter 的任务带 cost_usd（这张花了多少美元）和
     key_limit_remaining_usd（这把 OpenRouter 密钥的上限还剩多少美元），轩问额度时照这两个数说。
+    starred = 点了⭐；在回收站里的带 trashed_at 和 purge_at（到这个时间自动彻底删除）；
+    purged_at = 已经彻底删除（图没了，任务记录和提示词还在）。时间都是 UTC。
     """
     return await images.status(job_id, wait_seconds)
 
@@ -116,10 +119,52 @@ async def image_get(job_id: str) -> CallToolResult:
     """取已完成图片：返回可看的图片预览和 download_url 原图链接，请把图和链接交给轩。
     job.prompt 是这张图当时的完整提示词（image_status 只给开头），改图 / 重画时照着它改。
 
-    链接 24 小时有效，原图持续保存在 VPS；过期后用同一个 job_id 重新取链接，不用重画。
+    链接 24 小时有效，原图在 VPS 上一直留着，删了才没；过期后用同一个 job_id 重新取链接，不用重画。
     尚未完成先查 image_status；取图失败也只重试取同一张，不要重新生成。
+    在回收站里的图照样能取，message 会说哪天自动彻底删除、轩能在网页恢复；
+    已经彻底删除的取不到图，只回任务记录和完整提示词，message 会说清楚。
     """
     return await images.get_image(job_id)
+
+
+@mcp.tool()
+async def image_list(page: int = 1, page_size: int = 10, date_from: str = "", date_to: str = "",
+                     starred: bool | None = None, in_trash: bool = False) -> dict:
+    """一页一页列画好的图（两条路画的都在），新的在前；挑要清理的过程图用。只回文字，不带预览。
+
+    每条：id（编号）、date（北京时间）、model（哪个模型画的）、prompt（提示词开头 30 字左右）、
+    starred（点没点⭐）、in_trash（在不在回收站；在的话 purge_on = 哪天自动彻底删除）。
+    要看提示词全文或者看图，用 image_get(id)。
+    - page / page_size：第几页、每页几条，默认 10 条，最多 20 条。返回 total（一共几张）和 has_more（还有没有下一页）。
+    - date_from / date_to：按画的日子筛（北京时间），写 2026-11-07，也可以只写到月 2026-11；只要一天就两个写同一天。
+      返回里的 today 是今天的日子。
+    - starred：true 只列点了⭐的，false 只列没点⭐的，不传两种都要。
+    - in_trash：默认只列没进回收站的；true 只列回收站里的。
+    比如「今天没点⭐的」：date_from=今天, date_to=今天, starred=false。
+    """
+    return await images.list_images(page, page_size, date_from, date_to, starred, in_trash)
+
+
+@mcp.tool()
+async def image_delete(job_id: str) -> dict:
+    """把一张画好的图放进回收站（文件先不删）：轩在网页「图片 → 回收站」里还能恢复，满 30 天自动彻底删除。
+
+    job_id 用 image_list / image_status 里的编号，一次一张。只删轩说不要的、明显是过程图的；拿不准先问轩。
+    - 点了⭐的删不了：⭐ = 要留着。先问轩，她说不要了，再用 image_star 取消⭐后删。
+    - 正在排队 / 正在画的任务拿来当参考图的也删不了，等那张画完。
+    彻底删除（马上删文件、清空回收站）只有轩能在网页上做。
+    """
+    return await images.delete_image(job_id)
+
+
+@mcp.tool()
+async def image_star(job_id: str, starred: bool) -> dict:
+    """给画好的图点⭐（starred=true）或取消⭐（false）。⭐ = 要留着的好图：点了⭐的删不了。
+
+    轩说「这张好」「留着」「就要这张」时点上；她说这张不要了，先取消⭐再 image_delete。
+    回收站里的图不能点⭐，要留着先请轩在网页「图片 → 回收站」里恢复。
+    """
+    return await images.star_image(job_id, starred)
 
 
 def _lean(item: dict) -> dict:

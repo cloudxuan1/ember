@@ -1,5 +1,5 @@
-/* ember 记忆库网页 · 界面：记忆库 / 最近动静 / 设置 三个 tab、状态、启动。
-   工具函数在 console-lib.js（window.EmberLib）；底部面板（看、编辑、新写）在 console-sheet.js。
+/* ember 记忆库网页 · 界面：记忆库 / 图片 / 最近动静 / 设置 四个 tab、状态、启动。
+   工具函数在 console-lib.js（window.EmberLib）；底部面板（看、编辑、新写）在 console-sheet.js；图片页在 console-images.js。
    服务器给的字一律 textContent，不用 innerHTML。 */
 (function () {
   'use strict';
@@ -24,7 +24,7 @@
   // ---------- 运行时状态（只在这里声明） ----------
   var S = {
     tab: 'library',
-    scroll: { library: 0, activity: 0, settings: 0 },
+    scroll: { library: 0, images: 0, activity: 0, settings: 0 },
     // filter = 月份按钮（all / YYYY-MM / older）；star、pie = 月份后面的 ⭐ / 饼 两个开关，跟月份叠着筛
     lib: { q: '', filter: 'all', star: false, pie: false, items: [], page: 0, totalPages: 1, all: null, loading: false, loaded: false, req: 0 },
     months: [],
@@ -69,7 +69,7 @@
   // =====================================================================
   // tab
   // =====================================================================
-  var TABS = ['library', 'activity', 'settings'];
+  var TABS = ['library', 'images', 'activity', 'settings']; // 跟底部 tab 按钮一个顺序（气泡按位置滑）
 
   function setTab(tab) {
     if (TABS.indexOf(tab) === -1) {
@@ -95,6 +95,8 @@
       loadActivity();
     } else if (tab === 'settings') {
       loadSettings();
+    } else if (tab === 'images' && window.EmberImages) {
+      window.EmberImages.show();
     }
   }
 

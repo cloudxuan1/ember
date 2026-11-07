@@ -549,10 +549,11 @@ button.rowbody { margin: -6px 0 -6px -4px; padding: 6px 0 6px 4px; border-radius
 
 /* ---------- 底部 tab ---------- */
 .tabbar { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom)); width: calc(100% - 32px); max-width: 400px; border-radius: 999px; padding: 6px; z-index: 30; box-sizing: border-box; }
-.tabgrid { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.tab-bubble { position: absolute; top: 0; bottom: 0; left: 0; width: 33.3333%; border-radius: 999px; background: var(--bubble); box-shadow: inset 0 1px 0 var(--glass-hi), 0 4px 14px rgba(0, 0, 0, .08); transition: transform .5s cubic-bezier(.3, 1.3, .5, 1); }
+.tabgrid { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.tab-bubble { position: absolute; top: 0; bottom: 0; left: 0; width: 25%; border-radius: 999px; background: var(--bubble); box-shadow: inset 0 1px 0 var(--glass-hi), 0 4px 14px rgba(0, 0, 0, .08); transition: transform .5s cubic-bezier(.3, 1.3, .5, 1); }
 .pos-1 { transform: translateX(100%); }
 .pos-2 { transform: translateX(200%); }
+.pos-3 { transform: translateX(300%); }
 .tabbtn { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; height: 52px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--ink2); }
 .tab-on { color: var(--accent-ink); }
 

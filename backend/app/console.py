@@ -25,9 +25,9 @@ from typing import Annotated
 
 import fastapi
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from app import activity, history, memories, oauth, settings
+from app import activity, history, images, memories, oauth, settings
 from app.db import db_path
 
 router = APIRouter()
@@ -520,3 +520,137 @@ async def api_update_settings(request: Request):
         return _bad(str(e))
     _housekeep()  # 恢复期限调短了：过期的删除马上真删
     return updated
+
+
+# ---------- 图片（#41）：生图那边画好的图——列、⭐、回收站 ----------
+# 图、任务记录、回收站都在生图 worker 的卷里，这里只转话（app/images.py）；跟记忆库不相干，worker 坏了也只影响这一页。
+# 网格的小图 / 大图 / 原图也走登录 cookie，不用 24 小时的签名链接。
+
+IMAGE_VIEWS = ("all", "starred", "trash")
+IMAGE_BATCH_MAX = 100
+
+
+def _image_reply(result: tuple[int, dict]):
+    status, data = result
+    if status == 200:
+        return data
+    return JSONResponse({"error": data.get("code") or "image_service", "error_description": data["error"]}, status_code=status)
+
+
+async def _image_file(request: Request, image_id: str, fetch, cache: bool):
+    if not _is_xuan(request):
+        return _unauthorized()
+    if not images.valid_id(image_id):
+        return _not_found("图片编号不对")
+    try:
+        data = await fetch(image_id)
+    except images.ImageGone as e:
+        return JSONResponse({"error": "gone", "error_description": str(e)}, status_code=410)
+    except ValueError as e:
+        return JSONResponse({"error": "image_service", "error_description": str(e)}, status_code=503)
+    if not cache:
+        return images.original_response(image_id, data)
+    # 一张图画好就不会再变（编号是新的、文件不覆盖），小图 / 预览让手机存一周，来回翻不用重新下
+    media_type, _ = images.image_type(data)
+    return Response(content=data, media_type=media_type, headers={
+        "Cache-Control": "private, max-age=604800, immutable", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/api/images")
+async def api_images(
+    request: Request,
+    view: str = "all",
+    page: Annotated[int, fastapi.Query(ge=1, le=10**6)] = 1,
+    page_size: Annotated[int, fastapi.Query(ge=1, le=100)] = 60,
+):
+    """图片页的网格，新的在前：view = all（没进回收站的）/ starred（只看⭐）/ trash（回收站，最近删的在前）。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    if view not in IMAGE_VIEWS:
+        return _bad("view 只能是 all / starred / trash")
+    return _image_reply(await images.gallery(page, page_size, starred=True if view == "starred" else None, trash=view == "trash"))
+
+
+@router.get("/api/images/stats")
+async def api_image_stats(request: Request):
+    """顶上那行：一共几张、占多大（原图 + 预览实际占的），回收站另算；trash.latest 给「清空回收站」用。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    return _image_reply(await images.gallery_stats())
+
+
+@router.post("/api/images/trash")
+async def api_image_trash(request: Request):
+    """勾了几张一起进回收站：{"ids": [...]}。每张到了 worker 再核对一遍（点了⭐的、正被排队任务当参考图的不动），逐张回结果。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    body = await _json_body(request)
+    ids = body.get("ids") if isinstance(body, dict) else None
+    if not isinstance(ids, list) or not 0 < len(ids) <= IMAGE_BATCH_MAX or not all(isinstance(i, str) for i in ids):
+        return _bad(f"要带上 ids（1–{IMAGE_BATCH_MAX} 张图的编号）")
+    return _image_reply(await images.trash(ids))
+
+
+@router.post("/api/images/trash/empty")
+async def api_image_empty_trash(request: Request):
+    """清空回收站：{"until": 确认时页面上最新那张的 trashed_at}。点确认之后才进回收站的（比如小克刚删的）不动。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    body = await _json_body(request)
+    until = body.get("until") if isinstance(body, dict) else None
+    if not isinstance(until, str) or not until:
+        return _bad("要带上 until（确认时看到的、最新进回收站那张的时间）")
+    return _image_reply(await images.empty_trash(until))
+
+
+@router.get("/api/images/{image_id}")
+async def api_image(image_id: str, request: Request):
+    """点开看大图：这张的完整提示词、模型、尺寸、在不在回收站。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    return _image_reply(await images.job_detail(image_id))
+
+
+@router.post("/api/images/{image_id}/star")
+async def api_image_star(image_id: str, request: Request):
+    """点⭐ / 取消⭐：{"starred": true / false}。点了⭐的删不了；回收站里的不能点⭐。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    body = await _json_body(request)
+    starred = body.get("starred") if isinstance(body, dict) else None
+    if not isinstance(starred, bool):
+        return _bad("starred 要是 true 或 false")
+    return _image_reply(await images.set_star(image_id, starred))
+
+
+@router.post("/api/images/{image_id}/restore")
+async def api_image_restore(image_id: str, request: Request):
+    if not _is_xuan(request):
+        return _unauthorized()
+    return _image_reply(await images.restore(image_id))
+
+
+@router.post("/api/images/{image_id}/purge")
+async def api_image_purge(image_id: str, request: Request):
+    """回收站里的一张彻底删：原图和预览文件删掉，任务记录留着。不在回收站里的不删。确认弹窗在网页上做。"""
+    if not _is_xuan(request):
+        return _unauthorized()
+    return _image_reply(await images.purge(image_id))
+
+
+@router.get("/api/images/{image_id}/thumb")
+async def api_image_thumb(image_id: str, request: Request):
+    return await _image_file(request, image_id, images.thumb_bytes, cache=True)
+
+
+@router.get("/api/images/{image_id}/preview")
+async def api_image_preview(image_id: str, request: Request):
+    async def preview(job_id):
+        return await images.image_bytes(job_id, preview=True)
+
+    return await _image_file(request, image_id, preview, cache=True)
+
+
+@router.get("/api/images/{image_id}/original")
+async def api_image_original(image_id: str, request: Request):
+    return await _image_file(request, image_id, images.image_bytes, cache=False)
