@@ -23,7 +23,10 @@ import httpx
 
 from app.db import get_conn, vec_available
 
-EMBED_TIMEOUT = 15.0  # 单条/查询；保存在写事务里调 API，超时要短
+EMBED_TIMEOUT = 15.0  # 存卡时算单条指纹；保存在写事务里调 API，超时要短
+# 搜索时算查询指纹：最多等 8 秒（连上 3 秒），慢了就降级纯关键词。要赶在 chat-lite Worker 放弃之前回话
+# （Worker 等 25 秒）。2026-11 轩碰到：两头都是 15 秒，指纹一慢 Worker 先放弃，降级结果永远到不了。
+QUERY_EMBED_TIMEOUT = httpx.Timeout(8.0, connect=3.0)
 REBUILD_TIMEOUT = 60.0
 REBUILD_BATCH = 32
 
@@ -57,7 +60,7 @@ def enabled() -> bool:
     return bool(os.environ.get("EMBEDDING_API_KEY") and current_model())
 
 
-def embed_texts(texts: list[str], timeout: float = EMBED_TIMEOUT) -> list[list[float]]:
+def embed_texts(texts: list[str], timeout: float | httpx.Timeout = EMBED_TIMEOUT) -> list[list[float]]:
     resp = httpx.post(
         f"{api_base()}/embeddings",
         headers={"Authorization": f"Bearer {os.environ['EMBEDDING_API_KEY']}"},
@@ -317,7 +320,7 @@ def vector_search(
     if not (enabled() and vec_available()):
         return []
     try:
-        qvec = embed_texts([query])[0]
+        qvec = embed_texts([query], timeout=QUERY_EMBED_TIMEOUT)[0]
     except Exception as e:
         print(f"[embed] 查询指纹失败，本次降级纯关键词: {e}", flush=True)
         return []

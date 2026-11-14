@@ -6,6 +6,7 @@
 
 import random
 
+import httpx
 import pytest
 
 from app import embeddings, mcp_server, memories, migrate_rings, rings
@@ -868,3 +869,18 @@ def test_status_counts_missing_and_outdated_ring_fingerprints(monkeypatch):
     assert "补算" in status["note"]
     monkeypatch.setenv("EMBEDDING_MODEL", "test-model-b")  # 换了模型：旧模型的都算缺
     assert mcp_server.memory_status()["ring_fingerprints"]["missing"] == 2
+
+
+def test_query_fingerprint_waits_short_then_falls_back_to_keywords(monkeypatch):
+    """搜索算查询指纹只等 8 秒（连上 3 秒）：慢了就降级关键词，赶在 chat-lite Worker（25 秒）放弃之前回话。"""
+    mid = _save("编的：那晚眼泪在眼眶里打转")
+    seen = []
+
+    def slow(texts, timeout=None):
+        seen.append(timeout)
+        raise httpx.ReadTimeout("embedding 太慢")
+
+    monkeypatch.setattr(embeddings, "embed_texts", slow)
+    assert [r["id"] for r in memories.search_memories("眼泪")] == [mid]
+    assert seen[0].read <= 8 and seen[0].connect <= 3
+
