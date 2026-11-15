@@ -18,12 +18,17 @@ import os
 import re
 import struct
 import sys
+import time
 
 import httpx
 
 from app.db import get_conn, vec_available
 
-EMBED_TIMEOUT = 15.0  # 单条/查询；保存在写事务里调 API，超时要短
+EMBED_TIMEOUT = 15.0  # 存卡时算单条指纹；保存在写事务里调 API，超时要短
+# 搜索时算查询指纹：连 OpenRouter 最多 3 秒，等结果最多 15 秒，慢了就降级纯关键词。
+# httpx 的超时是每一步各算，只写 15.0 的话连接也能耗 15 秒、加起来 30 秒，超过 chat-lite Worker 的 25 秒。
+# 等结果不砍短：「隔一阵第一次查」指纹可能要十来秒，砍了就只剩关键词（轩 11-15 定：宁慢勿败）。
+QUERY_EMBED_TIMEOUT = httpx.Timeout(15.0, connect=3.0)
 REBUILD_TIMEOUT = 60.0
 REBUILD_BATCH = 32
 
@@ -57,7 +62,7 @@ def enabled() -> bool:
     return bool(os.environ.get("EMBEDDING_API_KEY") and current_model())
 
 
-def embed_texts(texts: list[str], timeout: float = EMBED_TIMEOUT) -> list[list[float]]:
+def embed_texts(texts: list[str], timeout: float | httpx.Timeout = EMBED_TIMEOUT) -> list[list[float]]:
     resp = httpx.post(
         f"{api_base()}/embeddings",
         headers={"Authorization": f"Bearer {os.environ['EMBEDDING_API_KEY']}"},
@@ -316,11 +321,14 @@ def vector_search(
     """
     if not (enabled() and vec_available()):
         return []
+    started = time.monotonic()  # 记耗时（不记查询内容），看「慢在指纹」是不是真的、15 秒够不够
     try:
-        qvec = embed_texts([query])[0]
-    except Exception as e:
-        print(f"[embed] 查询指纹失败，本次降级纯关键词: {e}", flush=True)
+        qvec = embed_texts([query], timeout=QUERY_EMBED_TIMEOUT)[0]
+    except Exception as e:  # ConnectTimeout = 连不上，ReadTimeout = 等结果超时
+        took = time.monotonic() - started
+        print(f"[embed] 查询指纹失败（{type(e).__name__}，{took:.1f} 秒），本次降级纯关键词: {e}", flush=True)
         return []
+    print(f"[embed] 查询指纹 {time.monotonic() - started:.1f} 秒", flush=True)
     conds, extra = where
     card = "".join(f" AND {c}" for c in conds)
     ring_conds, ring_extra = rings_where
