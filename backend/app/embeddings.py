@@ -18,6 +18,7 @@ import os
 import re
 import struct
 import sys
+import time
 
 import httpx
 
@@ -320,11 +321,14 @@ def vector_search(
     """
     if not (enabled() and vec_available()):
         return []
+    started = time.monotonic()  # 记耗时（不记查询内容），看「慢在指纹」是不是真的、15 秒够不够
     try:
         qvec = embed_texts([query], timeout=QUERY_EMBED_TIMEOUT)[0]
-    except Exception as e:
-        print(f"[embed] 查询指纹失败，本次降级纯关键词: {e}", flush=True)
+    except Exception as e:  # ConnectTimeout = 连不上，ReadTimeout = 等结果超时
+        took = time.monotonic() - started
+        print(f"[embed] 查询指纹失败（{type(e).__name__}，{took:.1f} 秒），本次降级纯关键词: {e}", flush=True)
         return []
+    print(f"[embed] 查询指纹 {time.monotonic() - started:.1f} 秒", flush=True)
     conds, extra = where
     card = "".join(f" AND {c}" for c in conds)
     ring_conds, ring_extra = rings_where
