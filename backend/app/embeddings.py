@@ -24,9 +24,10 @@ import httpx
 from app.db import get_conn, vec_available
 
 EMBED_TIMEOUT = 15.0  # 存卡时算单条指纹；保存在写事务里调 API，超时要短
-# 搜索时算查询指纹：最多等 8 秒（连上 3 秒），慢了就降级纯关键词。要赶在 chat-lite Worker 放弃之前回话
-# （Worker 等 25 秒）。2026-11 轩碰到：两头都是 15 秒，指纹一慢 Worker 先放弃，降级结果永远到不了。
-QUERY_EMBED_TIMEOUT = httpx.Timeout(8.0, connect=3.0)
+# 搜索时算查询指纹：连 OpenRouter 最多 3 秒，等结果最多 15 秒，慢了就降级纯关键词。
+# httpx 的超时是每一步各算，只写 15.0 的话连接也能耗 15 秒、加起来 30 秒，超过 chat-lite Worker 的 25 秒。
+# 等结果不砍短：「隔一阵第一次查」指纹可能要十来秒，砍了就只剩关键词（轩 11-15 定：宁慢勿败）。
+QUERY_EMBED_TIMEOUT = httpx.Timeout(15.0, connect=3.0)
 REBUILD_TIMEOUT = 60.0
 REBUILD_BATCH = 32
 
